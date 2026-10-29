@@ -1,0 +1,37 @@
+{
+  "env": "sandbox",
+  "batidos": {
+    "base_url": "https://api.batidos.invalid",
+    "key": "replace-me",
+    "secret": "replace-me"
+  },
+  "snacks": {
+    "base_url": "",
+    "access_key": "replace-me",
+    "app_secret": "replace-me"
+  },
+  "kiosks": [
+    {
+      "id": "kiosk-demo",
+      "name": "Mueble demo",
+      "machines": [
+        {
+          "type": "batidos",
+          "name": "Batidos Powermix",
+          "device_id": "0000000000000000001",
+          "device_no": "devno-demo",
+          "device_type_id": "0000000000000000002",
+          "mid": ""
+        },
+        {
+          "type": "snacks",
+          "name": "Snacks Powermix",
+          "device_id": "",
+          "device_no": "",
+          "device_type_id": "",
+          "mid": "P50DEMO0001"
+        }
+      ]
+    }
+  ]
+}

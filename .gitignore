@@ -1,0 +1,21 @@
+# Documentación de los proveedores: material de terceros con aviso de copyright.
+# Vive sólo en local. El repositorio contiene únicamente código propio.
+Batidos-Remoto-API.md
+YS Vending Management Platform API Document V1.0.1.pdf
+ys-vending.txt
+
+# Láminas de diseño: son internas, no van al repositorio.
+design/
+
+# Secretos locales: nunca se versionan. El ejemplo (.env.example) sí.
+.env
+.env.*
+!.env.example
+
+# Configuración real del mueble: credenciales y topología real.
+*.local.json
+
+# Binarios compilados
+*.exe
+*.test
+*.out
