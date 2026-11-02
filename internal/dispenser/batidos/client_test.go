@@ -19,7 +19,9 @@ const (
 	testKey    = "mykey"
 	testSecret = "mysecret"
 
-	campaignPath = "/coffee/newThird/active/v2/submit"
+	campaignPath     = "/coffee/newThird/active/v2/submit"
+	deviceDetailPath = "/coffee/newThird/device/detail/"
+	deviceGoodsPath  = "/coffee/newThird/goods/deviceGoodsDetail/"
 )
 
 var fixedNow = time.Date(2026, 3, 25, 8, 30, 42, 0, time.UTC)
@@ -261,6 +263,183 @@ func TestClientReportsNon200HTTPStatusAsAPIError(t *testing.T) {
 		t.Fatalf("Code = %d, se esperaba 500", apiErr.Code)
 	}
 	if !strings.Contains(apiErr.Message, "caído") {
+		t.Fatalf("APIError.Message = %q, se esperaba el mensaje del proveedor", apiErr.Message)
+	}
+}
+
+func TestClientReadsHealthyDevice(t *testing.T) {
+	fake := fakeapi.NewBatidos(testKey, testSecret)
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	device, err := newTestClient(t, srv.URL).Device(context.Background(), "dev-1")
+	if err != nil {
+		t.Fatalf("Device: %v", err)
+	}
+
+	if device.ID != "dev-1" {
+		t.Fatalf("id = %q, se esperaba %q", device.ID, "dev-1")
+	}
+	if device.Status != batidos.DeviceStatusOnline {
+		t.Fatalf("status = %d, se esperaba %d (en línea)", device.Status, batidos.DeviceStatusOnline)
+	}
+	if device.DeviceRunStatus != batidos.DeviceRunStatusNormal {
+		t.Fatalf("deviceRunStatus = %d, se esperaba %d (normal)", device.DeviceRunStatus, batidos.DeviceRunStatusNormal)
+	}
+	if device.ScarceStatus != batidos.ScarceStatusNormal {
+		t.Fatalf("scarceStatus = %d, se esperaba %d (normal)", device.ScarceStatus, batidos.ScarceStatusNormal)
+	}
+	if device.Name == "" || device.DeviceNo == "" || device.DeviceTypeID == "" {
+		t.Fatalf("la identidad del dispositivo quedó incompleta: %+v", device)
+	}
+}
+
+func TestClientSurfacesOfflineAndFaultedDevice(t *testing.T) {
+	fake := fakeapi.NewBatidos(testKey, testSecret)
+	fake.SetDeviceOffline("dev-1")
+	fake.SetDeviceAbnormal("dev-1")
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	device, err := newTestClient(t, srv.URL).Device(context.Background(), "dev-1")
+	if err != nil {
+		t.Fatalf("Device: %v", err)
+	}
+
+	if device.Status != batidos.DeviceStatusOffline {
+		t.Fatalf("status = %d, se esperaba %d (fuera de línea)", device.Status, batidos.DeviceStatusOffline)
+	}
+	if device.DeviceRunStatus != batidos.DeviceRunStatusAbnormal {
+		t.Fatalf("deviceRunStatus = %d, se esperaba %d (avería)", device.DeviceRunStatus, batidos.DeviceRunStatusAbnormal)
+	}
+}
+
+func TestClientSurfacesOutOfStockDevice(t *testing.T) {
+	fake := fakeapi.NewBatidos(testKey, testSecret)
+	fake.SetDeviceOutOfStock("dev-1")
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	device, err := newTestClient(t, srv.URL).Device(context.Background(), "dev-1")
+	if err != nil {
+		t.Fatalf("Device: %v", err)
+	}
+
+	if device.ScarceStatus != batidos.ScarceStatusOutOfStock {
+		t.Fatalf("scarceStatus = %d, se esperaba %d (sin stock)", device.ScarceStatus, batidos.ScarceStatusOutOfStock)
+	}
+}
+
+func TestClientReadsDeviceGoodsCatalogue(t *testing.T) {
+	fake := fakeapi.NewBatidos(testKey, testSecret)
+	fake.SetDeviceGoods("dev-1", []batidos.DeviceGoods{
+		{ID: "goods-1", No: "P202509301915100581", Name: "frutilla", Price: 4.9, SoldOut: 0, Listing: true},
+		{ID: "goods-2", No: "P202603121557531449", Name: "chocolate", Price: 5.9, SoldOut: 1, Listing: true},
+		{ID: "goods-3", No: "P202601010000000000", Name: "discontinuado", Price: 3.5, SoldOut: 0, Listing: false},
+	})
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	goods, err := newTestClient(t, srv.URL).DeviceGoods(context.Background(), "dev-1")
+	if err != nil {
+		t.Fatalf("DeviceGoods: %v", err)
+	}
+	if len(goods) != 3 {
+		t.Fatalf("catálogo = %d productos (%+v), se esperaban 3", len(goods), goods)
+	}
+
+	byID := make(map[string]batidos.DeviceGoods, len(goods))
+	for _, item := range goods {
+		byID[item.ID] = item
+	}
+
+	available, ok := byID["goods-1"]
+	if !ok {
+		t.Fatalf("el catálogo no trae goods-1: %+v", goods)
+	}
+	if available.SoldOut != 0 || !available.Listing {
+		t.Fatalf("goods-1 = %+v, se esperaba en stock y publicado", available)
+	}
+	if available.Name != "frutilla" || available.No != "P202509301915100581" || available.Price != 4.9 {
+		t.Fatalf("goods-1 = %+v, se esperaba el producto tal como lo informa el proveedor", available)
+	}
+
+	soldOut, ok := byID["goods-2"]
+	if !ok {
+		t.Fatalf("el catálogo no trae goods-2: %+v", goods)
+	}
+	if soldOut.SoldOut != 1 {
+		t.Fatalf("goods-2 soldOut = %d, se esperaba 1 (agotado)", soldOut.SoldOut)
+	}
+
+	delisted, ok := byID["goods-3"]
+	if !ok {
+		t.Fatalf("el catálogo no trae goods-3: %+v", goods)
+	}
+	if delisted.Listing {
+		t.Fatalf("goods-3 listing = true, se esperaba false (dado de baja)")
+	}
+}
+
+func TestClientSignsGetRequests(t *testing.T) {
+	fake := fakeapi.NewBatidos(testKey, testSecret)
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	for _, path := range []string{deviceDetailPath + "dev-1", deviceGoodsPath + "dev-1"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET sin firma a %s: %v", path, err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("GET sin firma a %s = %d, se esperaba %d", path, resp.StatusCode, http.StatusUnauthorized)
+		}
+	}
+
+	client := newTestClient(t, srv.URL)
+	ctx := context.Background()
+
+	if _, err := client.Device(ctx, "dev-1"); err != nil {
+		t.Fatalf("Device firmado: %v", err)
+	}
+	if _, err := client.DeviceGoods(ctx, "dev-1"); err != nil {
+		t.Fatalf("DeviceGoods firmado: %v", err)
+	}
+}
+
+func TestClientToleratesDocumentedStringStates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":200,"success":true,"msg":"操作成功","data":{"id":"dev-1","deviceNo":"adbafc62","name":"G01469","deviceTypeId":"dt-1","status":"2","deviceRunStatus":"2","scarceStatus":"3"}}`)
+	}))
+	defer srv.Close()
+
+	device, err := newTestClient(t, srv.URL).Device(context.Background(), "dev-1")
+	if err != nil {
+		t.Fatalf("Device: %v", err)
+	}
+	if device.Status != batidos.DeviceStatusOffline || device.DeviceRunStatus != batidos.DeviceRunStatusAbnormal || device.ScarceStatus != batidos.ScarceStatusOutOfStock {
+		t.Fatalf("device = %+v, se esperaban los estados 2/2/3 informados como texto", device)
+	}
+}
+
+func TestClientReportsDeviceRejectionAsAPIError(t *testing.T) {
+	fake := fakeapi.NewBatidos(testKey, testSecret)
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	device, err := newTestClient(t, srv.URL).Device(context.Background(), "")
+	if err == nil {
+		t.Fatalf("un deviceId vacío se devolvió como éxito: %+v", device)
+	}
+
+	var apiErr *batidos.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("el error %v (%T) no es un *batidos.APIError", err, err)
+	}
+	if !strings.Contains(apiErr.Message, "deviceId") {
 		t.Fatalf("APIError.Message = %q, se esperaba el mensaje del proveedor", apiErr.Message)
 	}
 }

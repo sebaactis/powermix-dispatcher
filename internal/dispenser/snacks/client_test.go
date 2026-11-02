@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	testAccessKey = "ak_test"
-	testAppSecret = "testsecret"
-	testMID       = "P50*******20001"
-	testPath      = "/open/v7/device/remote/shipment"
+	testAccessKey   = "ak_test"
+	testAppSecret   = "testsecret"
+	testMID         = "P50*******20001"
+	testPath        = "/open/v7/device/remote/shipment"
+	testDevicesPath = "/open/v7/device/page"
+	testSlotsPath   = "/open/v7/device/slotlist"
 )
 
 func newFake(t *testing.T) (*fakeapi.Snacks, string) {
@@ -258,6 +260,270 @@ func TestShipRespectsCancelledContext(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want que envuelva context.Canceled", err)
+	}
+}
+
+func TestDevicesReturnsThePaginatedPage(t *testing.T) {
+	_, baseURL := newFake(t)
+
+	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
+
+	page, err := client.Devices(context.Background(), 1, 10, "")
+	if err != nil {
+		t.Fatalf("Devices: %v", err)
+	}
+	if page.Page != 1 {
+		t.Fatalf("page.Page = %d, want 1", page.Page)
+	}
+	if page.PageSize != 10 {
+		t.Fatalf("page.PageSize = %d, want 10", page.PageSize)
+	}
+	if page.Total != 1 {
+		t.Fatalf("page.Total = %d, want 1", page.Total)
+	}
+	if page.TotalPages != 1 {
+		t.Fatalf("page.TotalPages = %d, want 1", page.TotalPages)
+	}
+	if page.HasPrevPage {
+		t.Fatalf("page.HasPrevPage = true, want false en la primera página")
+	}
+	if page.HasNextPage {
+		t.Fatalf("page.HasNextPage = true, want false con una sola página")
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("page.Items tiene %d elementos, want 1", len(page.Items))
+	}
+
+	device := page.Items[0]
+	if device.DeviceCode == "" {
+		t.Fatalf("device.DeviceCode vacío, want el código de la máquina")
+	}
+	if device.OnlineStatus != snacks.OnlineStatusOnline {
+		t.Fatalf("device.OnlineStatus = %d, want %d", device.OnlineStatus, snacks.OnlineStatusOnline)
+	}
+	if device.SellStatus != snacks.SellStatusNormal {
+		t.Fatalf("device.SellStatus = %d, want %d", device.SellStatus, snacks.SellStatusNormal)
+	}
+	if device.FaultState != snacks.FaultStateNormal {
+		t.Fatalf("device.FaultState = %d, want %d", device.FaultState, snacks.FaultStateNormal)
+	}
+	if device.LockType != snacks.LockTypeNormal {
+		t.Fatalf("device.LockType = %d, want %d", device.LockType, snacks.LockTypeNormal)
+	}
+	if device.StockoutState != snacks.StockoutStateNormal {
+		t.Fatalf("device.StockoutState = %d, want %d", device.StockoutState, snacks.StockoutStateNormal)
+	}
+}
+
+func TestDevicesFiltersByDeviceCode(t *testing.T) {
+	_, baseURL := newFake(t)
+
+	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
+
+	page, err := client.Devices(context.Background(), 1, 10, "otra-maquina")
+	if err != nil {
+		t.Fatalf("Devices: %v", err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("page.Total = %d, want 0 para un DeviceCode que no existe", page.Total)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("page.Items tiene %d elementos, want 0", len(page.Items))
+	}
+}
+
+func TestDevicesSurfacesTheMachineStates(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*fakeapi.Snacks)
+		check func(*testing.T, snacks.Device)
+	}{
+		{
+			name:  "offline",
+			setup: func(f *fakeapi.Snacks) { f.SetDeviceOnline(false) },
+			check: func(t *testing.T, device snacks.Device) {
+				if device.OnlineStatus != snacks.OnlineStatusOffline {
+					t.Fatalf("OnlineStatus = %d, want %d", device.OnlineStatus, snacks.OnlineStatusOffline)
+				}
+			},
+		},
+		{
+			name:  "sale suspended",
+			setup: func(f *fakeapi.Snacks) { f.SetSellStatus(snacks.SellStatusSuspended) },
+			check: func(t *testing.T, device snacks.Device) {
+				if device.SellStatus != snacks.SellStatusSuspended {
+					t.Fatalf("SellStatus = %d, want %d", device.SellStatus, snacks.SellStatusSuspended)
+				}
+			},
+		},
+		{
+			name:  "fault",
+			setup: func(f *fakeapi.Snacks) { f.SetFaultState(snacks.FaultStateFault) },
+			check: func(t *testing.T, device snacks.Device) {
+				if device.FaultState != snacks.FaultStateFault {
+					t.Fatalf("FaultState = %d, want %d", device.FaultState, snacks.FaultStateFault)
+				}
+			},
+		},
+		{
+			name:  "locked",
+			setup: func(f *fakeapi.Snacks) { f.SetLockType(2) },
+			check: func(t *testing.T, device snacks.Device) {
+				if device.LockType == snacks.LockTypeNormal {
+					t.Fatalf("LockType = %d, want un valor que bloquee la máquina", device.LockType)
+				}
+			},
+		},
+		{
+			name:  "out of stock",
+			setup: func(f *fakeapi.Snacks) { f.SetStockoutState(snacks.StockoutStateOutOfStock) },
+			check: func(t *testing.T, device snacks.Device) {
+				if device.StockoutState != snacks.StockoutStateOutOfStock {
+					t.Fatalf("StockoutState = %d, want %d", device.StockoutState, snacks.StockoutStateOutOfStock)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, baseURL := newFake(t)
+			tc.setup(fake)
+
+			client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
+
+			page, err := client.Devices(context.Background(), 1, 10, "")
+			if err != nil {
+				t.Fatalf("Devices: %v", err)
+			}
+			if len(page.Items) != 1 {
+				t.Fatalf("page.Items tiene %d elementos, want 1", len(page.Items))
+			}
+
+			tc.check(t, page.Items[0])
+		})
+	}
+}
+
+func TestDevicesSignsOnlyThePathAndNotTheQueryString(t *testing.T) {
+	_, baseURL := newFake(t)
+
+	signedWithQuery, err := snacks.SignatureHeaders(testAccessKey, testAppSecret, http.MethodGet, testDevicesPath+"?Page=1&PageSize=10", time.Now())
+	if err != nil {
+		t.Fatalf("SignatureHeaders: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, baseURL+testDevicesPath+"?Page=1&PageSize=10", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	for name, value := range signedWithQuery {
+		req.Header.Set(name, value)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var rejected struct {
+		Code int `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rejected); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized || rejected.Code != 40004 {
+		t.Fatalf("firmar la ruta con la query dio http=%d code=%d, want http=401 code=40004", resp.StatusCode, rejected.Code)
+	}
+
+	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
+
+	page, err := client.Devices(context.Background(), 1, 10, "")
+	if err != nil {
+		t.Fatalf("Devices: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("page.Items tiene %d elementos, want 1: el cliente tiene que firmar sólo la ruta", len(page.Items))
+	}
+}
+
+func TestSlotsReturnsChannelsWithStock(t *testing.T) {
+	fake, baseURL := newFake(t)
+
+	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
+
+	slots, err := client.Slots(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Slots: %v", err)
+	}
+	if len(slots) < 2 {
+		t.Fatalf("Slots devolvió %d canales, want al menos 2", len(slots))
+	}
+	for _, slot := range slots {
+		if slot.SlotNo == "" {
+			t.Fatalf("slot %+v sin slotNo", slot)
+		}
+		if slot.ProductID == "" {
+			t.Fatalf("slot %q sin productId", slot.SlotNo)
+		}
+		if slot.Stock <= 0 {
+			t.Fatalf("slot %q con stock %d, want stock", slot.SlotNo, slot.Stock)
+		}
+		if slot.SlotStatus != snacks.SlotStatusNormal {
+			t.Fatalf("slot %q con slotStatus %d, want %d", slot.SlotNo, slot.SlotStatus, snacks.SlotStatusNormal)
+		}
+	}
+
+	fake.SetSlotStock("1", 0)
+	fake.SetSlotStatus("2", snacks.SlotStatusDisabled)
+
+	slots, err = client.Slots(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Slots: %v", err)
+	}
+
+	if slots[0].Stock != 0 {
+		t.Fatalf("slots[0].Stock = %d, want 0 (sin stock)", slots[0].Stock)
+	}
+	if slots[1].SlotStatus != snacks.SlotStatusDisabled {
+		t.Fatalf("slots[1].SlotStatus = %d, want %d (deshabilitado)", slots[1].SlotStatus, snacks.SlotStatusDisabled)
+	}
+}
+
+func TestSlotsFiltersByDeviceCode(t *testing.T) {
+	_, baseURL := newFake(t)
+
+	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
+
+	slots, err := client.Slots(context.Background(), "otra-maquina")
+	if err != nil {
+		t.Fatalf("Slots: %v", err)
+	}
+	if len(slots) != 0 {
+		t.Fatalf("Slots devolvió %d canales para un DeviceCode que no existe, want 0", len(slots))
+	}
+	if slots == nil {
+		t.Fatalf("Slots devolvió nil, want una lista vacía")
+	}
+}
+
+func TestSlotsRejectsAMalformedEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"code":    200,
+			"message": "ok",
+			"result":  map[string]any{"unexpected": true},
+		})
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+
+	if _, err := client.Slots(context.Background(), ""); err == nil {
+		t.Fatalf("Slots con result que no es una lista devolvió nil, want error")
 	}
 }
 

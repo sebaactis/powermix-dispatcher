@@ -1,6 +1,9 @@
 package snacks
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type shipmentBody struct {
 	AccessKey      string                `json:"AccessKey"`
@@ -22,4 +25,57 @@ type envelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Result  json.RawMessage `json:"result"`
+}
+
+type devicesResultBody struct {
+	Page        int              `json:"page"`
+	PageSize    int              `json:"pageSize"`
+	Total       int              `json:"total"`
+	TotalPages  int              `json:"totalPages"`
+	Items       []deviceItemBody `json:"items"`
+	HasPrevPage bool             `json:"hasPrevPage"`
+	HasNextPage bool             `json:"hasNextPage"`
+}
+
+type deviceItemBody struct {
+	DeviceCode          string `json:"deviceCode"`
+	DeviceName          string `json:"deviceName"`
+	DeviceTypeName      string `json:"deviceTypeName"`
+	OnlineStatus        int    `json:"onlineStatus"`
+	SellStatus          int    `json:"sellStatus"`
+	FaultState          int    `json:"faultState"`
+	LockType            int    `json:"lockType"`
+	StockoutState       int    `json:"stockoutState"`
+	ShortageAlarmNumber int    `json:"shortageAlarmNumber"`
+}
+
+type slotItemBody struct {
+	SlotID      scalarText `json:"slotId"`
+	SlotNo      scalarText `json:"slotNo"`
+	SlotStatus  int        `json:"slotStatus"`
+	Stock       int        `json:"stock"`
+	Capacity    int        `json:"capacity"`
+	ProductID   scalarText `json:"productId"`
+	ProductName string     `json:"productName"`
+	Price       float64    `json:"price"`
+}
+
+type scalarText string
+
+func (s *scalarText) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		*s = ""
+		return nil
+	}
+	if strings.HasPrefix(text, `"`) {
+		var quoted string
+		if err := json.Unmarshal(raw, &quoted); err != nil {
+			return err
+		}
+		*s = scalarText(quoted)
+		return nil
+	}
+	*s = scalarText(text)
+	return nil
 }

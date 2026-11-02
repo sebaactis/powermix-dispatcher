@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,9 +15,11 @@ import (
 )
 
 const (
-	campaignPath  = "/coffee/newThird/active/v2/submit"
-	producePath   = "/coffee/newThird/order/produceCoffee"
-	orderInfoPath = "/coffee/newThird/order/getOrderInfo"
+	campaignPath    = "/coffee/newThird/active/v2/submit"
+	producePath     = "/coffee/newThird/order/produceCoffee"
+	orderInfoPath   = "/coffee/newThird/order/getOrderInfo"
+	devicePath      = "/coffee/newThird/device/detail/"
+	deviceGoodsPath = "/coffee/newThird/goods/deviceGoodsDetail/"
 )
 
 const (
@@ -113,6 +116,48 @@ type OrderInfo struct {
 	OutStockStatus int
 }
 
+type DeviceStatus int
+
+const (
+	DeviceStatusOnline  DeviceStatus = 1
+	DeviceStatusOffline DeviceStatus = 2
+)
+
+type DeviceRunStatus int
+
+const (
+	DeviceRunStatusNormal   DeviceRunStatus = 1
+	DeviceRunStatusAbnormal DeviceRunStatus = 2
+)
+
+type ScarceStatus int
+
+const (
+	ScarceStatusNormal     ScarceStatus = 1
+	ScarceStatusOutOfStock ScarceStatus = 3
+)
+
+type Device struct {
+	ID           string
+	DeviceNo     string
+	Name         string
+	DeviceTypeID string
+
+	Status          DeviceStatus
+	DeviceRunStatus DeviceRunStatus
+	ScarceStatus    ScarceStatus
+}
+
+type DeviceGoods struct {
+	ID   string
+	No   string
+	Name string
+
+	Price   float64
+	SoldOut int
+	Listing bool
+}
+
 type APIError struct {
 	HTTPStatus int
 	Code       int
@@ -199,13 +244,62 @@ func (c *Client) OrderInfo(ctx context.Context, exchangeCode, deviceID string) (
 	}, nil
 }
 
-func (c *Client) do(ctx context.Context, path string, body, out any) error {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("no se pudo serializar el request de %s: %w", path, err)
+func (c *Client) Device(ctx context.Context, deviceID string) (Device, error) {
+	var data deviceWireResponse
+	if err := c.get(ctx, devicePath+url.PathEscape(deviceID), &data); err != nil {
+		return Device{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	return Device{
+		ID:              data.ID,
+		DeviceNo:        data.DeviceNo,
+		Name:            data.Name,
+		DeviceTypeID:    data.DeviceTypeID,
+		Status:          DeviceStatus(data.Status),
+		DeviceRunStatus: DeviceRunStatus(data.DeviceRunStatus),
+		ScarceStatus:    ScarceStatus(data.ScarceStatus),
+	}, nil
+}
+
+func (c *Client) DeviceGoods(ctx context.Context, deviceID string) ([]DeviceGoods, error) {
+	var data []deviceGoodsWireResponse
+	if err := c.get(ctx, deviceGoodsPath+url.PathEscape(deviceID), &data); err != nil {
+		return nil, err
+	}
+
+	goods := make([]DeviceGoods, 0, len(data))
+	for _, item := range data {
+		goods = append(goods, DeviceGoods{
+			ID:      item.ID,
+			No:      item.No,
+			Name:    item.Name,
+			Price:   item.Price,
+			SoldOut: item.SoldOut,
+			Listing: item.Listing,
+		})
+	}
+	return goods, nil
+}
+
+func (c *Client) do(ctx context.Context, path string, body, out any) error {
+	return c.send(ctx, http.MethodPost, path, body, out)
+}
+
+func (c *Client) get(ctx context.Context, path string, out any) error {
+	return c.send(ctx, http.MethodGet, path, nil, out)
+}
+
+func (c *Client) send(ctx context.Context, method, path string, body, out any) error {
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("no se pudo serializar el request de %s: %w", path, err)
+		}
+		reader = bytes.NewReader(payload)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
 		return fmt.Errorf("no se pudo armar el request de %s: %w", path, err)
 	}
@@ -213,7 +307,9 @@ func (c *Client) do(ctx context.Context, path string, body, out any) error {
 	for name, value := range SignatureHeaders(c.key, c.secret, c.now()) {
 		req.Header.Set(name, value)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

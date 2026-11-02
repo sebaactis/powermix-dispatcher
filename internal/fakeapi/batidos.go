@@ -4,9 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"compras-remotas/internal/dispenser/batidos"
+)
+
+const (
+	batidosDeviceDetailPath = "/coffee/newThird/device/detail/"
+	batidosDeviceGoodsPath  = "/coffee/newThird/goods/deviceGoodsDetail/"
+	batidosDeviceTypeID     = "dt-1"
 )
 
 type batidosCode struct {
@@ -19,18 +26,69 @@ type batidosCode struct {
 	used     bool
 }
 
+type batidosDeviceState struct {
+	offline    bool
+	abnormal   bool
+	outOfStock bool
+}
+
 type Batidos struct {
 	key    string
 	secret string
 
-	mu     sync.Mutex
-	next   int
-	orders int
-	codes  map[string]*batidosCode
+	mu      sync.Mutex
+	next    int
+	orders  int
+	codes   map[string]*batidosCode
+	devices map[string]*batidosDeviceState
+	goods   map[string][]batidos.DeviceGoods
 }
 
 func NewBatidos(key, secret string) *Batidos {
-	return &Batidos{key: key, secret: secret, codes: make(map[string]*batidosCode)}
+	return &Batidos{
+		key:     key,
+		secret:  secret,
+		codes:   make(map[string]*batidosCode),
+		devices: make(map[string]*batidosDeviceState),
+		goods:   make(map[string][]batidos.DeviceGoods),
+	}
+}
+
+func (g *Batidos) SetDeviceOffline(deviceID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.deviceState(deviceID).offline = true
+}
+
+func (g *Batidos) SetDeviceAbnormal(deviceID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.deviceState(deviceID).abnormal = true
+}
+
+func (g *Batidos) SetDeviceOutOfStock(deviceID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.deviceState(deviceID).outOfStock = true
+}
+
+func (g *Batidos) SetDeviceGoods(deviceID string, goods []batidos.DeviceGoods) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.goods[deviceID] = append([]batidos.DeviceGoods(nil), goods...)
+}
+
+func (g *Batidos) deviceState(deviceID string) *batidosDeviceState {
+	state, ok := g.devices[deviceID]
+	if !ok {
+		state = &batidosDeviceState{}
+		g.devices[deviceID] = state
+	}
+	return state
 }
 
 func (g *Batidos) Advance(code string, status int) {
@@ -48,16 +106,34 @@ func (g *Batidos) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.URL.Path {
-	case "/coffee/newThird/active/v2/submit":
+	switch {
+	case r.URL.Path == "/coffee/newThird/active/v2/submit":
 		g.submitCampaign(w, r)
-	case "/coffee/newThird/order/produceCoffee":
+	case r.URL.Path == "/coffee/newThird/order/produceCoffee":
 		g.produceCoffee(w, r)
-	case "/coffee/newThird/order/getOrderInfo":
+	case r.URL.Path == "/coffee/newThird/order/getOrderInfo":
 		g.getOrderInfo(w, r)
+	case strings.HasPrefix(r.URL.Path, batidosDeviceDetailPath):
+		if !requireGet(w, r) {
+			return
+		}
+		g.deviceDetail(w, r)
+	case strings.HasPrefix(r.URL.Path, batidosDeviceGoodsPath):
+		if !requireGet(w, r) {
+			return
+		}
+		g.deviceGoodsDetail(w, r)
 	default:
 		respondBatidos(w, http.StatusNotFound, 400, "ruta desconocida", nil)
 	}
+}
+
+func requireGet(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet {
+		return true
+	}
+	respondBatidos(w, http.StatusMethodNotAllowed, 405, "el endpoint sólo admite GET", nil)
+	return false
 }
 
 func (g *Batidos) checkSignature(r *http.Request) error {
@@ -233,6 +309,63 @@ func (g *Batidos) getOrderInfo(w http.ResponseWriter, r *http.Request) {
 		respondBatidos(w, http.StatusBadRequest, 400, "código de canje desconocido", nil)
 		return
 	}
+	respondBatidos(w, http.StatusOK, 200, "操作成功", payload)
+}
+
+func (g *Batidos) deviceDetail(w http.ResponseWriter, r *http.Request) {
+	deviceID := strings.TrimPrefix(r.URL.Path, batidosDeviceDetailPath)
+	if deviceID == "" {
+		respondBatidos(w, http.StatusBadRequest, 400, "falta el deviceId en la ruta", nil)
+		return
+	}
+
+	g.mu.Lock()
+	state := g.deviceState(deviceID)
+	status, runStatus, scarceStatus := 1, 1, 1
+	if state.offline {
+		status = 2
+	}
+	if state.abnormal {
+		runStatus = 2
+	}
+	if state.outOfStock {
+		scarceStatus = 3
+	}
+	g.mu.Unlock()
+
+	respondBatidos(w, http.StatusOK, 200, "操作成功", map[string]any{
+		"id":              deviceID,
+		"deviceNo":        deviceID,
+		"name":            deviceID,
+		"deviceTypeId":    batidosDeviceTypeID,
+		"status":          status,
+		"deviceRunStatus": runStatus,
+		"scarceStatus":    scarceStatus,
+	})
+}
+
+func (g *Batidos) deviceGoodsDetail(w http.ResponseWriter, r *http.Request) {
+	deviceID := strings.TrimPrefix(r.URL.Path, batidosDeviceGoodsPath)
+	if deviceID == "" {
+		respondBatidos(w, http.StatusBadRequest, 400, "falta el deviceId en la ruta", nil)
+		return
+	}
+
+	g.mu.Lock()
+	catalogue := g.goods[deviceID]
+	payload := make([]map[string]any, 0, len(catalogue))
+	for _, item := range catalogue {
+		payload = append(payload, map[string]any{
+			"id":      item.ID,
+			"no":      item.No,
+			"name":    item.Name,
+			"price":   item.Price,
+			"soldOut": item.SoldOut,
+			"listing": item.Listing,
+		})
+	}
+	g.mu.Unlock()
+
 	respondBatidos(w, http.StatusOK, 200, "操作成功", payload)
 }
 

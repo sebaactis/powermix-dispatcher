@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,10 @@ import (
 )
 
 const shipmentPath = "/open/v7/device/remote/shipment"
+
+const devicesPath = "/open/v7/device/page"
+
+const slotsPath = "/open/v7/device/slotlist"
 
 const defaultTimeout = 10 * time.Second
 
@@ -35,6 +41,105 @@ type ShipmentProduct struct {
 	RetailPrice float64
 }
 
+type OnlineStatus int
+
+const (
+	OnlineStatusOffline OnlineStatus = 0
+	OnlineStatusOnline  OnlineStatus = 1
+)
+
+type SellStatus int
+
+const (
+	SellStatusNormal     SellStatus = 1
+	SellStatusSuspended  SellStatus = 2
+	SellStatusProhibited SellStatus = 3
+)
+
+type FaultState int
+
+const (
+	FaultStateNormal          FaultState = 0
+	FaultStateFault           FaultState = 1
+	FaultStateOverTemperature FaultState = 2
+)
+
+type LockType int
+
+const (
+	LockTypeNormal LockType = 0
+)
+
+type StockoutState int
+
+const (
+	StockoutStateNormal     StockoutState = 0
+	StockoutStateOutOfStock StockoutState = 1
+)
+
+type Device struct {
+	DeviceCode string
+
+	DeviceName string
+
+	DeviceTypeName string
+
+	OnlineStatus OnlineStatus
+
+	SellStatus SellStatus
+
+	FaultState FaultState
+
+	LockType LockType
+
+	StockoutState StockoutState
+
+	ShortageAlarmNumber int
+}
+
+type DevicesPage struct {
+	Page int
+
+	PageSize int
+
+	Total int
+
+	TotalPages int
+
+	HasPrevPage bool
+
+	HasNextPage bool
+
+	Items []Device
+}
+
+type SlotStatus int
+
+const (
+	SlotStatusNormal      SlotStatus = 1
+	SlotStatusMalfunction SlotStatus = 2
+	SlotStatusDisabled    SlotStatus = 3
+	SlotStatusNotFound    SlotStatus = 255
+)
+
+type Slot struct {
+	SlotID string
+
+	SlotNo string
+
+	SlotStatus SlotStatus
+
+	Stock int
+
+	Capacity int
+
+	ProductID string
+
+	ProductName string
+
+	Price float64
+}
+
 type APIError struct {
 	HTTPStatus int
 	Code       int
@@ -42,7 +147,7 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("snacks: la API rechazó el despacho (http=%d, code=%d): %s", e.HTTPStatus, e.Code, e.Message)
+	return fmt.Sprintf("snacks: la API rechazó la llamada (http=%d, code=%d): %s", e.HTTPStatus, e.Code, e.Message)
 }
 
 type Option func(*Client)
@@ -141,6 +246,129 @@ func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Attem
 		Ref:      subOrderID(env.Result),
 		Detail:   "despacho encolado: el resultado real llega por callback",
 	}, nil
+}
+
+func (c *Client) Devices(ctx context.Context, page, pageSize int, deviceCode string) (DevicesPage, error) {
+	query := url.Values{}
+	query.Set("Page", strconv.Itoa(page))
+	query.Set("PageSize", strconv.Itoa(pageSize))
+	if deviceCode != "" {
+		query.Set("DeviceCode", deviceCode)
+	}
+
+	var result devicesResultBody
+	if err := c.get(ctx, devicesPath, query, &result); err != nil {
+		return DevicesPage{}, err
+	}
+
+	devices := make([]Device, 0, len(result.Items))
+	for _, item := range result.Items {
+		devices = append(devices, Device{
+			DeviceCode:          item.DeviceCode,
+			DeviceName:          item.DeviceName,
+			DeviceTypeName:      item.DeviceTypeName,
+			OnlineStatus:        OnlineStatus(item.OnlineStatus),
+			SellStatus:          SellStatus(item.SellStatus),
+			FaultState:          FaultState(item.FaultState),
+			LockType:            LockType(item.LockType),
+			StockoutState:       StockoutState(item.StockoutState),
+			ShortageAlarmNumber: item.ShortageAlarmNumber,
+		})
+	}
+
+	return DevicesPage{
+		Page:        result.Page,
+		PageSize:    result.PageSize,
+		Total:       result.Total,
+		TotalPages:  result.TotalPages,
+		HasPrevPage: result.HasPrevPage,
+		HasNextPage: result.HasNextPage,
+		Items:       devices,
+	}, nil
+}
+
+func (c *Client) Slots(ctx context.Context, deviceCode string) ([]Slot, error) {
+	query := url.Values{}
+	if deviceCode != "" {
+		query.Set("DeviceCode", deviceCode)
+	}
+
+	var result []slotItemBody
+	if err := c.get(ctx, slotsPath, query, &result); err != nil {
+		return nil, err
+	}
+
+	slots := make([]Slot, 0, len(result))
+	for _, item := range result {
+		slots = append(slots, Slot{
+			SlotID:      string(item.SlotID),
+			SlotNo:      string(item.SlotNo),
+			SlotStatus:  SlotStatus(item.SlotStatus),
+			Stock:       item.Stock,
+			Capacity:    item.Capacity,
+			ProductID:   string(item.ProductID),
+			ProductName: item.ProductName,
+			Price:       item.Price,
+		})
+	}
+	return slots, nil
+}
+
+func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
+	endpoint := c.baseURL + path
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+
+	headers, err := SignatureHeaders(c.accessKey, c.appSecret, http.MethodGet, path, c.now())
+	if err != nil {
+		return err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("snacks: no se pudo armar el request de %s: %w", path, err)
+	}
+	for name, value := range headers {
+		httpReq.Header.Set(name, value)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("snacks: no se pudo consultar %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("snacks: no se pudo leer la respuesta de %s: %w", path, err)
+	}
+
+	var env envelope
+	decodeErr := json.Unmarshal(payload, &env)
+
+	rejected := resp.StatusCode < 200 || resp.StatusCode >= 300 || (env.Code != 0 && env.Code != 200)
+	if rejected {
+		message := env.Message
+		if message == "" {
+			message = strings.TrimSpace(string(payload))
+		}
+		return &APIError{
+			HTTPStatus: resp.StatusCode,
+			Code:       env.Code,
+			Message:    message,
+		}
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("snacks: la respuesta de %s no es el JSON esperado: %w", path, decodeErr)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(env.Result, out); err != nil {
+		return fmt.Errorf("snacks: la respuesta de %s no se pudo interpretar: %w", path, err)
+	}
+	return nil
 }
 
 func (c *Client) body(req ShipmentRequest) shipmentBody {
