@@ -101,9 +101,9 @@ Ruta: `inline` = la hace el orquestador; `worker` = delegable a un subagente. Co
 - [x] **T1** Esqueleto Go — `cmd/api` con `/healthz`, topología validada al arrancar (un kiosco sin una máquina de cada tipo no levanta)
 - [x] **T4** Servidores falsos + vectores de firma — `internal/fakeapi`, 4 vectores calculados con `openssl`
 - [x] **T5** Modelo de datos — `migrations/0001_init.sql`, aplicada en Postgres 16 real
-- [ ] T2 Driver Batidos (cliente de los 3 endpoints)
-- [ ] T3 Driver Snacks (cliente de despacho)
-- [ ] T6 Catálogo y chequeo previo
+- [x] **T2** Cliente de Batidos — campaña, canje y consulta; 6 tests
+- [x] **T3** Cliente de Snacks — despacho remoto con nonce por intento; 7 tests
+- [x] **T6** Catálogo y chequeo previo — lecturas de dispositivo y producto en las dos APIs (GET firmado) más el paquete `internal/preflight` con la regla de decisión; 33 tests nuevos. Queda pendiente el adaptador por máquina del puerto (`Dispenser.Check`), que sigue sin implementación.
 - [ ] T7 Pagos + reembolso mock
 - [ ] T8 Motor de orden
 - [ ] T9 Reintentos y reconciliación
@@ -325,6 +325,25 @@ Convención completa de idioma del proyecto, ya sin ambigüedad: identificadores
 Criterio: si el struct existe para copiar su JSON, va a `wire.go`; si existe para que el motor hable con el cliente, se queda en `client.go`. Los tipos públicos (`CampaignRequest`, `OrderInfo`, `ShipmentRequest`) son interfaz nuestra y se quedan junto a sus métodos. No se usa un `types.go`: agrupar por categoría degenera en un cajón.
 
 Resultado: `batidos/client.go` 303 → 250 líneas + `wire.go` 56; `snacks/client.go` 202 → 180 + `wire.go` 25. Sin cambios de comportamiento: la suite quedó en verde sin tocar un test. Las secciones de `docs/comentarios-codigo.md` se mudaron con los structs para que el índice siga diciendo la verdad sobre dónde vive cada cosa.
+
+**L28 — T6: catálogo y chequeo previo.** Lo que el sistema necesita para no cobrar algo que no puede entregar.
+
+Se agregó, en las dos APIs, las lecturas que faltaban: en Batidos `Device` (estado de la máquina) y `DeviceGoods` (catálogo por máquina, con `listing` y `soldOut`); en Snacks `Devices` (página de máquinas con sus cinco estados) y `Slots` (canales con stock y estado). Las cuatro son GET y van firmadas igual que los POST. Los servidores falsos las sirven con la misma verificación de firma y anti-replay, y ganaron setters para forzar cada estado.
+
+Y el paquete nuevo `internal/preflight`, que es la regla: consulta las dos máquinas y los dos productos, acumula **todas** las razones de bloqueo en lugar de cortar en la primera, y declara vendible solo cuando no hay ninguna. No cobra, no dispara y no convierte un error en razón: un fallo del proveedor vuelve como error y el llamador decide no vender.
+
+Decisiones que se fijaron, todas conservadoras:
+- `soldOut` bloquea con cualquier valor distinto de 0, así que el `-1` ambiguo del proveedor bloquea. Se bloquea antes que prometer.
+- Los estados se comparan contra «normal», no contra una lista de valores malos: un código nuevo del proveedor bloquea en vez de pasar como sano.
+- Un SKU de snacks con stock pero solo en canales deshabilitados reporta «canal no vendible», no «sin stock», porque lo segundo sería falso. Las tres causas de canal son excluyentes: evaluarlas por separado daría vendible cuando un canal tiene el estado y otro el stock.
+
+Verificación: `gofmt` y `go vet` sin salida, `go test ./...` con **8 paquetes en verde y 75 tests** (antes 42). El test que más importa del fake nuevo es el que firma la ruta **con** la query y exige 40004: si el falso empezara a aceptarla, el cliente podría firmar mal sin que nada lo note.
+
+Desviación declarada por el worker de `preflight`: escribió la implementación antes que los tests y observó el rojo con dos mutaciones temporales (una devolvía siempre vendible, otra cambiaba `!= 0` por `== 1`). El rojo se observó, pero no en el orden que pide el flujo.
+
+Sigue pendiente: `Dispenser.Check` por máquina, la reconciliación (T9) y todo el motor (T8).
+
+Pendiente operativo: hay un `/tmp/checker.go.bak` fuera del repositorio que quedó de esas mutaciones; no afecta al proyecto.
 
 Consecuencia que el dueño del producto aceptó al decidirlo: **este documento y las láminas no tienen historial de versiones.** Son la memoria del proyecto —decisiones, specs, huecos abiertos— y ahora existen solo en el disco. Se lo advirtió explícitamente; la decisión de respaldarlo o moverlo a un repositorio privado separado es suya.
 

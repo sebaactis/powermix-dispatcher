@@ -234,6 +234,30 @@ Formato: `Símbolo --> "texto del comentario"`.
 > El error de red se devuelve envuelto y sin recortar: el motor necesita
 > distinguir "no hubo respuesta" (E4) de un rechazo explícito (E2).
 
+### devicePath / deviceGoodsPath
+
+> Rutas de lectura de Batidos, las que alimentan el chequeo previo: antes de generar el QR hay que saber si la máquina está sana y si el producto se puede vender (S10). A diferencia de los tres endpoints de pedido, se invocan con GET.
+
+### DeviceStatus / DeviceRunStatus / ScarceStatus
+
+> Tres ejes distintos, y por eso son tres tipos: conexión (1 en línea, 2 fuera de línea), avería (1 normal, 2 avería) e insumos (1 normal, 3 sin stock). Una máquina conectada puede estar averiada, y ese es justo el caso que el chequeo previo tiene que frenar. El enum de insumos no es contiguo en la fuente: salta de 1 a 3 y el 2 no está documentado, así que no se le inventa significado.
+
+### Device
+
+> Lo que el chequeo previo necesita saber de la máquina antes de cobrar. Los tres estados se exponen como tipos con constantes para que quien decide no compare números crudos.
+
+### DeviceGoods
+
+> Un producto del catálogo de una máquina. `SoldOut` queda como int crudo a propósito: la tabla del proveedor documenta 0/1 pero todos sus ejemplos devuelven -1, así que el significado real no está confirmado. `Price` es el precio de lista que informa el proveedor; no es dinero con el que se calcule un cobro.
+
+### Device / DeviceGoods (métodos)
+
+> Lecturas puras: no cambian nada en el proveedor, no reintentan, no loguean. Un catálogo vacío es una respuesta válida (la máquina no tiene productos cargados), no un error: qué hacer con eso lo decide el chequeo previo.
+
+### do / get / send
+
+> `do` sigue siendo el POST de los tres endpoints de pedido y conserva su firma para que ningún llamador cambie; sólo delega en `send`. `get` es la lectura: mismo esquema de firma, porque el proveedor exige key, timestamp y key-md5 en todos sus endpoints, y sin cuerpo ni Content-Type, porque mandarlos sería inventar un contrato que la documentación no pide. El error de red vuelve envuelto y sin recortar: el motor necesita distinguir «no hubo respuesta» (E4) de un rechazo explícito (E2).
+
 ## internal/dispenser/batidos/client_test.go
 
 ### (archivo)
@@ -299,6 +323,18 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El handler se libera cuando el test termina, así srv.Close no espera al
 > request abandonado.
+
+### deviceWireResponse
+
+> Copia lo que devuelve device/detail, sólo los campos que el chequeo previo necesita. El proveedor manda además la contraseña del equipo (devicePwd), el comercio y las curvas de temperatura: no se piden ni se guardan.
+
+### deviceGoodsWireResponse
+
+> Un producto de goods/deviceGoodsDetail. `listing` no figura en la tabla de parámetros pero sí en todos los ejemplos de respuesta; se lee tal cual.
+
+### stateNumber
+
+> Acepta el estado como número o como texto. La tabla del proveedor declara String para deviceRunStatus y scarceStatus mientras sus ejemplos los muestran como número, y un ejemplo de la lista de máquinas los muestra entre comillas: se toleran las dos formas para que un cambio de tipo no rompa el chequeo previo. Un valor no numérico es un error, nunca un cero silencioso.
 
 ## internal/dispenser/batidos/sign.go
 
@@ -568,6 +604,34 @@ Formato: `Símbolo --> "texto del comentario"`.
 > del PDF devuelve `result: {}`, así que en la práctica suele venir vacío y la
 > referencia real aparece recién en el callback.
 
+### devicesPath / slotsPath
+
+> Las dos lecturas del chequeo previo de snacks: la página de máquinas dice si el equipo existe, está en línea y se puede vender; la lista de canales dice si el producto pedido tiene unidades. v7 por la misma razón que el despacho: la documentación pide v7 fuera de China continental.
+
+### OnlineStatus / SellStatus / FaultState / LockType / StockoutState
+
+> Cinco preguntas distintas sobre la misma máquina, y por eso cinco tipos: conexión (0/1), venta suspendida o prohibida (1/2/3), avería o sobretemperatura (0/1/2), bloqueo (sólo el 0 está documentado; cualquier otro valor bloquea y se expone crudo para no inventar nombres) y máquina entera sin stock (0/1). Una máquina en línea puede tener la venta suspendida: son ejes independientes.
+
+### Device / DevicesPage / Slot / SlotStatus
+
+> `DevicesPage` se expone paginada porque el proveedor exige Page y PageSize: no hay lectura de «todas». `Slot` informa stock y estado del canal por separado a propósito: son dos motivos distintos por los que un canal no puede vender. `SlotStatus` 255 no es un error de red, es un canal que el proveedor no reconoce.
+
+### Devices
+
+> Lee una página de máquinas, opcionalmente filtrada por DeviceCode. La query NO entra en la firma: la cadena canónica cubre sólo la ruta, y firmar el endpoint con la query produce 40004 en todas las llamadas.
+
+### Slots
+
+> Lee los canales de una máquina. El result es una lista, no una página: el proveedor no la pagina. Sin DeviceCode el proveedor no sabe de qué máquina hablar, así que en la práctica se pasa siempre. Devuelve lista vacía, nunca nil, cuando no hay canales.
+
+### get
+
+> Firma la ruta pelada y arma la URL con la query **después** de firmar: son dos cosas distintas y confundirlas invalida toda la llamada. El mensaje de un rechazo se toma del sobre y, si no vino, del cuerpo crudo, porque un 400 del proveedor puede no ser JSON.
+
+### APIError
+
+> El mensaje dice «la API rechazó la llamada» y no «el despacho», porque el tipo lo comparten el despacho y las dos lecturas del chequeo previo.
+
 ## internal/dispenser/snacks/client_test.go
 
 ### (archivo)
@@ -714,6 +778,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 > envelope es la respuesta del proveedor. El ejemplo de error del PDF devuelve
 > `code` y `message`; el de éxito repite `code: 200` con `result` vacío.
 
+### devicesResultBody / deviceItemBody / slotItemBody
+
+> Copian la página de máquinas y los canales tal como llegan. page, pageSize, total, totalPages, hasPrevPage y hasNextPage se pasan verbatim: el proveedor ya los calcula y recalcularlos es una forma de mentirle al llamador.
+
+### scalarText
+
+> Acepta un string o un número y lo deja como string. La documentación no fija el tipo de slotId, slotNo ni productId, y un identificador no debería romper la lectura por cómo vino escrito. Es el mismo problema que resuelve stateNumber en batidos, al revés.
+
 ## internal/fakeapi/batidos.go
 
 ### (archivo)
@@ -792,6 +864,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > SetResult simula el callback asincrónico de despacho para todos los productos
 > de una orden: estado 1 significa que salió, 0 que falló con un motivo.
+
+### (chequeo previo)
+
+> Los dos servidores falsos ahora también sirven las lecturas del chequeo previo, con la misma verificación de firma y anti-replay que el despacho: un nonce es de un solo uso también en las lecturas, si no una firma capturada podría repetir la consulta indefinidamente. El ruteo es por ruta exacta, y un POST a una ruta documentada como GET responde 405: es error del llamador, no «ruta desconocida».
+
+> Los setters (`SetDeviceOffline`, `SetSellStatus`, `SetSlotStock`, etc.) existen para provocar las formas en que una máquina no está vendible sin escribir respuestas a mano. Todo arranca sano: el falso sólo miente cuando un test se lo pide.
+
+> El test que más importa del fake es el que firma la ruta **con** la query y exige un 40004. Si algún día el falso empezara a aceptarla, el cliente podría firmar mal sin que ningún test lo note.
 
 ## internal/logging/logging.go
 
@@ -948,3 +1028,55 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### catalog_snapshot
 > Última foto conocida de lo que cada máquina puede vender; la usa el chequeo
 > previo que habilita el QR. machine_key es "<kiosk_id>:<machine_type>".
+
+## internal/preflight/checker.go
+
+### (archivo)
+
+> Package preflight responde una sola pregunta: ¿este mueble puede vender este combo ahora mismo, y si no, por qué no?
+>
+> Nace de S10 (sin conexión o sin producto, la venta se bloquea) y de S8 (el QR se genera solo cuando todo está sano). No cobra, no dispara y no decide qué hacer con un error: eso es del motor de órdenes.
+
+### Batidos / Snacks (interfaces)
+
+> Son lo que este paquete necesita de cada API, y nada más. Las declara el consumidor a propósito: así el chequeo no arrastra el cliente ni su configuración, y se prueba entero sin HTTP.
+
+### Request
+
+> Identifica las dos máquinas y los dos productos de un combo fijo (S3). BatidosSKU es el goodsId del catálogo: el mismo identificador que después exige produceCoffee, así que un catálogo que responde no garantiza que el canje vaya a aceptarlo.
+
+### Reason
+
+> Una causa de bloqueo, como cadena estable y legible por máquina. Es string y no int para que una razón desconocida se pueda leer y para no romper nada si falta una.
+
+### ReasonBatidosSKUSoldOut
+
+> La comparación es `soldOut != 0` y no `soldOut == 1` porque la documentación del proveedor dice 0/1 pero sus propios ejemplos devuelven -1. Ante el valor ambiguo se bloquea antes que prometer: es conservador a propósito. Cuando el proveedor aclare el -1, este es el único lugar a cambiar.
+
+### ReasonSnacksSlotNotSellable
+
+> El SKU tiene stock, pero solo en slots que no están en estado normal. No se reporta como «sin stock» porque sería falso: lo que falta es un slot vendible.
+
+### Result
+
+> El veredicto y la lista completa de causas. Sellable es verdadero solo cuando la lista está vacía, y las razones se acumulan: el operador necesita ver todos los problemas de una vez, no el primero.
+
+### Checker / New
+
+> Consulta las dos máquinas para un combo, sin estado ni caché: cada llamada es una foto nueva. Recibe interfaces y no clientes concretos para que el motor de órdenes pueda sustituirlos en las pruebas.
+
+### Check
+
+> Consulta los cuatro datos siempre, incluso cuando la primera máquina ya falló, y recién después decide. Un error de proveedor o de red se devuelve como error junto con un Result vacío; nunca se disfraza de razón. La regla de negocio es del llamador: acá no se decide no vender, solo se informa que no se pudo averiguar. Los dos errores se juntan con errors.Join para no perder el de la segunda máquina.
+
+### checkBatidos
+
+> Revisa estado, funcionamiento e insumos del dispositivo y después el producto en el catálogo, que solo vende si está listado y no agotado. Todos los estados se comparan contra «normal» y no contra una lista de valores malos: un código nuevo del proveedor bloquea, no se interpreta como sano.
+
+### checkSnacks
+
+> Revisa primero el dispositivo en la página y sus cinco estados, después los slots del producto. La página es 1 con tamaño 10: el mueble tiene una sola máquina de snacks. Si el código no aparece, se devuelve solo «no encontrado» y no se derivan razones de slot, porque los slots de un código inexistente no describen este mueble; igual se consultan, para que un error del proveedor no quede escondido detrás de la razón.
+
+### slotReasons
+
+> Decide si algún slot puede entregar el SKU y, si ninguno puede, cuál de las tres causas es la verdadera: no está cargado, tiene stock en slots no vendibles, o está agotado. El orden importa y son excluyentes: evaluar stock y estado por separado daría «vendible» cuando un slot tiene el estado y otro el stock, y ningún slot puede entregar nada.
