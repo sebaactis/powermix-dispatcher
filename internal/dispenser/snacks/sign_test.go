@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Vectores calculados con `openssl dgst -sha256 -hmac` + base64, independientes
-// de esta implementación.
 func TestSignMatchesReference(t *testing.T) {
 	cases := []struct {
 		name                    string
@@ -41,8 +39,6 @@ func TestSignMatchesReference(t *testing.T) {
 	}
 }
 
-// La cadena canónica tiene un orden y separadores exactos: cambiar el orden
-// cambia la firma.
 func TestCanonicalStringOrder(t *testing.T) {
 	got := Canonical("POST", "/open/v7/device/remote/shipment", "1751234567890", "abc123")
 	want := "POST\n/open/v7/device/remote/shipment\n1751234567890\nabc123"
@@ -51,7 +47,6 @@ func TestCanonicalStringOrder(t *testing.T) {
 	}
 }
 
-// El nonce debe ser hex de 32 caracteres sin guiones y no repetirse.
 func TestNewNonceIsUniqueHexWithoutHyphens(t *testing.T) {
 	seen := make(map[string]struct{}, 2000)
 

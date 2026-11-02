@@ -66,7 +66,7 @@ func TestLoadUsesProductionURLWhenEnvironmentIsProduction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	// Host de producción tal como figura en la documentación del proveedor.
+
 	if cfg.SnacksBaseURL != "https://ysopenapi.ourvend.com" {
 		t.Fatalf("snacks base url = %q, se esperaba el host de producción documentado", cfg.SnacksBaseURL)
 	}

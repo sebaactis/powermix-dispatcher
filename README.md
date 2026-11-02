@@ -37,7 +37,13 @@ internal/fakeapi            local Batidos and Snacks, with their real rules enfo
 internal/payments           Refunder port + mock that never moves money
 internal/notify             Notifier port + structured log transport
 migrations                 PostgreSQL schema
+docs                       comments and rationale, kept out of the code
 ```
+
+The source carries **no comments on purpose**. Every explanation, warning and
+decision lives in `docs/comentarios-codigo.md`, indexed by symbol
+(`Símbolo --> "texto"`). Keep it updated when behaviour changes; a stale note is
+worse than none.
 
 ## Run
 

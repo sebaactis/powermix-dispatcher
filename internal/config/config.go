@@ -1,8 +1,3 @@
-// Package config carga la topología del sistema (muebles y máquinas) desde un
-// archivo JSON y las credenciales desde variables de entorno.
-//
-// Separación deliberada: el archivo describe *qué* hay instalado, el entorno
-// guarda *los secretos*. Así el archivo se puede versionar sin filtrar claves.
 package config
 
 import (
@@ -24,36 +19,27 @@ const (
 	EnvSandbox    = "sandbox"
 	EnvProduction = "production"
 
-	// Documentado en "YS Vending Management Platform API Document V1.0.1".
-	// El host de producción es el que documenta el proveedor. No se renombra con
-	// el nombre de la máquina: es un contrato ajeno.
 	SnacksSandboxURL    = "http://47.110.236.144:5130"
 	SnacksProductionURL = "https://ysopenapi.ourvend.com"
 )
 
-// Machine es una máquina física dentro de un mueble.
 type Machine struct {
 	Type MachineType `json:"type"`
 	Name string      `json:"name"`
 
-	// Máquina de batidos. La API necesita los tres: deviceId y deviceNo son
-	// identificadores distintos y produceCoffee pide ambos.
 	DeviceID     string `json:"device_id"`
 	DeviceNo     string `json:"device_no"`
 	DeviceTypeID string `json:"device_type_id"`
 
-	// Máquina de snacks.
 	MID string `json:"mid"`
 }
 
-// Kiosk es el mueble físico: dos máquinas y la tablet en el medio.
 type Kiosk struct {
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
 	Machines []Machine `json:"machines"`
 }
 
-// Machine devuelve la máquina del tipo pedido, si el mueble tiene una.
 func (k Kiosk) Machine(t MachineType) (Machine, bool) {
 	for _, m := range k.Machines {
 		if m.Type == t {
@@ -63,7 +49,6 @@ func (k Kiosk) Machine(t MachineType) (Machine, bool) {
 	return Machine{}, false
 }
 
-// Config es la configuración ya resuelta y validada.
 type Config struct {
 	Env string
 
@@ -97,8 +82,6 @@ type fileConfig struct {
 	Kiosks  []Kiosk     `json:"kiosks"`
 }
 
-// Load lee el archivo de topología, aplica los reemplazos de secretos desde el
-// entorno, resuelve los valores por defecto documentados y valida el resultado.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -214,9 +197,6 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// Un combo siempre empareja una bebida con un snack, así que cada mueble debe
-// tener exactamente una máquina de cada tipo. Cualquier otra cosa se detecta
-// acá y no en el momento de la venta.
 func kioskProblems(kiosk Kiosk) []string {
 	var problems []string
 

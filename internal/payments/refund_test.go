@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// El mock existe para no bloquear el motor mientras no haya proveedor de pagos:
-// registra la intención de devolución pero nunca mueve dinero.
 func TestMockRefunderNeverMovesMoney(t *testing.T) {
 	var buf bytes.Buffer
 	refunder := NewMockRefunder(slog.New(slog.NewTextHandler(&buf, nil)))

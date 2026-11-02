@@ -26,7 +26,6 @@ type shipmentResult struct {
 	reason    string
 }
 
-// Snacks es el sustituto local de la API abierta de snacks.
 type Snacks struct {
 	accessKey string
 	appSecret string
@@ -67,7 +66,6 @@ func (o *Snacks) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Anti-replay: un nonce es de un solo uso durante diez minutos.
 	nonce := r.Header.Get("nonce")
 	o.mu.Lock()
 	_, replayed := o.nonces[nonce]
@@ -138,7 +136,6 @@ func (o *Snacks) pruneNoncesLocked(now time.Time) {
 	}
 }
 
-// ShipmentCount informa cuántos pedidos de despacho se aceptaron para una orden.
 func (o *Snacks) ShipmentCount(paymentOrderID string) int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -149,8 +146,6 @@ func (o *Snacks) ShipmentCount(paymentOrderID string) int {
 	return 0
 }
 
-// SetResult simula el callback asincrónico de despacho para todos los productos
-// de una orden: estado 1 significa que salió, 0 que falló con un motivo.
 func (o *Snacks) SetResult(paymentOrderID string, status int, reason string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

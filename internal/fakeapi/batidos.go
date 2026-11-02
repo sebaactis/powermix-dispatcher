@@ -1,11 +1,3 @@
-// Package fakeapi provee sustitutos locales de los dos backends de máquinas.
-//
-// Existen para poder ejercitar el flujo completo sin credenciales ni máquinas
-// reales, y para que el contrato de red (firmas, reloj, códigos de un solo uso,
-// replay de nonce) falle en un test y no delante de un cliente.
-//
-// Reflejan lo que dice la documentación. Donde la documentación calla, el falso
-// no inventa comportamiento: queda anotado en el código.
 package fakeapi
 
 import (
@@ -27,7 +19,6 @@ type batidosCode struct {
 	used     bool
 }
 
-// Batidos es el sustituto local de la API de comercio de Batidos.
 type Batidos struct {
 	key    string
 	secret string
@@ -42,8 +33,6 @@ func NewBatidos(key, secret string) *Batidos {
 	return &Batidos{key: key, secret: secret, codes: make(map[string]*batidosCode)}
 }
 
-// Advance simula el callback del proveedor moviendo una orden a un estado nuevo
-// (1 preparando, 2 completado, 0 falló).
 func (g *Batidos) Advance(code string, status int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -71,9 +60,6 @@ func (g *Batidos) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// checkSignature replica la autenticación documentada: key, timestamp y
-// MD5(key+secret+timestamp). La documentación no describe una ventana de tiempo
-// para esta API, así que acá no se exige ninguna.
 func (g *Batidos) checkSignature(r *http.Request) error {
 	key := r.Header.Get("key")
 	timestamp := r.Header.Get("timestamp")
@@ -117,8 +103,6 @@ func (g *Batidos) submitCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// El proveedor lee estas dos fechas como UTC+8. Una ventana construida con
-	// hora local es una ventana en el futuro, así que se valida a propósito.
 	start, err := batidos.ParseCampaignTime(req.StartTime)
 	if err != nil {
 		respondBatidos(w, http.StatusBadRequest, 400, "startTime debe tener el formato yyyy-MM-dd HH:mm:ss", nil)
@@ -155,8 +139,6 @@ func (g *Batidos) submitCampaign(w http.ResponseWriter, r *http.Request) {
 	activeNo := fmt.Sprintf("AD%06d", g.next)
 	g.mu.Unlock()
 
-	// "操作成功" es literalmente el mensaje que devuelve el proveedor: se
-	// conserva para que el falso se parezca al original.
 	respondBatidos(w, http.StatusOK, 200, "操作成功", map[string]any{
 		"exchangeCodes": []string{code},
 		"activeInfo": map[string]any{
@@ -206,7 +188,7 @@ func (g *Batidos) produceCoffee(w http.ResponseWriter, r *http.Request) {
 
 	g.orders++
 	c.used = true
-	c.status = 1 // preparando: aceptado no es entregado
+	c.status = 1
 	c.deviceID = req.DeviceID
 	c.deviceNo = req.DeviceNo
 	c.orderNo = fmt.Sprintf("A%06d", g.orders)

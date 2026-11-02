@@ -1,8 +1,3 @@
-// Package notify aísla cómo llega una excepción hasta una persona.
-//
-// El transporte sigue abierto (S18): hoy escribe una línea de log estructurada,
-// y más adelante se puede enchufar un emisor de Telegram o WhatsApp sin tocar el
-// motor de órdenes.
 package notify
 
 import (
@@ -10,9 +5,8 @@ import (
 	"log/slog"
 )
 
-// Event es una excepción que merece la atención de una persona.
 type Event struct {
-	Kind    string // por ejemplo "line_in_doubt", "line_failed", "partial_delivery"
+	Kind    string
 	OrderID string
 	LineID  string
 	Detail  string
@@ -22,7 +16,6 @@ type Notifier interface {
 	Notify(ctx context.Context, ev Event) error
 }
 
-// LogNotifier escribe el evento como una línea de log estructurada.
 type LogNotifier struct {
 	logger *slog.Logger
 }

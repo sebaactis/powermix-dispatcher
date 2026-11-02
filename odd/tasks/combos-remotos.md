@@ -302,6 +302,30 @@ Lo que sí se versiona, por ser trabajo propio: código, migraciones, tests, `od
 
 Corrección de lo afirmado en L22: ese párrafo decía que `odd/` y `design/` se versionaban. Queda sin efecto.
 
+**L25 — Sin comentarios en el código; todo a un documento.** Pedido del dueño del producto:
+> "no me gustan los comentarios en el codigo. Eliminá todos los comentarios del codigo, PERO, agregalos en un .md para si yo necesito consutlar algo, tenerlo ahi. Nosé si me explico. En el .md por ejemplo que diga: Refund --> \"comentario.....\""
+
+Regla nueva del proyecto: **el código no lleva comentarios**; la explicación vive en `docs/comentarios-codigo.md`, indexada por símbolo. Alcanza a `.go`, tests y `migrations/0001_init.sql`.
+
+Cómo se hizo: no con `sed`. Un reemplazo de texto habría destruido `https://` y los literales de los que dependen las firmas. Se usó el AST de Go (`go/parser` + `go/printer`): se extrajeron los grupos de comentarios reales, se volcaron al documento y se reimprimió cada archivo sin comentarios. Después se etiquetó cada entrada con el símbolo que la precede, usando la convención de Go de que el comentario empieza con el nombre.
+
+Números: 22 archivos Go y el SQL procesados, 946 líneas de documentación, 165 símbolos (29 quedaron como `(archivo)`: son comentarios de paquete y notas dentro de funciones, sin un símbolo propio).
+
+Evidencia: `grep` de `//` en `.go` devuelve vacío salvo URLs dentro de strings; el SQL conserva las 10 tablas y no le queda ningún `--`; `git diff --numstat` muestra casi solo borrados (las pocas líneas agregadas son el realineado de campos que gofmt hace al desaparecer los comentarios); `gofmt`, `go vet` y `go test ./...` con 7 paquetes en verde, que es la prueba de que el código no se dañó al quitarle los comentarios.
+
+Consecuencia asumida: `godoc` ya no muestra descripciones y un linter de estilo documental (golint/revive) se quejaría de identificadores exportados sin comentario. Es el costo de la decisión, no un olvido.
+
+**L26 — Los mensajes de commit van en español.** Pedido del dueño del producto:
+> "Sugerencia de commits en español por favor"
+
+Convención completa de idioma del proyecto, ya sin ambigüedad: identificadores, nombres de campo y claves en inglés; comentarios, mensajes de log, errores, mensajes de commit y documentos en español. Formato de commit: Conventional Commits con el asunto en imperativo español ("agrega", "quita", "mueve") y sin punto final.
+
+**L27 — `wire.go` separa el esquema del proveedor.** Decisión tomada junto al dueño del producto: los structs que existen para copiar el JSON del proveedor salen de `client.go` y van a `wire.go`, uno por paquete.
+
+Criterio: si el struct existe para copiar su JSON, va a `wire.go`; si existe para que el motor hable con el cliente, se queda en `client.go`. Los tipos públicos (`CampaignRequest`, `OrderInfo`, `ShipmentRequest`) son interfaz nuestra y se quedan junto a sus métodos. No se usa un `types.go`: agrupar por categoría degenera en un cajón.
+
+Resultado: `batidos/client.go` 303 → 250 líneas + `wire.go` 56; `snacks/client.go` 202 → 180 + `wire.go` 25. Sin cambios de comportamiento: la suite quedó en verde sin tocar un test. Las secciones de `docs/comentarios-codigo.md` se mudaron con los structs para que el índice siga diciendo la verdad sobre dónde vive cada cosa.
+
 Consecuencia que el dueño del producto aceptó al decidirlo: **este documento y las láminas no tienen historial de versiones.** Son la memoria del proyecto —decisiones, specs, huecos abiertos— y ahora existen solo en el disco. Se lo advirtió explícitamente; la decisión de respaldarlo o moverlo a un repositorio privado separado es suya.
 
 **L24 — `odd/` vuelve al repositorio.** Pedido del dueño del producto:

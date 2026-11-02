@@ -1,8 +1,3 @@
-// Command fakeapi levanta los dos sustitutos locales de los backends de máquinas.
-//
-// Permite empezar hoy con el trabajo de cliente: la API de batidos y la de snacks
-// responden en dos puertos, exigiendo las firmas reales, el código de canje de un
-// solo uso y la regla de replay de nonce.
 package main
 
 import (

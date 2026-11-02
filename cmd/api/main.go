@@ -1,8 +1,3 @@
-// Command api es el backend con el que habla la tablet.
-//
-// En esta etapa solo expone un endpoint de salud: el sentido de este esqueleto es
-// que la topología venga de la configuración y se valide al arrancar, para que un
-// mueble mal configurado falle acá y no delante de un cliente.
 package main
 
 import (
@@ -35,8 +30,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	// Los nombres de los campos JSON se mantienen estables: son un contrato
-	// legible por máquinas, no texto para una persona.
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

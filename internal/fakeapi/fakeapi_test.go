@@ -40,10 +40,8 @@ func TestBatidosHappyPathFromCampaignToBrewedDrink(t *testing.T) {
 
 	now := time.Now()
 
-	// 1. Crear la campaña devuelve un código de canje.
 	code := submitCampaign(t, srv.URL, now)
 
-	// 2. Canjear el código acepta el pedido.
 	brew := postJSON(t, srv.URL+"/coffee/newThird/order/produceCoffee", now, map[string]string{
 		"code": code, "deviceId": "dev-1", "goodsId": "goods-1", "deviceNo": "devno-1",
 	})
@@ -51,12 +49,10 @@ func TestBatidosHappyPathFromCampaignToBrewedDrink(t *testing.T) {
 		t.Fatalf("produceCoffee code = %d, want 200", brew.Code)
 	}
 
-	// 3. Consultar reporta "preparando".
 	if status := orderStatus(t, srv.URL, now, code); status != 1 {
 		t.Fatalf("status = %d, want 1 (in progress)", status)
 	}
 
-	// 4. El callback avanza a "completado".
 	fake.Advance(code, 2)
 
 	if status := orderStatus(t, srv.URL, now, code); status != 2 {

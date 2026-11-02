@@ -30,8 +30,6 @@ func TestCapitalize(t *testing.T) {
 	}
 }
 
-// El mensaje y el valor del error salen con mayúscula inicial, pero el resto de
-// los campos no se toca.
 func TestHandlerCapitalizesMessageAndError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := New(&buf, slog.LevelInfo)
@@ -53,8 +51,6 @@ func TestHandlerCapitalizesMessageAndError(t *testing.T) {
 	}
 }
 
-// Un ReplaceAttr propio del llamador debe seguir ejecutándose: el capitalizador
-// se compone, no reemplaza.
 func TestNewWithOptionsKeepsTheCallerReplaceAttr(t *testing.T) {
 	var buf bytes.Buffer
 	rename := func(groups []string, a slog.Attr) slog.Attr {
@@ -75,7 +71,6 @@ func TestNewWithOptionsKeepsTheCallerReplaceAttr(t *testing.T) {
 	}
 }
 
-// NewWithOptions no debe mutar las opciones del llamador.
 func TestNewWithOptionsDoesNotMutateCallerOptions(t *testing.T) {
 	var buf bytes.Buffer
 	opts := &slog.HandlerOptions{}

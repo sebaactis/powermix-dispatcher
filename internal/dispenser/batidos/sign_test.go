@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// Vectores calculados con `openssl md5`, independientes de esta implementación.
 func TestKeyMD5MatchesReference(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -26,8 +25,6 @@ func TestKeyMD5MatchesReference(t *testing.T) {
 	}
 }
 
-// La concatenación cruda key+secret+timestamp no debe confundir componentes
-// distintos.
 func TestKeyMD5IsSensitiveToEveryPart(t *testing.T) {
 	base := KeyMD5("mykey", "mysecret", "1719999999999")
 
@@ -44,7 +41,6 @@ func TestKeyMD5IsSensitiveToEveryPart(t *testing.T) {
 	}
 }
 
-// La campaña de canje viaja en hora de China: un instante UTC se corre +8 horas.
 func TestCampaignTimeUsesChinaClock(t *testing.T) {
 	cases := []struct {
 		name string
