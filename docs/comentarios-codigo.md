@@ -1080,3 +1080,57 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### slotReasons
 
 > Decide si algún slot puede entregar el SKU y, si ninguno puede, cuál de las tres causas es la verdadera: no está cargado, tiene stock en slots no vendibles, o está agotado. El orden importa y son excluyentes: evaluar stock y estado por separado daría «vendible» cuando un slot tiene el estado y otro el stock, y ningún slot puede entregar nada.
+
+## internal/dispenser/batidos/dispenser.go
+
+### (archivo)
+
+> Adaptador entre el puerto `dispenser` y la API abierta de Batidos. Traduce las tres preguntas del puerto a las llamadas que el proveedor realmente tiene: estado de la máquina, emisión de campaña más canje, y consulta del canje.
+>
+> No reintenta, no hace backoff y no loguea: el presupuesto de 2 minutos por línea y la política de reintentos son del motor de órdenes (T9).
+>
+> La aserción `var _ dispenser.Dispenser = (*Dispenser)(nil)` es deliberada: si el puerto cambia, esto deja de compilar.
+
+### defaultCampaignWindow / WithCampaignWindow
+
+> Diez minutos de vigencia para el código de canje. El código se crea en el instante del pago y se canjea en el mismo instante: la ventana es sólo un margen para que el canje no llegue vencido ni quede vivo para siempre.
+>
+> Sólo se acepta una ventana positiva. Cero o negativa produciría una campaña con endTime igual o anterior a startTime, que el proveedor rechaza por contrato: se conserva el valor por defecto antes que enviar algo inválido.
+
+### WithCampaignName
+
+> El nombre de la campaña es texto administrativo que aparece en el panel del proveedor, y lo exige no vacío. Un nombre vacío conserva el valor por defecto.
+
+### Check
+
+> Chequeo a nivel máquina: fuera de línea, avería y sin insumos, en ese orden. Los tres ejes se comparan contra las constantes documentadas, nunca contra números crudos. Reason queda vacío cuando la máquina está sana y, cuando no, enumera sólo los ejes que fallaron ("avería; sin insumos"), para que el motivo sea legible sin abrir el panel del proveedor.
+>
+> Deliberadamente no mira el producto: si el SKU del combo está listado y con stock es la regla de `internal/preflight`, que sí lee el catálogo.
+
+### Dispatch
+
+> Dos llamadas por bebida, en este orden, porque así funciona Batidos (R2): emitir la campaña que genera el código de canje (S6, un código por compra) y canjearlo enseguida. `exchangeType 1` significa un único producto, que es exactamente lo que es un combo fijo.
+>
+> El reloj es el del cliente y no uno propio: así `WithClock` vuelve determinista la ventana y adaptador y cliente comparten una sola noción de «ahora». La ventana se construye con instantes absolutos; el cliente la formatea en UTC+8 (R3).
+>
+> `Attempt.Ref` es el código de canje, no un número de pedido: produceCoffee no devuelve orderNo, y el código es exactamente lo que `Reconcile` necesita para preguntar qué pasó.
+>
+> Si la campaña falla no hay código, así que el Attempt queda vacío. Si la campaña se emitió y el canje falla, el Attempt conserva el código aunque `Accepted` sea falso: un `Ref` no vacío junto al error es la señal de «esto es reconciliable, no lo reintentes a ciegas» (E4). Perder ese código sería perder la única forma de saber si el batido salió.
+
+### Reconcile
+
+> Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `LineInDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `LineFailed` sería afirmar algo que el proveedor no dijo.
+>
+> `Status.Ref` es siempre el orderNo del proveedor, también en el caso fallido: es lo que identifica el pedido en la conciliación y en el panel.
+>
+> Si el proveedor rechaza la consulta, se devuelve el error con un Status vacío: el puerto no inventa un estado cuando no tuvo respuesta.
+
+## internal/dispenser/batidos/dispenser_test.go
+
+### (archivo)
+
+> Los tests corren contra el servidor falso real detrás de `httptest` y un `Client` de verdad, porque el adaptador no tiene lógica propia que valga aislar: lo que hay que probar es la traducción contra el contrato del proveedor.
+>
+> Viven en el paquete externo `batidos_test` por el mismo motivo que `client_test.go`, y reutilizan sus ayudantes (credenciales, reloj fijo, `newTestClient`) porque comparten paquete: si ese archivo se renombra, estos tests se rompen.
+>
+> Los dos handlers propios cubren lo que el falso no puede representar: un status fuera del enum documentado (que debe quedar en duda, no en fallo) y la captura del cuerpo de la campaña para fijar la ventana enviada.
