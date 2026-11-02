@@ -35,6 +35,8 @@ type Request struct {
 	Machine     MachineRef
 	SKU         string
 	AmountCents int64
+
+	Ref string
 }
 
 type Attempt struct {
