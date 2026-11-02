@@ -1134,3 +1134,57 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Viven en el paquete externo `batidos_test` por el mismo motivo que `client_test.go`, y reutilizan sus ayudantes (credenciales, reloj fijo, `newTestClient`) porque comparten paquete: si ese archivo se renombra, estos tests se rompen.
 >
 > Los dos handlers propios cubren lo que el falso no puede representar: un status fuera del enum documentado (que debe quedar en duda, no en fallo) y la captura del cuerpo de la campaña para fijar la ventana enviada.
+
+## internal/dispenser/snacks/client.go — Orders / Order
+
+> La tercera lectura de snacks y la única que mira el pasado: la página de pedidos. `Page` y `PageSize` son obligatorios para el proveedor, así que se envían siempre; `OrderNo` sólo si viene. Se reutiliza `get`, que firma la ruta pelada.
+>
+> Sólo se modelan los nueve campos que la documentación muestra. Faltan a propósito `shipmentStatus`, `shipmentStatusName` y `shipmentReason`, que son los únicos que dirían si el snack salió: sin ellos el adaptador no puede pronunciarse, y eso es exactamente lo que pasa.
+>
+> `OrderStatus` se expone crudo, como número y con su nombre al lado. La tabla del PDF se desalinea al extraerse, así que cualquier constante con nombre sería una adivinanza disfrazada de contrato. `OrderAmount` y `PayAmount` son float64 porque el proveedor los declara Decimal: para mostrar y mandar, nunca para hacer cuentas.
+
+## internal/dispenser/snacks/dispenser.go
+
+### (archivo)
+
+> Adaptador entre el puerto `dispenser` y la API abierta de snacks. Traduce las tres preguntas del puerto a las tres lecturas que el proveedor tiene: página de máquinas para el estado, despacho remoto para disparar, página de pedidos para reconciliar.
+>
+> No reintenta, no hace backoff y no loguea: el presupuesto de 2 minutos y la política de reintentos son del motor (T9). La aserción `var _ dispenser.Dispenser = (*Dispenser)(nil)` hace que un cambio en el puerto rompa acá y no en el motor.
+
+### Check
+
+> Chequeo a nivel máquina: fuera de línea, venta suspendida, avería, bloqueada y sin stock, en ese orden. Los cinco ejes se comparan contra la constante «normal» y no contra una lista de valores malos: un código nuevo del proveedor bloquea en vez de pasar como sano.
+>
+> La máquina se identifica por `MID` —el único identificador que la configuración exige para snacks— y se confirma por `DeviceCode` exacto sobre lo devuelto: el filtro de la query es una ayuda, no una garantía. Si el proveedor no informa la máquina se responde «máquina no encontrada» y sin error: no poder vender no es un fallo del proveedor. Un error de red o de API sí vuelve como error y nunca se disfraza de razón.
+>
+> Deliberadamente no mira el producto: si el SKU está en un canal vendible es la regla de `internal/preflight`.
+
+### Dispatch
+
+> Una sola llamada, no dos: snacks no tiene código que canjear (a diferencia de R2 en batidos), así que el despacho remoto es todo el disparo. `PaymentOrderId` es el id de la orden y `Mid` la máquina.
+>
+> `Attempt.Ref` es lo que el proveedor haya contestado, normalmente vacío porque la documentación responde `result: {}`. No se rellena con el id de la orden: un Ref vacío dice la verdad —«el proveedor no dio un asa»— y es por eso que `Reconcile` cae al OrderID.
+
+### centsToUnits
+
+> Convierte centavos enteros al decimal que exige `retailPrice`. Es dinero de exhibición: float sólo para mandar y loguear, nunca para cuentas. Adentro del sistema todo importe sigue siendo int64 en centavos.
+
+### Reconcile
+
+> Busca el pedido por `transactionOrderNo` igual al asa que tenemos (`req.Ref`, o el id de la orden cuando el Ref quedó vacío). No se manda `OrderNo` como filtro a propósito: el filtro del proveedor es por `orderNo` y el asa que tenemos es el `transactionOrderNo` del pago; mandarlo excluiría justamente el pedido buscado. El match es local y exacto.
+>
+> Este método no puede dar un veredicto, y es deliberado. El único estado que trae la página de pedidos es el estado del PEDIDO —ciclo de pago—, no el resultado del despacho. Declarar entregado afirmaría algo que el proveedor no dijo; declarar fallido sería peor, porque dispararía un reintento y podría sacar dos snacks. Por eso siempre responde `LineInDoubt`: «el proveedor no informa el pedido» si no aparece, o el número y el nombre crudos del estado si aparece. La verdad por producto llega por callback (T10, R5).
+>
+> Si el proveedor rechaza la consulta se devuelve el error tal cual y con un Status vacío: el puerto no inventa un estado cuando no tuvo respuesta.
+
+## internal/dispenser/snacks/dispenser_test.go
+
+> Los dos tests que más importan son los de `Reconcile`: uno exige que un pedido conocido quede en duda con el estado del proveedor en el motivo, y el otro que un error del proveedor no se convierta en un estado inventado. Es el contrato que hereda T9.
+>
+> La máquina de prueba usa `MID = "snacks-dev-1"`, el mismo código que sirve el falso, porque para snacks `Mid` y `deviceCode` son la misma identidad: es lo que hace el propio proveedor en la página de pedidos.
+
+## internal/fakeapi/snacks.go — handleOrders / SetOrderStatus
+
+> Sirve `GET /open/v7/order/page` con la misma firma y anti-replay que el resto, y exige Page y PageSize igual que el proveedor. Los pedidos no se cargan a mano: se derivan de los despachos ya registrados, porque un pedido sin despacho no existiría en este sistema. `transactionOrderNo` es el PaymentOrderId que se despachó, que es el asa con la que el adaptador busca.
+>
+> El estado del pedido es configurable porque el enum real no es legible en la documentación: el falso no finge saber qué significa cada número, sólo repite el que se le pida.
