@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -17,13 +18,19 @@ const snacksDevicesPath = "/open/v7/device/page"
 
 const snacksSlotsPath = "/open/v7/device/slotlist"
 
+const snacksOrdersPath = "/open/v7/order/page"
+
 const defaultSnacksDeviceCode = "snacks-dev-1"
 
 type shipment struct {
 	paymentOrderID string
 	mid            string
 	productIDs     []string
+	retailPrices   []float64
 	count          int
+	seq            int
+	orderNo        string
+	createdAt      time.Time
 	results        []shipmentResult
 }
 
@@ -65,6 +72,11 @@ type Snacks struct {
 	shipments map[string]*shipment
 	device    deviceState
 	slots     []slotState
+
+	orderSeq        int
+	orderStatus     int
+	orderStatusName string
+	ordersEmpty     bool
 }
 
 func NewSnacks(accessKey, appSecret string) *Snacks {
@@ -113,6 +125,8 @@ func (o *Snacks) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.handleDevices(w, r)
 	case snacksSlotsPath:
 		o.handleSlots(w, r)
+	case snacksOrdersPath:
+		o.handleOrders(w, r)
 	default:
 		respondSnacks(w, http.StatusNotFound, 400, "ruta desconocida", nil)
 	}
@@ -189,12 +203,20 @@ func (o *Snacks) handleShipment(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	record, ok := o.shipments[req.PaymentOrderID]
 	if !ok {
-		record = &shipment{paymentOrderID: req.PaymentOrderID, mid: req.MID}
+		o.orderSeq++
+		record = &shipment{
+			paymentOrderID: req.PaymentOrderID,
+			mid:            req.MID,
+			seq:            o.orderSeq,
+			orderNo:        "SN" + strconv.Itoa(o.orderSeq),
+			createdAt:      time.Now(),
+		}
 		o.shipments[req.PaymentOrderID] = record
 	}
 	record.count++
 	for _, p := range req.Products {
 		record.productIDs = append(record.productIDs, p.ProductID)
+		record.retailPrices = append(record.retailPrices, p.ItemPricing.RetailPrice)
 	}
 	o.mu.Unlock()
 
@@ -287,6 +309,91 @@ func (o *Snacks) handleSlots(w http.ResponseWriter, r *http.Request) {
 	respondSnacks(w, http.StatusOK, 200, "ok", items)
 }
 
+func (o *Snacks) handleOrders(w http.ResponseWriter, r *http.Request) {
+	if !o.authorize(w, r) {
+		return
+	}
+
+	query := r.URL.Query()
+	page, err := strconv.Atoi(query.Get("Page"))
+	if err != nil || page < 1 {
+		respondSnacks(w, http.StatusBadRequest, 400, "Page es obligatorio y debe ser un entero positivo", nil)
+		return
+	}
+	pageSize, err := strconv.Atoi(query.Get("PageSize"))
+	if err != nil || pageSize < 1 {
+		respondSnacks(w, http.StatusBadRequest, 400, "PageSize es obligatorio y debe ser un entero positivo", nil)
+		return
+	}
+
+	deviceCode := query.Get("DeviceCode")
+	orderNo := query.Get("OrderNo")
+
+	o.mu.Lock()
+	status := o.orderStatus
+	statusName := o.orderStatusName
+	empty := o.ordersEmpty
+	records := make([]shipment, 0, len(o.shipments))
+	for _, record := range o.shipments {
+		records = append(records, *record)
+	}
+	o.mu.Unlock()
+
+	items := make([]map[string]any, 0, len(records))
+	if !empty {
+		sort.Slice(records, func(i, j int) bool { return records[i].seq < records[j].seq })
+		for _, record := range records {
+			if deviceCode != "" && deviceCode != record.mid {
+				continue
+			}
+			if orderNo != "" && orderNo != record.orderNo {
+				continue
+			}
+
+			amount := sumSnacksPrices(record.retailPrices)
+			createdAt := record.createdAt.Format(time.RFC3339)
+			items = append(items, map[string]any{
+				"orderNo":            record.orderNo,
+				"transactionOrderNo": record.paymentOrderID,
+				"deviceCode":         record.mid,
+				"orderStatus":        status,
+				"orderStatusName":    statusName,
+				"orderAmount":        amount,
+				"payAmount":          amount,
+				"payTime":            createdAt,
+				"orderCreatedTime":   createdAt,
+			})
+		}
+	}
+
+	total := len(items)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if page > totalPages {
+		items = make([]map[string]any, 0)
+	}
+
+	respondSnacks(w, http.StatusOK, 200, "ok", map[string]any{
+		"page":        page,
+		"pageSize":    pageSize,
+		"total":       total,
+		"totalPages":  totalPages,
+		"items":       items,
+		"hasPrevPage": page > 1,
+		"hasNextPage": page < totalPages,
+	})
+}
+
+func sumSnacksPrices(prices []float64) float64 {
+	total := 0.0
+	for _, price := range prices {
+		total += price
+	}
+	return total
+}
+
 func (o *Snacks) pruneNoncesLocked(now time.Time) {
 	if len(o.nonces) < 1000 {
 		return
@@ -320,6 +427,47 @@ func (o *Snacks) SetResult(paymentOrderID string, status int, reason string) {
 	for _, productID := range record.productIDs {
 		record.results = append(record.results, shipmentResult{productID: productID, status: status, reason: reason})
 	}
+}
+
+func (o *Snacks) ShipmentProducts(paymentOrderID string) []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	record, ok := o.shipments[paymentOrderID]
+	if !ok {
+		return nil
+	}
+	products := make([]string, len(record.productIDs))
+	copy(products, record.productIDs)
+	return products
+}
+
+func (o *Snacks) ShipmentRetailPrices(paymentOrderID string) []float64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	record, ok := o.shipments[paymentOrderID]
+	if !ok {
+		return nil
+	}
+	prices := make([]float64, len(record.retailPrices))
+	copy(prices, record.retailPrices)
+	return prices
+}
+
+func (o *Snacks) SetOrderStatus(status int, name string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.orderStatus = status
+	o.orderStatusName = name
+}
+
+func (o *Snacks) SetOrdersEmpty(empty bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.ordersEmpty = empty
 }
 
 func (o *Snacks) SetDeviceOnline(online bool) {

@@ -21,6 +21,8 @@ const devicesPath = "/open/v7/device/page"
 
 const slotsPath = "/open/v7/device/slotlist"
 
+const ordersPath = "/open/v7/order/page"
+
 const defaultTimeout = 10 * time.Second
 
 const maxResponseBytes = 1 << 20
@@ -111,6 +113,42 @@ type DevicesPage struct {
 	HasNextPage bool
 
 	Items []Device
+}
+
+type Order struct {
+	OrderNo string
+
+	TransactionOrderNo string
+
+	DeviceCode string
+
+	OrderStatus int
+
+	OrderStatusName string
+
+	OrderAmount float64
+
+	PayAmount float64
+
+	PayTime string
+
+	OrderCreatedTime string
+}
+
+type OrdersPage struct {
+	Page int
+
+	PageSize int
+
+	Total int
+
+	TotalPages int
+
+	HasPrevPage bool
+
+	HasNextPage bool
+
+	Items []Order
 }
 
 type SlotStatus int
@@ -284,6 +322,45 @@ func (c *Client) Devices(ctx context.Context, page, pageSize int, deviceCode str
 		HasPrevPage: result.HasPrevPage,
 		HasNextPage: result.HasNextPage,
 		Items:       devices,
+	}, nil
+}
+
+func (c *Client) Orders(ctx context.Context, page, pageSize int, orderNo string) (OrdersPage, error) {
+	query := url.Values{}
+	query.Set("Page", strconv.Itoa(page))
+	query.Set("PageSize", strconv.Itoa(pageSize))
+	if orderNo != "" {
+		query.Set("OrderNo", orderNo)
+	}
+
+	var result ordersResultBody
+	if err := c.get(ctx, ordersPath, query, &result); err != nil {
+		return OrdersPage{}, err
+	}
+
+	orders := make([]Order, 0, len(result.Items))
+	for _, item := range result.Items {
+		orders = append(orders, Order{
+			OrderNo:            item.OrderNo,
+			TransactionOrderNo: item.TransactionOrderNo,
+			DeviceCode:         item.DeviceCode,
+			OrderStatus:        item.OrderStatus,
+			OrderStatusName:    item.OrderStatusName,
+			OrderAmount:        item.OrderAmount,
+			PayAmount:          item.PayAmount,
+			PayTime:            item.PayTime,
+			OrderCreatedTime:   item.OrderCreatedTime,
+		})
+	}
+
+	return OrdersPage{
+		Page:        result.Page,
+		PageSize:    result.PageSize,
+		Total:       result.Total,
+		TotalPages:  result.TotalPages,
+		HasPrevPage: result.HasPrevPage,
+		HasNextPage: result.HasNextPage,
+		Items:       orders,
 	}, nil
 }
 

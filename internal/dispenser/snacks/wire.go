@@ -49,6 +49,28 @@ type deviceItemBody struct {
 	ShortageAlarmNumber int    `json:"shortageAlarmNumber"`
 }
 
+type ordersResultBody struct {
+	Page        int             `json:"page"`
+	PageSize    int             `json:"pageSize"`
+	Total       int             `json:"total"`
+	TotalPages  int             `json:"totalPages"`
+	HasPrevPage bool            `json:"hasPrevPage"`
+	HasNextPage bool            `json:"hasNextPage"`
+	Items       []orderItemBody `json:"items"`
+}
+
+type orderItemBody struct {
+	OrderNo            string  `json:"orderNo"`
+	TransactionOrderNo string  `json:"transactionOrderNo"`
+	DeviceCode         string  `json:"deviceCode"`
+	OrderStatus        int     `json:"orderStatus"`
+	OrderStatusName    string  `json:"orderStatusName"`
+	OrderAmount        float64 `json:"orderAmount"`
+	PayAmount          float64 `json:"payAmount"`
+	PayTime            string  `json:"payTime"`
+	OrderCreatedTime   string  `json:"orderCreatedTime"`
+}
+
 type slotItemBody struct {
 	SlotID      scalarText `json:"slotId"`
 	SlotNo      scalarText `json:"slotNo"`

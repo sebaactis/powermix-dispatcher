@@ -1,6 +1,7 @@
 package fakeapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -317,5 +318,204 @@ func TestSnacksSlotListFiltersByDeviceCode(t *testing.T) {
 	}
 	if len(slots) != 0 {
 		t.Fatalf("la lista tiene %d canales, want 0", len(slots))
+	}
+}
+
+type snacksOrderPage struct {
+	Page        int  `json:"page"`
+	PageSize    int  `json:"pageSize"`
+	Total       int  `json:"total"`
+	TotalPages  int  `json:"totalPages"`
+	HasPrevPage bool `json:"hasPrevPage"`
+	HasNextPage bool `json:"hasNextPage"`
+	Items       []struct {
+		OrderNo            string  `json:"orderNo"`
+		TransactionOrderNo string  `json:"transactionOrderNo"`
+		DeviceCode         string  `json:"deviceCode"`
+		OrderStatus        int     `json:"orderStatus"`
+		OrderStatusName    string  `json:"orderStatusName"`
+		OrderAmount        float64 `json:"orderAmount"`
+		PayAmount          float64 `json:"payAmount"`
+		PayTime            string  `json:"payTime"`
+		OrderCreatedTime   string  `json:"orderCreatedTime"`
+	} `json:"items"`
+}
+
+func shipOneSnack(t *testing.T, baseURL, paymentOrderID, mid string) {
+	t.Helper()
+
+	client := snacks.NewClient(baseURL, "ak_test", "testsecret")
+
+	if _, err := client.Ship(context.Background(), snacks.ShipmentRequest{
+		PaymentOrderID: paymentOrderID,
+		MID:            mid,
+		Products: []snacks.ShipmentProduct{
+			{OrderProductID: "line_1", ProductID: "prod_snack_1", RetailPrice: 15.5},
+		},
+	}); err != nil {
+		t.Fatalf("Ship: %v", err)
+	}
+}
+
+func readOrderPage(t *testing.T, baseURL, rawQuery string) snacksOrderPage {
+	t.Helper()
+
+	resp, env := signedSnacksGet(t, baseURL, snacksOrdersPath, rawQuery, time.Now())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", resp.StatusCode, env.Message)
+	}
+	if env.Code != 200 {
+		t.Fatalf("code = %d, want 200", env.Code)
+	}
+
+	var page snacksOrderPage
+	if err := json.Unmarshal(env.Result, &page); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	return page
+}
+
+func TestSnacksOrderPageRequiresPageAndPageSize(t *testing.T) {
+	srv := httptest.NewServer(NewSnacks("ak_test", "testsecret"))
+	defer srv.Close()
+
+	resp, env := signedSnacksGet(t, srv.URL, snacksOrdersPath, "", time.Now())
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 sin Page ni PageSize", resp.StatusCode)
+	}
+	if env.Code != 400 {
+		t.Fatalf("code = %d, want 400", env.Code)
+	}
+}
+
+func TestSnacksOrderPageListsTheRecordedShipment(t *testing.T) {
+	fake := NewSnacks("ak_test", "testsecret")
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	shipOneSnack(t, srv.URL, "po_1", "mid-1")
+
+	page := readOrderPage(t, srv.URL, "Page=1&PageSize=10")
+	if page.Page != 1 || page.PageSize != 10 {
+		t.Fatalf("page/pageSize = %d/%d, want 1/10", page.Page, page.PageSize)
+	}
+	if page.Total != 1 || page.TotalPages != 1 {
+		t.Fatalf("total/totalPages = %d/%d, want 1/1", page.Total, page.TotalPages)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items tiene %d elementos, want 1", len(page.Items))
+	}
+
+	order := page.Items[0]
+	if order.OrderNo == "" {
+		t.Fatalf("el pedido llegó sin orderNo: %+v", order)
+	}
+	if order.TransactionOrderNo != "po_1" {
+		t.Fatalf("transactionOrderNo = %q, want po_1 (el PaymentOrderId despachado)", order.TransactionOrderNo)
+	}
+	if order.DeviceCode != "mid-1" {
+		t.Fatalf("deviceCode = %q, want mid-1 (el Mid despachado)", order.DeviceCode)
+	}
+	if order.OrderAmount != 15.5 || order.PayAmount != 15.5 {
+		t.Fatalf("orderAmount/payAmount = %v/%v, want 15.5/15.5", order.OrderAmount, order.PayAmount)
+	}
+	if order.PayTime == "" || order.OrderCreatedTime == "" {
+		t.Fatalf("el pedido llegó sin fechas: %+v", order)
+	}
+}
+
+func TestSnacksOrderPageFiltersByDeviceCodeAndOrderNo(t *testing.T) {
+	fake := NewSnacks("ak_test", "testsecret")
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	shipOneSnack(t, srv.URL, "po_1", "mid-1")
+
+	if page := readOrderPage(t, srv.URL, "Page=1&PageSize=10&DeviceCode=mid-1"); len(page.Items) != 1 {
+		t.Fatalf("items con el DeviceCode correcto = %d, want 1", len(page.Items))
+	}
+	if page := readOrderPage(t, srv.URL, "Page=1&PageSize=10&DeviceCode=otra-maquina"); page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("items con otro DeviceCode = %d, want 0", len(page.Items))
+	}
+	if page := readOrderPage(t, srv.URL, "Page=1&PageSize=10&OrderNo=no-existe"); page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("items con otro OrderNo = %d, want 0", len(page.Items))
+	}
+}
+
+func TestSnacksOrderPageReflectsTheForcedStatus(t *testing.T) {
+	fake := NewSnacks("ak_test", "testsecret")
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	shipOneSnack(t, srv.URL, "po_1", "mid-1")
+	fake.SetOrderStatus(10, "pagado")
+
+	page := readOrderPage(t, srv.URL, "Page=1&PageSize=10")
+	if len(page.Items) != 1 {
+		t.Fatalf("items tiene %d elementos, want 1", len(page.Items))
+	}
+	if page.Items[0].OrderStatus != 10 || page.Items[0].OrderStatusName != "pagado" {
+		t.Fatalf("orderStatus/orderStatusName = %d/%q, want 10/pagado", page.Items[0].OrderStatus, page.Items[0].OrderStatusName)
+	}
+}
+
+func TestSnacksOrderPageCanBeForcedEmpty(t *testing.T) {
+	fake := NewSnacks("ak_test", "testsecret")
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	shipOneSnack(t, srv.URL, "po_1", "mid-1")
+	if page := readOrderPage(t, srv.URL, "Page=1&PageSize=10"); len(page.Items) != 1 {
+		t.Fatalf("items antes de vaciar = %d, want 1", len(page.Items))
+	}
+
+	fake.SetOrdersEmpty(true)
+
+	page := readOrderPage(t, srv.URL, "Page=1&PageSize=10")
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("total/items = %d/%d, want 0/0 con la página forzada vacía", page.Total, len(page.Items))
+	}
+}
+
+func TestSnacksOrderPageRejectsAReplayedNonce(t *testing.T) {
+	srv := httptest.NewServer(NewSnacks("ak_test", "testsecret"))
+	defer srv.Close()
+
+	headers, err := snacks.SignatureHeaders("ak_test", "testsecret", http.MethodGet, snacksOrdersPath, time.Now())
+	if err != nil {
+		t.Fatalf("SignatureHeaders: %v", err)
+	}
+
+	send := func() (*http.Response, snacksEnvelope) {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+snacksOrdersPath+"?Page=1&PageSize=10", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var env snacksEnvelope
+		if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp, env
+	}
+
+	if resp, env := send(); resp.StatusCode != http.StatusOK {
+		t.Fatalf("primer GET status = %d, want 200 (%s)", resp.StatusCode, env.Message)
+	}
+
+	resp, env := send()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET repetido status = %d, want 400", resp.StatusCode)
+	}
+	if env.Code != 40005 {
+		t.Fatalf("code = %d, want 40005 (nonce repetido)", env.Code)
 	}
 }

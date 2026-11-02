@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ const (
 	testPath        = "/open/v7/device/remote/shipment"
 	testDevicesPath = "/open/v7/device/page"
 	testSlotsPath   = "/open/v7/device/slotlist"
+	testOrdersPath  = "/open/v7/order/page"
 )
 
 func newFake(t *testing.T) (*fakeapi.Snacks, string) {
@@ -524,6 +526,160 @@ func TestSlotsRejectsAMalformedEnvelope(t *testing.T) {
 
 	if _, err := client.Slots(context.Background(), ""); err == nil {
 		t.Fatalf("Slots con result que no es una lista devolvió nil, want error")
+	}
+}
+
+func TestOrdersSendsPageAndPageSizeAndDecodesTheItems(t *testing.T) {
+	var (
+		gotPath  string
+		gotQuery url.Values
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"code":    200,
+			"message": "ok",
+			"result": map[string]any{
+				"page":        1,
+				"pageSize":    10,
+				"total":       2,
+				"totalPages":  1,
+				"hasPrevPage": false,
+				"hasNextPage": false,
+				"items": []any{
+					map[string]any{
+						"orderNo":            "20260717827745116217477_6",
+						"transactionOrderNo": "po_1",
+						"deviceCode":         testMID,
+						"orderStatus":        10,
+						"orderStatusName":    "pagado",
+						"orderAmount":        15.5,
+						"payAmount":          15.5,
+						"payTime":            "2026-07-22T03:54:46.203Z",
+						"orderCreatedTime":   "2026-07-22T03:54:46.203Z",
+					},
+					map[string]any{
+						"orderNo":            "20260717827745116217477_7",
+						"transactionOrderNo": "po_2",
+						"deviceCode":         testMID,
+						"orderStatus":        7,
+						"orderStatusName":    "",
+						"orderAmount":        0,
+						"payAmount":          0,
+						"payTime":            "",
+						"orderCreatedTime":   "",
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+
+	page, err := client.Orders(context.Background(), 1, 10, "")
+	if err != nil {
+		t.Fatalf("Orders: %v", err)
+	}
+
+	if gotPath != testOrdersPath {
+		t.Fatalf("ruta = %q, want %q", gotPath, testOrdersPath)
+	}
+	if got := gotQuery.Get("Page"); got != "1" {
+		t.Fatalf("Page = %q, want 1", got)
+	}
+	if got := gotQuery.Get("PageSize"); got != "10" {
+		t.Fatalf("PageSize = %q, want 10", got)
+	}
+	if gotQuery.Has("OrderNo") {
+		t.Fatalf("OrderNo vacío no debe viajar: %v", gotQuery)
+	}
+
+	if page.Page != 1 || page.PageSize != 10 || page.Total != 2 || page.TotalPages != 1 {
+		t.Fatalf("paginación = %d/%d/%d/%d, want 1/10/2/1", page.Page, page.PageSize, page.Total, page.TotalPages)
+	}
+	if page.HasPrevPage || page.HasNextPage {
+		t.Fatalf("hasPrevPage/hasNextPage = %v/%v, want false/false", page.HasPrevPage, page.HasNextPage)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("Items tiene %d elementos, want 2", len(page.Items))
+	}
+
+	order := page.Items[0]
+	if order.OrderNo != "20260717827745116217477_6" {
+		t.Fatalf("OrderNo = %q", order.OrderNo)
+	}
+	if order.TransactionOrderNo != "po_1" {
+		t.Fatalf("TransactionOrderNo = %q, want po_1", order.TransactionOrderNo)
+	}
+	if order.DeviceCode != testMID {
+		t.Fatalf("DeviceCode = %q, want %q", order.DeviceCode, testMID)
+	}
+	if order.OrderStatus != 10 {
+		t.Fatalf("OrderStatus = %d, want 10 crudo", order.OrderStatus)
+	}
+	if order.OrderStatusName != "pagado" {
+		t.Fatalf("OrderStatusName = %q, want pagado", order.OrderStatusName)
+	}
+	if order.OrderAmount != 15.5 || order.PayAmount != 15.5 {
+		t.Fatalf("orderAmount/payAmount = %v/%v, want 15.5/15.5", order.OrderAmount, order.PayAmount)
+	}
+	if order.PayTime != "2026-07-22T03:54:46.203Z" {
+		t.Fatalf("PayTime = %q, want el string del proveedor sin reinterpretar", order.PayTime)
+	}
+	if order.OrderCreatedTime != "2026-07-22T03:54:46.203Z" {
+		t.Fatalf("OrderCreatedTime = %q, want el string del proveedor sin reinterpretar", order.OrderCreatedTime)
+	}
+
+	if page.Items[1].OrderStatus != 7 || page.Items[1].OrderStatusName != "" {
+		t.Fatalf("el segundo pedido no se leyó crudo: %+v", page.Items[1])
+	}
+}
+
+func TestOrdersSendsOrderNoOnlyWhenItIsSet(t *testing.T) {
+	var queries []url.Values
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"code":    200,
+			"message": "ok",
+			"result":  map[string]any{"page": 2, "pageSize": 5, "items": []any{}},
+		})
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+	ctx := context.Background()
+
+	page, err := client.Orders(ctx, 2, 5, "")
+	if err != nil {
+		t.Fatalf("Orders sin OrderNo: %v", err)
+	}
+	if page.Items == nil {
+		t.Fatalf("Items volvió nil, want una lista vacía")
+	}
+
+	if _, err := client.Orders(ctx, 2, 5, "20260717827745116217477_6"); err != nil {
+		t.Fatalf("Orders con OrderNo: %v", err)
+	}
+
+	if len(queries) != 2 {
+		t.Fatalf("se hicieron %d llamadas, want 2", len(queries))
+	}
+	if queries[0].Has("OrderNo") {
+		t.Fatalf("OrderNo vacío no debe viajar: %v", queries[0])
+	}
+	if got := queries[1].Get("OrderNo"); got != "20260717827745116217477_6" {
+		t.Fatalf("OrderNo = %q, want el pedido pedido", got)
 	}
 }
 
