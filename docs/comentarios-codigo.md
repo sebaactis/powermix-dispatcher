@@ -1240,3 +1240,35 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los tests viven en el paquete externo `store_test` porque prueban el contrato del puerto desde afuera, que es como lo va a usar el motor.
 >
 > Los que más importan no son los de camino feliz: uno fija que el store nunca comparte estado con quien llama —sin la copia, el motor podría cambiar una línea sin guardarla y el bug aparecería como una reconciliación fantasma—, otro fija que dos líneas con el mismo plazo salen siempre en el mismo orden, y el de concurrencia crea una orden por goroutine y después exige leerlas todas: es la única forma de que un mapa sin protección se note como corrupción de conteo y no como un test que pasa por suerte.
+
+## internal/order/status.go
+
+### DeriveOrderStatus
+
+> El estado de la orden es una función de sus líneas, no un dato que alguien escriba a mano. El orden de las reglas es la política:
+>
+> 1. Sin líneas: `pending_payment`.
+> 2. Cualquier línea `pending`, `sent` o `brewing`: `dispatching`. El vuelo gana sobre cualquier resultado ya conocido de la otra línea, porque la orden no terminó.
+> 3. Todas entregadas: `delivered`.
+> 4. Nada entregado y todas falladas: `failed`. Es el único estado en que «no se entregó nada» es un hecho (E2/E3).
+> 5. Nada entregado y algo en duda: `in_doubt`. La duda domina al fallo, porque un fallo es conocimiento y una duda no (E4).
+> 6. Algo entregado y algo fallado: `partial`, porque el faltante está demostrado.
+> 7. Algo entregado y el resto sólo en duda: `in_doubt`. `partial` afirmaría un faltante conocido que no existe.
+>
+> `refunded` y `cancelled` no salen nunca de acá: los fija el motor. Un estado de línea no reconocido tampoco cuenta como entregado ni fallado, así que cae en las ramas de duda.
+
+### CanOrderTransition
+
+> Grafo explícito y cerrado: lo que no está listado es ilegal. `pending_payment` sale a `paid` o a `cancelled`; `paid` sólo avanza a `dispatching` (S8 exige disparar en el acto); `dispatching` termina en el resultado de sus líneas; `in_doubt` sólo se revisa por reconciliación (S16) y, si la reconciliación nunca llega a un dato, un humano puede devolver: por eso **`in_doubt → refunded` es legal**. Sin esa arista, una orden en duda quedaría encerrada para siempre, y con snacks en duda permanente hasta que exista el callback, ése sería el camino normal y no un borde.
+>
+> `failed`, `partial` y `delivered` sólo van a `refunded` (S17). `refunded` y `cancelled` son terminales: revivirlas inventaría una entrega o un cobro sin respaldo. `from == to` no es arista; el no-op lo resuelve `AdvanceOrder`.
+
+### CanLineTransition
+
+> `pending` sólo pasa a `sent`. `sent` puede ir a `brewing` o directo a `delivered`, `failed` o `in_doubt` (R5: aceptar no es entregar). `brewing` sólo termina en `delivered`, `failed` o `in_doubt`. `in_doubt` se resuelve con dato, nunca reenviando. `delivered` y `failed` son terminales: un retroceso permitiría dos entregas o dos devoluciones por el mismo pago.
+>
+> Nada vuelve a `pending`: significa que todavía nadie habló con la máquina. El reintento de S7 se modela como **intento nuevo sobre la misma línea**, no como retroceso de estado: por eso `failed → sent` no es una arista.
+
+### AdvanceOrder / AdvanceLine
+
+> Derivan el objetivo y lo validan contra el grafo. Si el objetivo es igual al actual devuelven el actual sin error: el motor deriva en cada vuelta del despacho y un no-op no es una transición. Si la arista no existe devuelven el estado actual intacto y `ErrInvalidTransition`, para que un llamador que ignore el error no quede con un estado inventado.
