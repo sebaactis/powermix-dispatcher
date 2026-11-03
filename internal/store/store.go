@@ -16,6 +16,7 @@ const (
 	OrderDispatching    OrderStatus = "dispatching"
 	OrderDelivered      OrderStatus = "delivered"
 	OrderPartial        OrderStatus = "partial"
+	OrderFailed         OrderStatus = "failed"
 	OrderInDoubt        OrderStatus = "in_doubt"
 	OrderRefunded       OrderStatus = "refunded"
 	OrderCancelled      OrderStatus = "cancelled"
