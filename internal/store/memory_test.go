@@ -271,6 +271,109 @@ func TestMemoryAppendAttemptRejectsDuplicateIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestMemorySaveAttemptUpdatesTheExistingAttempt(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+
+	attempt := store.Attempt{
+		ID:             "attempt-1",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-1",
+		Outcome:        "ambiguous",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, attempt); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+
+	updated := attempt
+	updated.ID = "attempt-1-cerrado"
+	updated.Outcome = "accepted"
+	updated.Detail = "la máquina aceptó el despacho"
+	updated.FinishedAt = baseTime.Add(time.Second)
+	if err := m.SaveAttempt(ctx, updated); err != nil {
+		t.Fatalf("SaveAttempt: %v", err)
+	}
+
+	if err := m.AppendAttempt(ctx, updated); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("SaveAttempt liberó la clave de idempotencia: AppendAttempt devolvió %v, se esperaba %v", err, store.ErrAlreadyExists)
+	}
+
+	other := attempt
+	other.ID = "attempt-2"
+	other.LineID = snackLineID
+	other.IdempotencyKey = "key-2"
+	if err := m.AppendAttempt(ctx, other); err != nil {
+		t.Fatalf("SaveAttempt dejó el store sin aceptar una clave nueva: %v", err)
+	}
+}
+
+func TestMemorySaveAttemptReturnsNotFoundForUnknownKey(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+
+	unknown := store.Attempt{
+		ID:             "attempt-1",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-inexistente",
+		Outcome:        "accepted",
+		StartedAt:      baseTime,
+	}
+
+	err := m.SaveAttempt(ctx, unknown)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SaveAttempt devolvió %v, se esperaba %v", err, store.ErrNotFound)
+	}
+
+	if err := m.AppendAttempt(ctx, unknown); err != nil {
+		t.Fatalf("SaveAttempt creó el intento: AppendAttempt devolvió %v", err)
+	}
+}
+
+func TestMemorySaveAttemptDoesNotChangeTheStoredAttemptCount(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+
+	first := store.Attempt{
+		ID:             "attempt-1",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-1",
+		Outcome:        "ambiguous",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, first); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		updated := first
+		updated.Outcome = "accepted"
+		updated.FinishedAt = baseTime.Add(time.Duration(i+1) * time.Second)
+		if err := m.SaveAttempt(ctx, updated); err != nil {
+			t.Fatalf("SaveAttempt #%d: %v", i+1, err)
+		}
+	}
+
+	if err := m.AppendAttempt(ctx, first); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("tras tres actualizaciones AppendAttempt devolvió %v, se esperaba %v", err, store.ErrAlreadyExists)
+	}
+
+	second := store.Attempt{
+		ID:             "attempt-2",
+		LineID:         snackLineID,
+		Number:         1,
+		IdempotencyKey: "key-2",
+		Outcome:        "ambiguous",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, second); err != nil {
+		t.Fatalf("el store quedó rechazando claves nuevas después de actualizar: %v", err)
+	}
+}
+
 func TestMemoryRegisterWebhookDeduplicatesBySourceAndKey(t *testing.T) {
 	m := store.NewMemory()
 	ctx := context.Background()

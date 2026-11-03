@@ -109,6 +109,17 @@ func (m *Memory) AppendAttempt(ctx context.Context, attempt Attempt) error {
 	return nil
 }
 
+func (m *Memory) SaveAttempt(ctx context.Context, attempt Attempt) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.attempts[attempt.IdempotencyKey]; !exists {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
 func (m *Memory) RegisterWebhook(ctx context.Context, wh Webhook) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
