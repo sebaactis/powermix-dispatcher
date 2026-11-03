@@ -1272,3 +1272,61 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### AdvanceOrder / AdvanceLine
 
 > Derivan el objetivo y lo validan contra el grafo. Si el objetivo es igual al actual devuelven el actual sin error: el motor deriva en cada vuelta del despacho y un no-op no es una transición. Si la arista no existe devuelven el estado actual intacto y `ErrInvalidTransition`, para que un llamador que ignore el error no quede con un estado inventado.
+
+## internal/store — SaveAttempt
+
+> `AppendAttempt` inserta y falla si la clave ya existe; `SaveAttempt` cierra el intento ya grabado y **nunca crea**. La distinción no es cosmética: el motor registra el intento antes de llamar a la máquina para que un corte en medio del despacho deje evidencia, y después necesita anotar cómo terminó. Si el cierre pudiera insertar, un error de orden de llamadas inventaría intentos que nunca ocurrieron.
+
+## internal/order/engine.go
+
+### (archivo)
+
+> El motor: crea la orden cuando el cliente elige un combo y dispara las dos máquinas en paralelo en el instante en que se confirma el pago (S2, S8). Vive sobre dos puertos —`store.Store` y `dispenser.Dispenser`— y no conoce ni HTTP ni base de datos. El vocabulario de estados es de `status.go`; acá sólo se decide qué hacer con cada resultado.
+
+### Draft / Item
+
+> `Draft` es lo que la tablet manda antes de que exista una orden. `Item.Machine` trae la `MachineRef` completa porque el despacho la necesita y la orden no la guarda: el motor la retiene en memoria —esa retención es una deuda conocida, porque un reinicio la pierde.
+
+### WithLineDeadline
+
+> Sólo acepta valores positivos: cero o negativo produciría un plazo ya vencido en el instante del despacho, que es peor que no tener plazo. `WithClock` y `WithIDGenerator` ignoran `nil` para que un test no deje el motor sin reloj ni sin ids.
+
+### Place
+
+> Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
+
+### ConfirmPayment
+
+> Es el único disparador del despacho y tiene que ser inofensivo si el proveedor de pagos repite el webhook: si la orden ya no está `pending_payment`, responde nil sin tocar nada.
+>
+> La orden se escribe tres veces. Primero `paid` con `PaidAt`, que es la evidencia del cobro. Después `dispatching`: una línea sólo sale de `pending` por `sent`, así que sin ese estado intermedio una orden cuyas dos líneas fallan no tendría arista legal hasta `failed`. Recién entonces se lanza una goroutine por línea, cada una escribiendo su propio slot del slice de errores — sin lock compartido.
+>
+> Al final se **recarga** la orden y se deriva el estado con `AdvanceOrder` sobre las líneas leídas. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
+>
+> Sólo los errores de store vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
+
+### dispatchLine
+
+> El orden de las llamadas es la garantía contra la doble entrega: primero se registra el intento como `ambiguous`, después se llama a la máquina, y al final se cierra el intento y se guarda la línea. Si el proceso muere en el medio, queda un intento `ambiguous` —la evidencia de que hubo una llamada— y la línea sigue `pending`.
+>
+> La clave es `orden:línea:número de intento`, con el número sacado de `Attempts+1`. Si `AppendAttempt` dice que ya existe, ese intento ocurrió en una vida anterior del proceso: no se despacha, no se toca la línea, se devuelve nil. Es la razón por la que un reinicio no puede sacar dos productos.
+>
+> `Attempts` se incrementa en **todo** intento registrado, no sólo en los aceptados: si un rechazo no lo moviera, el reintento de T9 reusaría la clave y el store lo leería como replay, prohibiendo el reintento que S7 exige.
+>
+> La línea se guarda con `SaveLine` y nunca con `SaveOrder`: dos goroutines escribiendo la orden entera se pisarían.
+
+### classifyDispatch
+
+> Tres desenlaces, y la diferencia es qué sabemos del producto: aceptado es «la máquina lo tomó» (R5: todavía no es entregado, por eso la línea vence y hay que reconciliar); rechazado es «la máquina dijo que no»; cualquier otra cosa es «no sabemos», y se marca `in_doubt` y nunca `failed` (E4), porque declarar fallido habilitaría un reintento a ciegas que podría sacar dos productos.
+>
+> El `Ref` se copia a la línea aunque venga vacío: el asa del proveedor es opcional, pero perderla cuando existe sería perder la única forma de reconciliar.
+
+### transitionLine
+
+> `status.go` permite una sola salida desde `pending`: `sent`. Un rechazo o una duda significan que la línea **sí** se despachó, así que el estado se recorre `pending → sent → failed|in_doubt` y se persiste sólo el estado final, con una escritura.
+
+## internal/order/engine_test.go
+
+> `recordingStore` envuelve la memoria para poder ver lo que el puerto no deja leer: qué intentos se registraron, con qué clave y cómo se cerraron. Sin ese registro no habría forma de afirmar que el intento se grabó antes de la llamada ni que terminó en `rejected` o `error`.
+>
+> El test que sostiene la regla transversal es el de reinicio: pre-siembra el intento con la clave exacta que el motor va a calcular y comprueba que la máquina no recibe ninguna llamada y que la línea sigue `pending`.

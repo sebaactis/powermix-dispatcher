@@ -351,3 +351,19 @@ Consecuencia que el dueño del producto aceptó al decidirlo: **este documento y
 > "Ok agrega odd."
 
 Se quita `odd/` de `.gitignore`; `design/` sigue fuera. Queda sin efecto lo afirmado en L23 sobre este documento: ahora sí tiene historial, y el aviso de «sin versiones» se retiró del encabezado. El repo pasa de 23 a 24 archivos.
+
+**L29 — Los commits los hace el dueño del producto.** Pedido:
+> "Te pido para el futuro, no hagas los commits, tenelos listos para mi orden, pero asi puedo ver el git diff yo directamente."
+
+Regla operativa desde acá: el orquestador **no ejecuta `git commit`**. Deja los cambios en el árbol, sin stagear, agrupados por unidad, y entrega por cada unidad el mensaje en español y los paths exactos. El diff queda visible con `git diff` y el dueño decide cuándo y cómo commitear.
+
+Los commits anteriores a esta regla ya están en el historial: se revisan con `git show` o `git diff <rango>`.
+
+Efecto secundario a tener en cuenta: como el árbol acumula lo que no se commitea, varias unidades pendientes a la vez se mezclan en un mismo `git diff`. Para evitarlo, cada reporte nombra los paths de la unidad, de modo que el diff se pueda acotar por ruta.
+
+**L30 — Excepción a L29: por orden explícita, sí.** Pedido:
+> "Entendido. Commitea, y pushea lo pendiente a main"
+
+L29 decía que el orquestador no commitea. Por instrucción directa, en esta oportunidad sí: tres unidades en orden y push a `main`. La regla de L29 sigue vigente como default; cada vez que el dueño pida commitear explícitamente, se hace.
+
+Las unidades: (1) `SaveAttempt` en el puerto del store, (2) el motor en `internal/order`, (3) la documentación. El orden importa: el motor no compila sin el método nuevo.
