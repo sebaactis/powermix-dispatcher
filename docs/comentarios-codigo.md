@@ -1188,3 +1188,55 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Sirve `GET /open/v7/order/page` con la misma firma y anti-replay que el resto, y exige Page y PageSize igual que el proveedor. Los pedidos no se cargan a mano: se derivan de los despachos ya registrados, porque un pedido sin despacho no existiría en este sistema. `transactionOrderNo` es el PaymentOrderId que se despachó, que es el asa con la que el adaptador busca.
 >
 > El estado del pedido es configurable porque el enum real no es legible en la documentación: el falso no finge saber qué significa cada número, sólo repite el que se le pida.
+
+## internal/store
+
+### (archivo)
+
+> Puerto de persistencia del motor, y el vocabulario que se guarda: orden, línea, intento y webhook.
+>
+> Es un puerto y no un driver porque el motor tiene que poder escribirse y probarse sin base de datos. Las columnas, los CHECK y los índices únicos de `migrations/0001_init.sql` son el contrato que este paquete refleja.
+
+### OrderStatus
+
+> Espeja el CHECK de la tabla `orders`. «partial» e «in_doubt» existen porque las dos máquinas fallan de forma independiente: un pedido no puede decir «delivered» cuando salió un solo producto.
+
+### Line
+
+> La unidad de ejecución. `State` reusa `dispenser.LineState` a propósito: el estado de una línea es el mismo que informa el puerto de las máquinas, y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde.
+>
+> `Ref` tiene dos significados según la máquina —código de canje en batidos, asa del proveedor en snacks— porque el SQL tiene dos columnas y el motor nunca necesita las dos a la vez.
+>
+> `DeadlineAt` en cero significa «sin plazo armado», no un plazo vencido en el año 1.
+
+### Attempt
+
+> Auditoría de una llamada a una máquina; sin esto un timeout nos deja sin saber si el producto salió. `Outcome` «ambiguous» es el caso E4 y es el único que prohíbe reintentar a ciegas. `IdempotencyKey` es única en todo el sistema: es la garantía de que un mismo pago no produce dos entregas.
+
+### Webhook
+
+> `Source` usa el vocabulario del dominio y del CHECK de `webhook_event`: «payment», «batidos» o «snacks». La pareja (Source, DedupeKey) es la identidad del evento: una repetición del proveedor tiene que ser inofensiva, no una segunda bebida.
+
+### Store
+
+> `CreateOrder`/`Order`/`SaveOrder` mueven la orden entera con sus líneas, porque el motor la lee y la reescribe como unidad y las líneas nacen sólo junto a su orden. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció.
+
+## internal/store/memory.go
+
+> Implementación en memoria: permite escribir y probar el motor de punta a punta sin driver. No es un caché, es la única implementación hasta que exista el SQL, y por eso impone las mismas reglas que impondría la base —unicidad de orden, de clave de idempotencia y de dedupe— en vez de ser permisiva.
+>
+> Un solo mutex protege el estado entero: las operaciones duran microsegundos y un lock único elimina el deadlock por orden de adquisición.
+>
+> `cloneOrder` es la regla central: ni al guardar ni al leer se comparte el slice de líneas, así que quien llama no puede cambiar el estado interno mutando lo que recibió. Devuelve nil si el slice era nil, porque redondear a vacío haría fallar una comparación sin que nada haya cambiado.
+>
+> `putOrderLocked` reconstruye el índice de líneas al reemplazar la orden: sin borrar las entradas viejas, un `SaveOrder` que quita una línea dejaría el índice apuntando a algo que ya no existe.
+>
+> `RegisterWebhook` devuelve `first` y no un error de duplicado: un callback repetido es el caso normal de un proveedor que reintenta, no un fallo.
+>
+> `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Sólo entran `sent` y `brewing`: `in_doubt` se reconcilia por su propio camino, y volver a despacharlo sería el reintento a ciegas que E4 prohíbe.
+
+## internal/store/memory_test.go
+
+> Los tests viven en el paquete externo `store_test` porque prueban el contrato del puerto desde afuera, que es como lo va a usar el motor.
+>
+> Los que más importan no son los de camino feliz: uno fija que el store nunca comparte estado con quien llama —sin la copia, el motor podría cambiar una línea sin guardarla y el bug aparecería como una reconciliación fantasma—, otro fija que dos líneas con el mismo plazo salen siempre en el mismo orden, y el de concurrencia crea una orden por goroutine y después exige leerlas todas: es la única forma de que un mapa sin protección se note como corrupción de conteo y no como un test que pasa por suerte.
