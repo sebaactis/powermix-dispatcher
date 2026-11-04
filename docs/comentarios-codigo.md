@@ -1285,7 +1285,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Draft / Item
 
-> `Draft` es lo que la tablet manda antes de que exista una orden. `Item.Machine` trae la `MachineRef` completa porque el despacho la necesita y la orden no la guarda: el motor la retiene en memoria —esa retención es una deuda conocida, porque un reinicio la pierde.
+> `Draft` es lo que la tablet manda antes de que exista una orden. `Item` lleva la máquina en un solo lugar: `Item.Machine`, y el tipo de máquina sale de `Item.Machine.Type`. La orden guarda la referencia completa en `store.Line.Machine`, así que el motor no retiene nada en memoria y un reinicio no le quita con qué hablarle a la máquina.
+
+### El tipo de máquina como fuente única
+
+> Antes el tipo estaba dos veces —`Item.MachineType` y `Item.Machine.Type`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `MachineRef{Type: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
+>
+> Se arregló por la vía limpia y no con una validación de coincidencia: dos campos que deben coincidir es una regla que se puede olvidar, un campo solo no. Ahora la incoherencia no se puede escribir —no compila—, que es más fuerte que cualquier chequeo en ejecución.
+>
+> `validateDraft` exige que `item.Machine.Type` no esté vacío y que ese tipo exista en el mapa de drivers, que es el mismo mapa con el que `dispatchLine` busca la máquina después: lo que se valida en el alta y lo que se usa en el despacho es la misma fuente, así que un borrador aceptado no puede terminar en «no hay una máquina configurada para el tipo».
+>
+> Riesgo residual anotado: `machineIdentified` sigue aceptando **algún** identificador, así que `Machine.Type: snacks` con un `DeviceID` de batidos es expresable. Ya no hay dos fuentes de tipo, pero la identidad no se valida contra el tipo.
 
 ### WithLineDeadline
 
@@ -1330,3 +1340,95 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `recordingStore` envuelve la memoria para poder ver lo que el puerto no deja leer: qué intentos se registraron, con qué clave y cómo se cerraron. Sin ese registro no habría forma de afirmar que el intento se grabó antes de la llamada ni que terminó en `rejected` o `error`.
 >
 > El test que sostiene la regla transversal es el de reinicio: pre-siembra el intento con la clave exacta que el motor va a calcular y comprueba que la máquina no recibe ninguna llamada y que la línea sigue `pending`.
+
+## internal/dispenser — Rejection
+
+> Un rechazo es un hecho del dominio, no un accidente de transporte: el proveedor contestó y dijo que no. Vive en el puerto para que el motor distinga «la máquina dijo no» (E2, la línea queda `failed`) de «no sabemos» (E4, la línea queda `in_doubt`) sin importar el paquete de ningún proveedor. `Provider` viaja como texto porque el motor lo escribe en la línea y en el intento, y ahí no debe depender de un tipo de proveedor; `HTTPStatus` y `Code` se conservan crudos porque son lo que va a necesitar quien lea el log del proveedor.
+>
+> El mensaje nombra siempre proveedor y código, porque termina persistido en `Line.LastError` y en `Attempt.Detail`: se lee semanas después, sin la respuesta HTTP a mano, y «rechazado» a secas no dice quién rechazó ni con qué código.
+
+## internal/store — Line.Machine
+
+> La referencia de la máquina es un dato de la línea, no del proceso. Antes vivía en un mapa en RAM del motor y eso rompía dos cosas reales: después de un reinicio una línea `pending` no se podía despachar, y un `Place` en una instancia con un `ConfirmPayment` en otra no funcionaba.
+>
+> Se guarda como un único campo con la `MachineRef` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
+
+## internal/order/engine.go — cambios
+
+> `Place` copia la máquina del ítem a la línea antes de persistir: es lo que convierte la orden en algo autosuficiente. El motor ya no retiene nada en memoria, así que puede perder el proceso entero entre el cobro y el despacho sin perder con qué hablarle a la máquina.
+>
+> `dispatchLine` toma la máquina de la línea. Un reinicio es indistinguible de una llamada normal: sólo cambia de dónde vino el store. Ya no existe el caso «no se conoce la máquina» porque la línea no puede nacer sin máquina: `validateDraft` lo impide en `Place`.
+>
+> `isProviderRejection` pregunta por el error del puerto y no por los tipos de cada proveedor. Ese era el punto: el motor no debe conocer que Batidos y Snacks existen, y con los dos imports cualquier proveedor nuevo obligaba a editar el motor para clasificar sus rechazos.
+
+## internal/dispenser/{batidos,snacks} — asPortRejection
+
+> Traduce el `*APIError` propio a `*dispenser.Rejection` en el borde: en `Dispatch` y en `Reconcile`, que son los dos lugares por donde sale una respuesta del proveedor hacia el motor. Se envuelve después con `%w` para no perder el contexto, y por eso `errors.As` sigue encontrando el rechazo.
+>
+> Un error que no es del proveedor —red, JSON roto, contexto cortado— pasa intacto: no es un rechazo, y convertirlo en uno haría que una duda se declarara fallo.
+
+## internal/order/engine_test.go — el test del reinicio
+
+> Es el test que prueba que la deuda está pagada: el motor que cobra no es el que despacha. Un segundo `order.New` sobre el mismo store no comparte ni memoria ni mapa de referencias con el primero, así que si la máquina no estuviera guardada en la línea, el despacho no tendría con qué hablarle. Antes de mover la referencia al store, esto fallaba con «no se conoce la máquina de la línea».
+
+## internal/order — el reintento del fallido (T9a)
+
+### CanLineTransition: `failed -> sent`
+
+> `failed` deja de ser terminal a propósito: un rechazo explícito del proveedor (E2) significa «no salió», así que la línea puede volver a `sent` para un intento nuevo. La garantía anti-duplicado no es el estado, es la **clave de idempotencia**: un reintento es un intento nuevo con clave nueva, no un replay del anterior.
+>
+> `delivered` sigue siendo terminal (el producto ya salió) e `in_doubt` no puede volver a `sent` (E4: no se sabe si salió, y reintentar a ciegas puede entregar dos veces). Esa línea se reconcilia, no se reintenta.
+
+### defaultMaxAttempts / WithMaxAttempts
+
+> Dos intentos por línea: el inicial más un reintento del fallido (S7). Es el mínimo que cumple el pedido y la cantidad queda configurable porque la política de cuántos reintentos (E2) sigue abierta. Un valor menor que 1 se ignora: nunca se deja al motor sin poder despachar.
+
+### dispatchLine — el bucle
+
+> Un bucle acotado sobre **la misma** línea. En cada vuelta se arma el número de intento (`Attempts + 1`) y su clave, se **registra el intento como `ambiguous` antes de llamar** —así un corte en medio deja constancia de que algo pudo haber salido—, se llama, se clasifica, se cierra el intento y recién ahí se mueve la línea.
+>
+> Se detiene cuando: la línea ya gastó sus intentos; la clave ya existe (intento repetido tras un reinicio); fue aceptada; quedó en duda; o fue rechazada sin intentos restantes.
+>
+> Sólo vuelve a iterar ante un rechazo explícito y con intentos disponibles: mueve la línea `failed -> sent` (la arista habilitada para esto) y empieza con número y clave nuevos. En Batidos eso es un código de canje nuevo, porque el anterior probablemente quedó consumido (R2).
+>
+> E4 no entra nunca acá: sin respuesta no se sabe si el producto salió, y el reintento a ciegas puede producir dos entregas.
+
+## internal/order — el worker de reconciliación (T9b)
+
+### Presupuesto de tiempo
+
+> 2 minutos esperando respuesta y 2 minutos más preguntando cada 30 segundos: **4 minutos en total**. No es una elección técnica, es del dueño del producto: una persona parada frente a un mueble en un gimnasio no espera más que eso, y ningún caso legítimo de las máquinas pasa de 60 segundos.
+>
+> `DeadlineAt` es **cuándo preguntar** (se mueve); `ReconcileUntil` es **cuándo dejar de preguntar** (fijo). Los dos se arman con el mismo `now` al aceptar el despacho, para que el total sea exactamente la suma y no «la suma más lo que tardó el loop».
+
+### dispatchLine — la duda también arma plazos
+
+> Cuando el despacho queda en duda (E4) la línea arma sus plazos igual que cuando fue aceptada: **no hay nada que esperar** porque ya sabemos que no hubo respuesta, así que la primera consulta va al intervalo (30 s) y el tope a la ventana (2 min). Antes de esto la línea quedaba en duda **sin plazo**, y como `DueLines` sólo miraba `sent` y `brewing`, ese caso —el más común de todos— no lo reconciliaba nadie nunca.
+
+### lineDue
+
+> También devuelve líneas `in_doubt` cuando tienen un plazo armado. Una línea cerrada en duda al agotarse el tope tiene los dos plazos en cero, así que deja de aparecer sola: el «en duda» que se sigue consultando es el que todavía tiene presupuesto, no el que ya se rindió.
+
+### ReconcileDue / reconcileLine
+
+> El worker que cierra E4: lee las líneas vencidas y le pregunta al proveedor qué pasó realmente con cada una. Las procesa de a una, en serie: un worker corre sobre una cadencia y el manejo de fallos se lee de arriba abajo. `limit` es la perilla — una máquina lenta retrasa el lote entero.
+>
+> Los errores no cortan el lote: se acumulan y se devuelven juntos, para que una línea que falló no deje sin reconciliar a las demás. Un error de consulta no pierde la línea: se trata como «sigue en duda» y se agenda el próximo intento.
+
+### extendReconcile
+
+> Decide el próximo instante de consulta y, cuando ya no queda margen, cierra la línea en duda. Tres casos y los tres terminan: sin ventana armada se cierra en el acto; con ventana abierta se empuja un intervalo **recortado al tope** si el intervalo se pasaría; en el tope o después se cierra, limpia los dos plazos y guarda el motivo.
+>
+> El recorte no es cosmético: garantiza que el último escaneo caiga exactamente en el tope y nunca después, y es lo que convierte «preguntar hasta tener respuesta» en «preguntar hasta tener respuesta **o** hasta que se acabe el tiempo».
+
+### closeLine / settleOrder / notifyOrder
+
+> Cerrar es limpiar los dos plazos: una línea cerrada no vuelve a aparecer en `DueLines`, y eso es lo que impide interrogarla después de que alguien ya sabe la respuesta. Entregado limpia `LastError`; fallido conserva o reemplaza el motivo, nunca lo borra.
+>
+> Una línea cerrada no arregla la orden sola: si el worker no recalcula el estado, la orden se queda en `dispatching` para siempre. Se recarga, se avanza con la misma tabla de transiciones del resto del motor y se guarda sólo si cambió.
+>
+> Un aviso por orden afectada, y sólo cuando el estado final es duda o fallo: es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
+
+## migrations/0003_line_reconcile_until.sql
+
+> Agrega `reconcile_until` a `order_line`. Aditiva a propósito: sin CHECK, sin índice y sin migración de datos. La columna es nullable y su ausencia es exactamente el «no armado» que ya conoce el código, así que las filas viejas no necesitan backfill. No lleva índice porque el worker no busca por ella: sigue buscando por `(state, deadline_at)`.

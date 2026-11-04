@@ -367,3 +367,15 @@ Efecto secundario a tener en cuenta: como el árbol acumula lo que no se commite
 L29 decía que el orquestador no commitea. Por instrucción directa, en esta oportunidad sí: tres unidades en orden y push a `main`. La regla de L29 sigue vigente como default; cada vez que el dueño pida commitear explícitamente, se hace.
 
 Las unidades: (1) `SaveAttempt` en el puerto del store, (2) el motor en `internal/order`, (3) la documentación. El orden importa: el motor no compila sin el método nuevo.
+
+**L31 — Las tres deudas del motor, y el estado de cada una.**
+
+1. **`MachineRef` en RAM** — *pagada*. La referencia vive en `store.Line.Machine`. Sin eso, tras un reinicio una línea `pending` no se podía despachar y `Place` + `ConfirmPayment` en instancias distintas no funcionaba.
+2. **Rechazo acoplado a los proveedores** — *pagada*. `dispenser.Rejection` es el error del puerto; los adaptadores traducen su `APIError` en el borde. `internal/order` ya no importa `batidos` ni `snacks`.
+3. **El tipo de máquina está duplicado** — *abierta*. `order.Item` lleva `MachineType` y además `MachineRef.Type`, y `validateDraft` no verifica que coincidan. Un `Item` incoherente (`MachineType: "snacks"` con `MachineRef{Type: "batidos", DeviceID: ...}`) se despacha con el driver de un tipo y los identificadores del otro. `machineIdentified` sólo exige que **algún** identificador exista, no que sea el del tipo correcto.
+
+   Dos arreglos posibles:
+   - **Barato:** una validación en `validateDraft` que exija `item.Machine.Type == "" || item.Machine.Type == item.MachineType`. No cambia contratos.
+   - **Limpio:** sacar `MachineType` de `Item` y tomarlo de `Machine.Type`, dejando una sola fuente. Cambia el `Draft` y a sus llamadores.
+
+   Riesgo real: el motor elegiría el driver correcto y le mandaría la identidad equivocada — un despacho que falla en el proveedor con un error que no explica nada. Hoy nadie construye `Draft` todavía (no hay capa HTTP), así que el costo de arreglarlo es mínimo.
