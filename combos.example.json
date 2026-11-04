@@ -1,0 +1,36 @@
+[
+  {
+    "id": "combo-batido-alfajor",
+    "name": "Batido + Alfajor",
+    "price_cents": 420000,
+    "currency": "ARS",
+    "active": true,
+    "items": [
+      {
+        "machine_type": "batidos",
+        "sku": "DEMO-BATIDO-VAINILLA"
+      },
+      {
+        "machine_type": "snacks",
+        "sku": "DEMO-SNACK-ALFAJOR"
+      }
+    ]
+  },
+  {
+    "id": "combo-batido-chocolate",
+    "name": "Batido + Chocolate",
+    "price_cents": 390000,
+    "currency": "ARS",
+    "active": true,
+    "items": [
+      {
+        "machine_type": "batidos",
+        "sku": "DEMO-BATIDO-CHOCOLATE"
+      },
+      {
+        "machine_type": "snacks",
+        "sku": "DEMO-SNACK-CHOCOLATE"
+      }
+    ]
+  }
+]
