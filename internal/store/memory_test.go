@@ -746,3 +746,39 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 		t.Fatalf("DueLines devolvió %d líneas, se esperaban %d", len(due), workers)
 	}
 }
+
+func TestMemoryRejectsADuplicateClientKeyAndFindsByKey(t *testing.T) {
+	ctx := context.Background()
+	m := store.NewMemory()
+
+	first := store.Order{ID: "o-1", ClientKey: "tap-1", Status: store.OrderPendingPayment}
+	if err := m.CreateOrder(ctx, first); err != nil {
+		t.Fatalf("CreateOrder: %v", err)
+	}
+
+	duplicate := store.Order{ID: "o-2", ClientKey: "tap-1", Status: store.OrderPendingPayment}
+	if err := m.CreateOrder(ctx, duplicate); err != store.ErrAlreadyExists {
+		t.Fatalf("CreateOrder con clave repetida = %v, se esperaba ErrAlreadyExists", err)
+	}
+
+	got, err := m.OrderByClientKey(ctx, "tap-1")
+	if err != nil {
+		t.Fatalf("OrderByClientKey: %v", err)
+	}
+	if got.ID != "o-1" {
+		t.Fatalf("OrderByClientKey devolvió %q, se esperaba %q", got.ID, "o-1")
+	}
+
+	if _, err := m.OrderByClientKey(ctx, "no-existe"); err != store.ErrNotFound {
+		t.Fatalf("OrderByClientKey de una clave desconocida = %v, se esperaba ErrNotFound", err)
+	}
+
+	for _, id := range []string{"o-3", "o-4"} {
+		if err := m.CreateOrder(ctx, store.Order{ID: id}); err != nil {
+			t.Fatalf("dos órdenes sin clave tienen que convivir: %v", err)
+		}
+	}
+	if _, err := m.OrderByClientKey(ctx, ""); err != store.ErrNotFound {
+		t.Fatalf("la clave vacía no se indexa: %v", err)
+	}
+}

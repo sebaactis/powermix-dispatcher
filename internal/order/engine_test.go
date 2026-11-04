@@ -1585,3 +1585,34 @@ func TestEngineReconcileDueIgnoresALineThatIsNotDue(t *testing.T) {
 		t.Fatalf("la línea cambió sin estar vencida: %+v, se esperaba %+v", after, before)
 	}
 }
+
+func TestEnginePlaceIsIdempotentByClientKey(t *testing.T) {
+	st := newRecordingStore()
+	engine := order.New(
+		st,
+		map[string]dispenser.Dispenser{
+			"batidos": &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
+			"snacks":  &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
+		},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	draft := comboDraft()
+	draft.ClientKey = "tap-1"
+
+	first := place(t, engine, draft)
+	second := place(t, engine, draft)
+
+	if first.ID != second.ID {
+		t.Fatalf("la misma clave creó dos órdenes: %q y %q", first.ID, second.ID)
+	}
+
+	other := comboDraft()
+	other.ClientKey = "tap-2"
+	third := place(t, engine, other)
+
+	if third.ID == first.ID {
+		t.Fatalf("dos claves distintas devolvieron la misma orden %q", third.ID)
+	}
+}

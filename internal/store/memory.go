@@ -16,21 +16,23 @@ type webhookKey struct {
 }
 
 type Memory struct {
-	mu        sync.Mutex
-	orders    map[string]Order
-	lineOrder map[string]string
-	attempts  map[string]struct{}
-	webhooks  map[webhookKey]struct{}
+	mu         sync.Mutex
+	orders     map[string]Order
+	lineOrder  map[string]string
+	clientKeys map[string]string
+	attempts   map[string]struct{}
+	webhooks   map[webhookKey]struct{}
 }
 
 var _ Store = (*Memory)(nil)
 
 func NewMemory() *Memory {
 	return &Memory{
-		orders:    make(map[string]Order),
-		lineOrder: make(map[string]string),
-		attempts:  make(map[string]struct{}),
-		webhooks:  make(map[webhookKey]struct{}),
+		orders:     make(map[string]Order),
+		lineOrder:  make(map[string]string),
+		clientKeys: make(map[string]string),
+		attempts:   make(map[string]struct{}),
+		webhooks:   make(map[webhookKey]struct{}),
 	}
 }
 
@@ -42,9 +44,36 @@ func (m *Memory) CreateOrder(ctx context.Context, order Order) error {
 		return ErrAlreadyExists
 	}
 
+	if order.ClientKey != "" {
+		if _, exists := m.clientKeys[order.ClientKey]; exists {
+			return ErrAlreadyExists
+		}
+	}
+
 	m.putOrderLocked(order)
 
+	if order.ClientKey != "" {
+		m.clientKeys[order.ClientKey] = order.ID
+	}
+
 	return nil
+}
+
+func (m *Memory) OrderByClientKey(ctx context.Context, key string) (Order, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	orderID, exists := m.clientKeys[key]
+	if !exists {
+		return Order{}, ErrNotFound
+	}
+
+	order, exists := m.orders[orderID]
+	if !exists {
+		return Order{}, ErrNotFound
+	}
+
+	return cloneOrder(order), nil
 }
 
 func (m *Memory) Order(ctx context.Context, orderID string) (Order, error) {

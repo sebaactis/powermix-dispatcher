@@ -26,6 +26,7 @@ type Order struct {
 	ID          string
 	KioskID     string
 	ComboID     string
+	ClientKey   string
 	AmountCents int64
 	Currency    string
 	Status      OrderStatus
@@ -77,6 +78,7 @@ var (
 type Store interface {
 	CreateOrder(ctx context.Context, order Order) error
 	Order(ctx context.Context, orderID string) (Order, error)
+	OrderByClientKey(ctx context.Context, key string) (Order, error)
 	SaveOrder(ctx context.Context, order Order) error
 	SaveLine(ctx context.Context, line Line) error
 	AppendAttempt(ctx context.Context, attempt Attempt) error

@@ -33,6 +33,7 @@ const (
 type Draft struct {
 	KioskID     string
 	ComboID     string
+	ClientKey   string
 	AmountCents int64
 	Currency    string
 	Items       []Item
@@ -155,11 +156,22 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 		return store.Order{}, err
 	}
 
+	if draft.ClientKey != "" {
+		existing, err := e.store.OrderByClientKey(ctx, draft.ClientKey)
+		switch {
+		case err == nil:
+			return existing, nil
+		case !errors.Is(err, store.ErrNotFound):
+			return store.Order{}, err
+		}
+	}
+
 	orderID := e.nextID()
 	placed := store.Order{
 		ID:          orderID,
 		KioskID:     draft.KioskID,
 		ComboID:     draft.ComboID,
+		ClientKey:   draft.ClientKey,
 		AmountCents: draft.AmountCents,
 		Currency:    draft.Currency,
 		Status:      store.OrderPendingPayment,
@@ -183,6 +195,13 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 	}
 
 	if err := e.store.CreateOrder(ctx, placed); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) && draft.ClientKey != "" {
+			existing, readErr := e.store.OrderByClientKey(ctx, draft.ClientKey)
+			if readErr == nil {
+				return existing, nil
+			}
+		}
+
 		return store.Order{}, err
 	}
 
