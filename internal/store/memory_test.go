@@ -36,16 +36,32 @@ func fixtureOrder() store.Order {
 				OrderID:     "order-1",
 				Position:    1,
 				MachineType: "batidos",
-				SKU:         "sku-batido",
-				AmountCents: 1500,
-				State:       dispenser.LinePending,
-				Ref:         "exchange-code-1",
+				Machine: dispenser.MachineRef{
+					KioskID:      "kiosk-1",
+					Type:         "batidos",
+					Name:         "Batidos Powermix",
+					DeviceID:     "device-1",
+					DeviceNo:     "1",
+					DeviceTypeID: "2",
+					MID:          "mid-batidos",
+				},
+				SKU:            "sku-batido",
+				AmountCents:    1500,
+				State:          dispenser.LinePending,
+				Ref:            "exchange-code-1",
+				ReconcileUntil: baseTime.Add(4 * time.Minute),
 			},
 			{
 				ID:          snackLineID,
 				OrderID:     "order-1",
 				Position:    2,
 				MachineType: "snacks",
+				Machine: dispenser.MachineRef{
+					KioskID: "kiosk-1",
+					Type:    "snacks",
+					Name:    "Snacks Powermix",
+					MID:     "mid-snacks",
+				},
 				SKU:         "sku-snack",
 				AmountCents: 1000,
 				State:       dispenser.LinePending,
@@ -170,6 +186,7 @@ func TestMemorySaveOrderReplacesTheWholeOrder(t *testing.T) {
 	edited.Lines[0].Ref = "order-no-1"
 	edited.Lines[0].Attempts = 1
 	edited.Lines[0].DeadlineAt = baseTime.Add(3 * time.Minute)
+	edited.Lines[0].ReconcileUntil = baseTime.Add(5 * time.Minute)
 
 	if err := m.SaveOrder(context.Background(), edited); err != nil {
 		t.Fatalf("SaveOrder: %v", err)
@@ -186,6 +203,44 @@ func TestMemorySaveOrderReplacesTheWholeOrder(t *testing.T) {
 	}
 }
 
+func TestMemoryLineKeepsItsMachineThroughThePort(t *testing.T) {
+	m := store.NewMemory()
+	want := fixtureOrder()
+	mustCreate(t, m, want)
+
+	created := mustOrder(t, m, want.ID)
+	if created.Lines[0].Machine != want.Lines[0].Machine {
+		t.Fatalf("CreateOrder perdió la máquina: %+v, se esperaba %+v", created.Lines[0].Machine, want.Lines[0].Machine)
+	}
+	if created.Lines[1].Machine != want.Lines[1].Machine {
+		t.Fatalf("CreateOrder perdió la máquina: %+v, se esperaba %+v", created.Lines[1].Machine, want.Lines[1].Machine)
+	}
+
+	line := lineByID(t, created.Lines, drinkLineID)
+	line.Machine.MID = "mid-cambiado"
+	line.State = dispenser.LineSent
+	mustSaveLine(t, m, line)
+
+	saved := lineByID(t, mustOrder(t, m, want.ID).Lines, drinkLineID)
+	if saved.Machine != line.Machine {
+		t.Fatalf("SaveLine perdió la máquina: %+v, se esperaba %+v", saved.Machine, line.Machine)
+	}
+
+	read := lineByID(t, mustOrder(t, m, want.ID).Lines, drinkLineID)
+	read.Machine.DeviceID = "device-tocado"
+	read.Machine.MID = "mid-tocado"
+
+	again := lineByID(t, mustOrder(t, m, want.ID).Lines, drinkLineID)
+	if again.Machine != line.Machine {
+		t.Fatalf("mutar la máquina de la línea leída cambió lo guardado: %+v, se esperaba %+v", again.Machine, line.Machine)
+	}
+
+	untouched := lineByID(t, mustOrder(t, m, want.ID).Lines, snackLineID)
+	if untouched.Machine != want.Lines[1].Machine {
+		t.Fatalf("SaveLine tocó la máquina de otra línea: %+v, se esperaba %+v", untouched.Machine, want.Lines[1].Machine)
+	}
+}
+
 func TestMemorySaveLineUpdatesOnlyThatLine(t *testing.T) {
 	m := store.NewMemory()
 	mustCreate(t, m, fixtureOrder())
@@ -195,6 +250,7 @@ func TestMemorySaveLineUpdatesOnlyThatLine(t *testing.T) {
 	line.Attempts = 2
 	line.Ref = "order-no-1"
 	line.DeadlineAt = baseTime.Add(2 * time.Minute)
+	line.ReconcileUntil = baseTime.Add(4 * time.Minute)
 	line.LastError = "el proveedor no respondió"
 	mustSaveLine(t, m, line)
 
@@ -444,6 +500,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 			{ID: "line-delivered", OrderID: "order-1", Position: 6, MachineType: "snacks", State: dispenser.LineDelivered, DeadlineAt: baseTime},
 			{ID: "line-failed", OrderID: "order-1", Position: 7, MachineType: "batidos", State: dispenser.LineFailed, DeadlineAt: baseTime},
 			{ID: "line-in-doubt", OrderID: "order-1", Position: 8, MachineType: "snacks", State: dispenser.LineInDoubt, DeadlineAt: baseTime},
+			{ID: "line-in-doubt-sin-plazo", OrderID: "order-1", Position: 10, MachineType: "snacks", State: dispenser.LineInDoubt},
 			{ID: "line-pending", OrderID: "order-1", Position: 9, MachineType: "batidos", State: dispenser.LinePending, DeadlineAt: baseTime},
 		},
 	}
@@ -463,7 +520,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 	mustCreate(t, m, first)
 	mustCreate(t, m, second)
 
-	wantAll := []string{"line-a", "line-b", "line-c", "line-justo-ahora"}
+	wantAll := []string{"line-in-doubt", "line-a", "line-b", "line-c", "line-justo-ahora"}
 
 	cases := []struct {
 		limit int
@@ -472,7 +529,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 		{limit: 0, want: wantAll},
 		{limit: -1, want: wantAll},
 		{limit: 100, want: wantAll},
-		{limit: 4, want: wantAll},
+		{limit: len(wantAll), want: wantAll},
 		{limit: 3, want: wantAll[:3]},
 		{limit: 2, want: wantAll[:2]},
 		{limit: 1, want: wantAll[:1]},

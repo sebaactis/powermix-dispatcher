@@ -36,17 +36,19 @@ type Order struct {
 }
 
 type Line struct {
-	ID          string
-	OrderID     string
-	Position    int
-	MachineType string
-	SKU         string
-	AmountCents int64
-	State       dispenser.LineState
-	Ref         string
-	Attempts    int
-	DeadlineAt  time.Time
-	LastError   string
+	ID             string
+	OrderID        string
+	Position       int
+	MachineType    string
+	Machine        dispenser.MachineRef
+	SKU            string
+	AmountCents    int64
+	State          dispenser.LineState
+	Ref            string
+	Attempts       int
+	DeadlineAt     time.Time
+	ReconcileUntil time.Time
+	LastError      string
 }
 
 type Attempt struct {

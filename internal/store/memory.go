@@ -180,7 +180,7 @@ func cloneOrder(order Order) Order {
 }
 
 func lineDue(line Line, now time.Time) bool {
-	if line.State != dispenser.LineSent && line.State != dispenser.LineBrewing {
+	if line.State != dispenser.LineSent && line.State != dispenser.LineBrewing && line.State != dispenser.LineInDoubt {
 		return false
 	}
 
