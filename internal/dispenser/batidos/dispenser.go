@@ -2,6 +2,7 @@ package batidos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 const (
 	defaultCampaignWindow = 10 * time.Minute
 	defaultCampaignName   = "combo-remoto"
+
+	providerName = "batidos"
 
 	campaignExchangeTypeSingleGoods = 1
 )
@@ -90,7 +93,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 		GoodsIDs:     []string{req.SKU},
 	})
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("no se pudo emitir el código de canje: %w", err)
+		return dispenser.Attempt{}, fmt.Errorf("no se pudo emitir el código de canje: %w", asPortRejection(err))
 	}
 
 	code := campaign.ExchangeCodes[0]
@@ -108,7 +111,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 		}
 
 		return dispenser.Attempt{Accepted: brewed.Accepted, Ref: code, Detail: detail},
-			fmt.Errorf("no se pudo disparar el batido: %w", err)
+			fmt.Errorf("no se pudo disparar el batido: %w", asPortRejection(err))
 	}
 
 	return dispenser.Attempt{Accepted: true, Ref: code, Detail: brewed.Detail}, nil
@@ -117,7 +120,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
 	info, err := d.client.OrderInfo(ctx, req.Ref, req.Machine.DeviceID)
 	if err != nil {
-		return dispenser.Status{}, err
+		return dispenser.Status{}, asPortRejection(err)
 	}
 
 	switch info.Status {
@@ -133,5 +136,19 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 			Ref:    info.OrderNo,
 			Reason: fmt.Sprintf("el proveedor informó un estado desconocido: %d", int(info.Status)),
 		}, nil
+	}
+}
+
+func asPortRejection(err error) error {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+
+	return &dispenser.Rejection{
+		Provider:   providerName,
+		HTTPStatus: apiErr.HTTPStatus,
+		Code:       apiErr.Code,
+		Message:    apiErr.Message,
 	}
 }

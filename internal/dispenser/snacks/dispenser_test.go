@@ -219,6 +219,58 @@ func TestDispenserDispatchFailsWhenTheProviderRejects(t *testing.T) {
 	}
 }
 
+func TestDispenserDispatchReportsAProviderRefusalAsAPortRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"code":    40010,
+			"message": "el producto no está en venta",
+			"result":  nil,
+		})
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+	d := snacks.NewDispenser(client)
+
+	attempt, err := d.Dispatch(context.Background(), newDispenserRequest())
+	if err == nil {
+		t.Fatalf("se esperaba el rechazo del proveedor, attempt = %+v", attempt)
+	}
+
+	var rejection *dispenser.Rejection
+	if !errors.As(err, &rejection) {
+		t.Fatalf("err = %v, se esperaba un *dispenser.Rejection", err)
+	}
+	if rejection.Provider != "snacks" {
+		t.Fatalf("Provider = %q, se esperaba \"snacks\"", rejection.Provider)
+	}
+	if rejection.Code != 40010 {
+		t.Fatalf("Code = %d, se esperaba 40010", rejection.Code)
+	}
+	if rejection.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("HTTPStatus = %d, se esperaba %d", rejection.HTTPStatus, http.StatusBadRequest)
+	}
+	if !strings.Contains(rejection.Message, "no está en venta") {
+		t.Fatalf("Message = %q, se esperaba el mensaje del proveedor", rejection.Message)
+	}
+	if !strings.Contains(rejection.Error(), "snacks") || !strings.Contains(rejection.Error(), "40010") {
+		t.Fatalf("Error() = %q, se esperaba que nombre al proveedor y el código", rejection.Error())
+	}
+
+	var apiErr *snacks.APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("el adaptador dejó escapar el tipo propio del proveedor: %v", err)
+	}
+
+	var zero dispenser.Attempt
+	if attempt != zero {
+		t.Fatalf("no debe inventar un intento: %+v", attempt)
+	}
+}
+
 func TestDispenserReconcileReportsAnUnknownOrderAsInDoubt(t *testing.T) {
 	d, _ := newDispenserWithFake(t)
 
@@ -306,9 +358,23 @@ func TestDispenserReconcilePropagatesAProviderError(t *testing.T) {
 		t.Fatalf("se esperaba el error del proveedor, status = %+v", status)
 	}
 
+	var rejection *dispenser.Rejection
+	if !errors.As(err, &rejection) {
+		t.Fatalf("err = %v, se esperaba un *dispenser.Rejection", err)
+	}
+	if rejection.Provider != "snacks" {
+		t.Fatalf("Provider = %q, se esperaba \"snacks\"", rejection.Provider)
+	}
+	if rejection.Code != 40004 {
+		t.Fatalf("Code = %d, se esperaba 40004", rejection.Code)
+	}
+	if rejection.HTTPStatus != http.StatusUnauthorized {
+		t.Fatalf("HTTPStatus = %d, se esperaba %d", rejection.HTTPStatus, http.StatusUnauthorized)
+	}
+
 	var apiErr *snacks.APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("err = %v, se esperaba un *snacks.APIError", err)
+	if errors.As(err, &apiErr) {
+		t.Fatalf("el adaptador dejó escapar el tipo propio del proveedor: %v", err)
 	}
 
 	var zero dispenser.Status

@@ -195,6 +195,52 @@ func TestDispenserDispatchKeepsTheCodeWhenTheBrewIsRejected(t *testing.T) {
 	}
 }
 
+func TestDispenserDispatchReportsAProviderRefusalAsAPortRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":40005,"success":false,"msg":"nonce repetido","data":null}`))
+	}))
+	defer srv.Close()
+
+	client := batidos.NewClient(srv.URL, testKey, testSecret)
+	d := batidos.NewDispenser(client)
+
+	attempt, err := d.Dispatch(context.Background(), newRequest())
+	if err == nil {
+		t.Fatalf("se esperaba el rechazo del proveedor, attempt = %+v", attempt)
+	}
+
+	var rejection *dispenser.Rejection
+	if !errors.As(err, &rejection) {
+		t.Fatalf("err = %v, se esperaba un *dispenser.Rejection", err)
+	}
+	if rejection.Provider != "batidos" {
+		t.Fatalf("Provider = %q, se esperaba \"batidos\"", rejection.Provider)
+	}
+	if rejection.Code != 40005 {
+		t.Fatalf("Code = %d, se esperaba 40005", rejection.Code)
+	}
+	if rejection.HTTPStatus != http.StatusOK {
+		t.Fatalf("HTTPStatus = %d, se esperaba %d", rejection.HTTPStatus, http.StatusOK)
+	}
+	if !strings.Contains(rejection.Message, "nonce repetido") {
+		t.Fatalf("Message = %q, se esperaba el mensaje del proveedor", rejection.Message)
+	}
+	if !strings.Contains(rejection.Error(), "batidos") || !strings.Contains(rejection.Error(), "40005") {
+		t.Fatalf("Error() = %q, se esperaba que nombre al proveedor y el código", rejection.Error())
+	}
+
+	var apiErr *batidos.APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("el adaptador dejó escapar el tipo propio del proveedor: %v", err)
+	}
+
+	var zero dispenser.Attempt
+	if attempt != zero {
+		t.Fatalf("no debe inventar un intento: %+v", attempt)
+	}
+}
+
 func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	d, fake, _ := newDispenserWithFake(t)
 	ctx := context.Background()
@@ -253,9 +299,20 @@ func TestDispenserReconcileFailsWhenTheCodeWasNeverIssued(t *testing.T) {
 		t.Fatalf("se esperaba el rechazo del proveedor, status = %+v", status)
 	}
 
+	var rejection *dispenser.Rejection
+	if !errors.As(err, &rejection) {
+		t.Fatalf("err = %v, se esperaba un *dispenser.Rejection", err)
+	}
+	if rejection.Provider != "batidos" {
+		t.Fatalf("Provider = %q, se esperaba \"batidos\"", rejection.Provider)
+	}
+	if rejection.Code == 0 {
+		t.Fatalf("Code = %d, se esperaba el código del proveedor", rejection.Code)
+	}
+
 	var apiErr *batidos.APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("err = %v, se esperaba un *batidos.APIError", err)
+	if errors.As(err, &apiErr) {
+		t.Fatalf("el adaptador dejó escapar el tipo propio del proveedor: %v", err)
 	}
 
 	var zero dispenser.Status

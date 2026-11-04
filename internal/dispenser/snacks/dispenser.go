@@ -2,6 +2,7 @@ package snacks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,6 +15,8 @@ const (
 	firstPage = 1
 
 	devicesPageSize = 10
+
+	providerName = "snacks"
 )
 
 var _ dispenser.Dispenser = (*Dispenser)(nil)
@@ -92,7 +95,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 		},
 	})
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("no se pudo disparar el despacho remoto: %w", err)
+		return dispenser.Attempt{}, fmt.Errorf("no se pudo disparar el despacho remoto: %w", asPortRejection(err))
 	}
 
 	return dispenser.Attempt{Accepted: attempt.Accepted, Ref: attempt.Ref, Detail: attempt.Detail}, nil
@@ -106,7 +109,7 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 
 	page, err := d.client.Orders(ctx, firstPage, d.ordersPageSize, "")
 	if err != nil {
-		return dispenser.Status{}, err
+		return dispenser.Status{}, asPortRejection(err)
 	}
 
 	order, found := findOrder(page.Items, ref)
@@ -135,6 +138,20 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 
 func centsToUnits(cents int64) float64 {
 	return float64(cents) / 100
+}
+
+func asPortRejection(err error) error {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+
+	return &dispenser.Rejection{
+		Provider:   providerName,
+		HTTPStatus: apiErr.HTTPStatus,
+		Code:       apiErr.Code,
+		Message:    apiErr.Message,
+	}
 }
 
 func findDevice(devices []Device, deviceCode string) (Device, bool) {
