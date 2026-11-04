@@ -84,6 +84,8 @@ func CanLineTransition(from, to dispenser.LineState) bool {
 			to == dispenser.LineInDoubt
 	case dispenser.LineInDoubt:
 		return to == dispenser.LineDelivered || to == dispenser.LineFailed
+	case dispenser.LineFailed:
+		return to == dispenser.LineSent
 	default:
 		return false
 	}

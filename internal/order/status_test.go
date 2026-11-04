@@ -251,6 +251,7 @@ func TestCanLineTransitionAllowsTheLegalEdges(t *testing.T) {
 		{from: dispenser.LineBrewing, to: dispenser.LineInDoubt},
 		{from: dispenser.LineInDoubt, to: dispenser.LineDelivered},
 		{from: dispenser.LineInDoubt, to: dispenser.LineFailed},
+		{from: dispenser.LineFailed, to: dispenser.LineSent},
 	}
 
 	for _, edge := range edges {
@@ -282,7 +283,6 @@ func TestCanLineTransitionRejectsIllegalEdges(t *testing.T) {
 		{from: dispenser.LineDelivered, to: dispenser.LineInDoubt},
 		{from: dispenser.LineDelivered, to: dispenser.LineDelivered},
 		{from: dispenser.LineFailed, to: dispenser.LinePending},
-		{from: dispenser.LineFailed, to: dispenser.LineSent},
 		{from: dispenser.LineFailed, to: dispenser.LineBrewing},
 		{from: dispenser.LineFailed, to: dispenser.LineDelivered},
 		{from: dispenser.LineFailed, to: dispenser.LineInDoubt},
@@ -302,7 +302,7 @@ func TestCanLineTransitionRejectsIllegalEdges(t *testing.T) {
 	}
 }
 
-func TestCanLineTransitionTreatsDeliveredAndFailedAsTerminal(t *testing.T) {
+func TestCanLineTransitionTreatsOnlyDeliveredAsTerminal(t *testing.T) {
 	all := []dispenser.LineState{
 		dispenser.LinePending,
 		dispenser.LineSent,
@@ -312,11 +312,11 @@ func TestCanLineTransitionTreatsDeliveredAndFailedAsTerminal(t *testing.T) {
 		dispenser.LineInDoubt,
 	}
 
-	for _, terminal := range []dispenser.LineState{dispenser.LineDelivered, dispenser.LineFailed} {
-		for _, to := range all {
-			if order.CanLineTransition(terminal, to) {
-				t.Fatalf("CanLineTransition(%q, %q) = true, %q es terminal", terminal, to, terminal)
-			}
+	terminal := dispenser.LineDelivered
+
+	for _, to := range all {
+		if order.CanLineTransition(terminal, to) {
+			t.Fatalf("CanLineTransition(%q, %q) = true, %q es terminal", terminal, to, terminal)
 		}
 	}
 }
@@ -476,11 +476,10 @@ func TestAdvanceLine(t *testing.T) {
 			wantErr: order.ErrInvalidTransition,
 		},
 		{
-			name:    "fallada no vuelve a enviada",
+			name:    "fallada vuelve a enviada para reintentar",
 			current: dispenser.LineFailed,
 			next:    dispenser.LineSent,
-			want:    dispenser.LineFailed,
-			wantErr: order.ErrInvalidTransition,
+			want:    dispenser.LineSent,
 		},
 		{
 			name:    "en duda no vuelve a pendiente",

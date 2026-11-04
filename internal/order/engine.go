@@ -11,12 +11,17 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
-	"compras-remotas/internal/dispenser/batidos"
-	"compras-remotas/internal/dispenser/snacks"
+	"compras-remotas/internal/notify"
 	"compras-remotas/internal/store"
 )
 
 const defaultLineDeadline = 2 * time.Minute
+
+const defaultReconcileWindow = 2 * time.Minute
+
+const defaultReconcileInterval = 30 * time.Second
+
+const defaultMaxAttempts = 2
 
 const (
 	outcomeAmbiguous = "ambiguous"
@@ -34,24 +39,32 @@ type Draft struct {
 }
 
 type Item struct {
-	MachineType string
 	SKU         string
 	AmountCents int64
 	Machine     dispenser.MachineRef
 }
 
+const (
+	kindOrderInDoubt = "order_in_doubt"
+	kindOrderFailed  = "order_failed"
+)
+
+const reasonReconcileExpired = "se agotó el plazo de reconciliación sin confirmar la entrega"
+
 type Option func(*Engine)
 
 type Engine struct {
-	store    store.Store
-	machines map[string]dispenser.Dispenser
-	now      func() time.Time
-	deadline time.Duration
-	newID    func() string
+	store             store.Store
+	machines          map[string]dispenser.Dispenser
+	now               func() time.Time
+	deadline          time.Duration
+	reconcileWindow   time.Duration
+	reconcileInterval time.Duration
+	maxAttempts       int
+	notifier          notify.Notifier
+	newID             func() string
 
-	idMu   sync.Mutex
-	refsMu sync.RWMutex
-	refs   map[string]dispenser.MachineRef
+	idMu sync.Mutex
 }
 
 type dispatchVerdict struct {
@@ -62,12 +75,14 @@ type dispatchVerdict struct {
 
 func New(st store.Store, machines map[string]dispenser.Dispenser, opts ...Option) *Engine {
 	engine := &Engine{
-		store:    st,
-		machines: machines,
-		now:      time.Now,
-		deadline: defaultLineDeadline,
-		newID:    newRandomID,
-		refs:     make(map[string]dispenser.MachineRef),
+		store:             st,
+		machines:          machines,
+		now:               time.Now,
+		deadline:          defaultLineDeadline,
+		reconcileWindow:   defaultReconcileWindow,
+		reconcileInterval: defaultReconcileInterval,
+		maxAttempts:       defaultMaxAttempts,
+		newID:             newRandomID,
 	}
 
 	for _, opt := range opts {
@@ -91,6 +106,38 @@ func WithLineDeadline(d time.Duration) Option {
 	return func(engine *Engine) {
 		if d > 0 {
 			engine.deadline = d
+		}
+	}
+}
+
+func WithReconcileWindow(d time.Duration) Option {
+	return func(engine *Engine) {
+		if d > 0 {
+			engine.reconcileWindow = d
+		}
+	}
+}
+
+func WithReconcileInterval(d time.Duration) Option {
+	return func(engine *Engine) {
+		if d > 0 {
+			engine.reconcileInterval = d
+		}
+	}
+}
+
+func WithNotifier(n notify.Notifier) Option {
+	return func(engine *Engine) {
+		if n != nil {
+			engine.notifier = n
+		}
+	}
+}
+
+func WithMaxAttempts(n int) Option {
+	return func(engine *Engine) {
+		if n > 0 {
+			engine.maxAttempts = n
 		}
 	}
 }
@@ -120,17 +167,15 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 		Lines:       make([]store.Line, 0, len(draft.Items)),
 	}
 
-	refs := make(map[string]dispenser.MachineRef, len(draft.Items))
-
 	for i, item := range draft.Items {
 		lineID := e.nextID()
-		refs[lineID] = item.Machine
 
 		placed.Lines = append(placed.Lines, store.Line{
 			ID:          lineID,
 			OrderID:     orderID,
 			Position:    i + 1,
-			MachineType: item.MachineType,
+			MachineType: item.Machine.Type,
+			Machine:     item.Machine,
 			SKU:         item.SKU,
 			AmountCents: item.AmountCents,
 			State:       dispenser.LinePending,
@@ -140,12 +185,6 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 	if err := e.store.CreateOrder(ctx, placed); err != nil {
 		return store.Order{}, err
 	}
-
-	e.refsMu.Lock()
-	for lineID, ref := range refs {
-		e.refs[lineID] = ref
-	}
-	e.refsMu.Unlock()
 
 	return placed, nil
 }
@@ -215,67 +254,255 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 	return joined
 }
 
-func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Line) error {
-	number := line.Attempts + 1
-
-	attempt := store.Attempt{
-		ID:             e.nextID(),
-		LineID:         line.ID,
-		Number:         number,
-		IdempotencyKey: idempotencyKey(orderID, line.ID, number),
-		Outcome:        outcomeAmbiguous,
-		StartedAt:      e.now(),
-	}
-
-	if err := e.store.AppendAttempt(ctx, attempt); err != nil {
-		if errors.Is(err, store.ErrAlreadyExists) {
-			return nil
-		}
-
+func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
+	due, err := e.store.DueLines(ctx, e.now(), limit)
+	if err != nil {
 		return err
 	}
 
-	ref, ok := e.machineRef(line.ID)
-	if !ok {
-		return fmt.Errorf("no se conoce la máquina de la línea %q", line.ID)
+	failures := make([]error, 0, len(due))
+	touched := make([]string, 0, len(due))
+	seen := make(map[string]struct{}, len(due))
+
+	for _, line := range due {
+		closed, lineErr := e.reconcileLine(ctx, line)
+		if lineErr != nil {
+			failures = append(failures, lineErr)
+		}
+
+		if !closed {
+			continue
+		}
+
+		if _, ok := seen[line.OrderID]; ok {
+			continue
+		}
+
+		seen[line.OrderID] = struct{}{}
+		touched = append(touched, line.OrderID)
 	}
 
+	for _, orderID := range touched {
+		if err := e.settleOrder(ctx, orderID); err != nil {
+			failures = append(failures, err)
+		}
+	}
+
+	return errors.Join(failures...)
+}
+
+func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, error) {
 	machine, ok := e.machines[line.MachineType]
 	if !ok {
-		return fmt.Errorf("no hay una máquina configurada para el tipo %q", line.MachineType)
+		unconfigured := fmt.Errorf("no hay una máquina configurada para el tipo %q", line.MachineType)
+
+		closed, scheduleErr := e.extendReconcile(ctx, line, unconfigured.Error())
+
+		return closed, errors.Join(unconfigured, scheduleErr)
 	}
 
-	result, dispatchErr := machine.Dispatch(ctx, dispenser.Request{
-		OrderID:     orderID,
+	status, reconcileErr := machine.Reconcile(ctx, dispenser.Request{
+		OrderID:     line.OrderID,
 		LineID:      line.ID,
-		Machine:     ref,
+		Machine:     line.Machine,
 		SKU:         line.SKU,
 		AmountCents: line.AmountCents,
+		Ref:         line.Ref,
 	})
 
-	verdict := classifyDispatch(result, dispatchErr)
+	if reconcileErr != nil {
+		closed, scheduleErr := e.extendReconcile(ctx, line, reconcileErr.Error())
 
-	attempt.Outcome = verdict.outcome
-	attempt.Detail = verdict.detail
-	attempt.FinishedAt = e.now()
-
-	attemptErr := e.store.SaveAttempt(ctx, attempt)
-
-	state, stateErr := transitionLine(line.State, verdict.state)
-
-	line.State = state
-	line.Attempts = number
-
-	if verdict.outcome == outcomeAccepted {
-		line.Ref = result.Ref
-		line.DeadlineAt = e.now().Add(e.deadline)
-	} else {
-		line.LastError = verdict.detail
+		return closed, errors.Join(reconcileErr, scheduleErr)
 	}
 
-	lineErr := e.store.SaveLine(ctx, line)
+	switch status.State {
+	case dispenser.LineDelivered:
+		return true, e.closeLine(ctx, line, dispenser.LineDelivered, "")
+	case dispenser.LineFailed:
+		return true, e.closeLine(ctx, line, dispenser.LineFailed, status.Reason)
+	default:
+		return e.extendReconcile(ctx, line, status.Reason)
+	}
+}
 
-	return errors.Join(attemptErr, stateErr, lineErr)
+func (e *Engine) closeLine(ctx context.Context, line store.Line, target dispenser.LineState, detail string) error {
+	state, stateErr := transitionLine(line.State, target)
+
+	line.State = state
+	line.DeadlineAt = time.Time{}
+	line.ReconcileUntil = time.Time{}
+
+	if target == dispenser.LineDelivered {
+		line.LastError = ""
+	} else if detail != "" {
+		line.LastError = detail
+	}
+
+	return errors.Join(stateErr, e.store.SaveLine(ctx, line))
+}
+
+func (e *Engine) extendReconcile(ctx context.Context, line store.Line, detail string) (bool, error) {
+	now := e.now()
+
+	if detail != "" {
+		line.LastError = detail
+	}
+
+	if line.ReconcileUntil.IsZero() || !now.Before(line.ReconcileUntil) {
+		state, stateErr := transitionLine(line.State, dispenser.LineInDoubt)
+
+		line.State = state
+		line.DeadlineAt = time.Time{}
+		line.ReconcileUntil = time.Time{}
+
+		if line.LastError == "" {
+			line.LastError = reasonReconcileExpired
+		}
+
+		return true, errors.Join(stateErr, e.store.SaveLine(ctx, line))
+	}
+
+	next := now.Add(e.reconcileInterval)
+	if next.After(line.ReconcileUntil) {
+		next = line.ReconcileUntil
+	}
+
+	line.DeadlineAt = next
+
+	return false, e.store.SaveLine(ctx, line)
+}
+
+func (e *Engine) settleOrder(ctx context.Context, orderID string) error {
+	loaded, err := e.store.Order(ctx, orderID)
+	if err != nil {
+		return err
+	}
+
+	next, err := AdvanceOrder(loaded.Status, loaded.Lines)
+	if err != nil {
+		return fmt.Errorf("orden %s: %w", orderID, err)
+	}
+
+	if next != loaded.Status {
+		loaded.Status = next
+
+		if err := e.store.SaveOrder(ctx, loaded); err != nil {
+			return err
+		}
+	}
+
+	return e.notifyOrder(ctx, loaded)
+}
+
+func (e *Engine) notifyOrder(ctx context.Context, placed store.Order) error {
+	if e.notifier == nil {
+		return nil
+	}
+
+	event := notify.Event{OrderID: placed.ID}
+
+	switch placed.Status {
+	case store.OrderInDoubt:
+		event.Kind = kindOrderInDoubt
+		event.Detail = "el pedido quedó en duda: no se pudo confirmar la entrega y hace falta una persona"
+	case store.OrderFailed:
+		event.Kind = kindOrderFailed
+		event.Detail = "el pedido quedó fallido: el proveedor informó que no hubo entrega"
+	default:
+		return nil
+	}
+
+	return e.notifier.Notify(ctx, event)
+}
+
+func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Line) error {
+	for line.Attempts < e.maxAttempts {
+		number := line.Attempts + 1
+
+		attempt := store.Attempt{
+			ID:             e.nextID(),
+			LineID:         line.ID,
+			Number:         number,
+			IdempotencyKey: idempotencyKey(orderID, line.ID, number),
+			Outcome:        outcomeAmbiguous,
+			StartedAt:      e.now(),
+		}
+
+		if err := e.store.AppendAttempt(ctx, attempt); err != nil {
+			if errors.Is(err, store.ErrAlreadyExists) {
+				return nil
+			}
+
+			return err
+		}
+
+		machine, ok := e.machines[line.MachineType]
+		if !ok {
+			return fmt.Errorf("no hay una máquina configurada para el tipo %q", line.MachineType)
+		}
+
+		result, dispatchErr := machine.Dispatch(ctx, dispenser.Request{
+			OrderID:     orderID,
+			LineID:      line.ID,
+			Machine:     line.Machine,
+			SKU:         line.SKU,
+			AmountCents: line.AmountCents,
+		})
+
+		verdict := classifyDispatch(result, dispatchErr)
+
+		attempt.Outcome = verdict.outcome
+		attempt.Detail = verdict.detail
+		attempt.FinishedAt = e.now()
+
+		attemptErr := e.store.SaveAttempt(ctx, attempt)
+
+		state, stateErr := transitionLine(line.State, verdict.state)
+
+		line.State = state
+		line.Attempts = number
+
+		if verdict.outcome == outcomeAccepted {
+			acceptedAt := e.now()
+
+			line.Ref = result.Ref
+			line.DeadlineAt = acceptedAt.Add(e.deadline)
+			line.ReconcileUntil = acceptedAt.Add(e.deadline + e.reconcileWindow)
+			line.LastError = ""
+		} else {
+			line.LastError = verdict.detail
+
+			if verdict.outcome == outcomeError {
+				doubtfulAt := e.now()
+				line.DeadlineAt = doubtfulAt.Add(e.reconcileInterval)
+				line.ReconcileUntil = doubtfulAt.Add(e.reconcileWindow)
+			}
+		}
+
+		lineErr := e.store.SaveLine(ctx, line)
+
+		if verdict.outcome != outcomeRejected {
+			return errors.Join(attemptErr, stateErr, lineErr)
+		}
+
+		if line.Attempts >= e.maxAttempts {
+			return errors.Join(attemptErr, stateErr, lineErr)
+		}
+
+		retry, retryErr := AdvanceLine(line.State, dispenser.LineSent)
+		if retryErr != nil {
+			return errors.Join(attemptErr, stateErr, lineErr, retryErr)
+		}
+
+		line.State = retry
+
+		if saveErr := e.store.SaveLine(ctx, line); saveErr != nil {
+			return errors.Join(attemptErr, stateErr, lineErr, saveErr)
+		}
+	}
+
+	return nil
 }
 
 func (e *Engine) validateDraft(draft Draft) error {
@@ -290,12 +517,12 @@ func (e *Engine) validateDraft(draft Draft) error {
 	for i, item := range draft.Items {
 		position := i + 1
 
-		if item.MachineType == "" {
+		if item.Machine.Type == "" {
 			return fmt.Errorf("ítem %d: falta el tipo de máquina", position)
 		}
 
-		if _, ok := e.machines[item.MachineType]; !ok {
-			return fmt.Errorf("ítem %d: no hay una máquina configurada para el tipo %q", position, item.MachineType)
+		if _, ok := e.machines[item.Machine.Type]; !ok {
+			return fmt.Errorf("ítem %d: no hay una máquina configurada para el tipo %q", position, item.Machine.Type)
 		}
 
 		if item.SKU == "" {
@@ -312,15 +539,6 @@ func (e *Engine) validateDraft(draft Draft) error {
 	}
 
 	return nil
-}
-
-func (e *Engine) machineRef(lineID string) (dispenser.MachineRef, bool) {
-	e.refsMu.RLock()
-	defer e.refsMu.RUnlock()
-
-	ref, ok := e.refs[lineID]
-
-	return ref, ok
 }
 
 func (e *Engine) nextID() string {
@@ -364,14 +582,9 @@ func classifyDispatch(result dispenser.Attempt, dispatchErr error) dispatchVerdi
 }
 
 func isProviderRejection(err error) bool {
-	var batidosErr *batidos.APIError
-	if errors.As(err, &batidosErr) {
-		return true
-	}
+	var rejection *dispenser.Rejection
 
-	var snacksErr *snacks.APIError
-
-	return errors.As(err, &snacksErr)
+	return errors.As(err, &rejection)
 }
 
 func transitionLine(current, next dispenser.LineState) (dispenser.LineState, error) {
