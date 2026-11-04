@@ -5,6 +5,30 @@ Estado: especificación y planificación. Sin código todavía.
 
 > Este documento es memoria interna del proyecto y **sí se versiona**: es el único registro de por qué el código es como es. `design/` sigue fuera de git.
 
+## Cómo retomar
+
+Raíz del proyecto (tiene un espacio en el nombre, citar siempre):
+
+```
+D:/Descargas/Seba/Proyects/GO/Powermix BI-MAQUINA/compras-remotas
+```
+
+Estado: **173 tests en verde, 12 paquetes, árbol limpio**. Sin dependencias externas.
+
+Hecho: esqueleto, firmas de las dos APIs, servidores falsos, catálogo, store en memoria, dominio de estados, motor con despacho en paralelo, reintento del fallido, worker de reconciliación, wiring en `cmd/api` con barrido cada 30 s, e idempotencia de la creación de orden.
+
+En curso: **T11c-2, los handlers HTTP** en un paquete `internal/httpapi` nuevo.
+- `GET /combos` desde el catálogo.
+- `POST /orders`: la idempotencia ya está resuelta en el store y en `Place`; falta el handler.
+- `GET /orders/{id}` para el estado en vivo.
+- `POST /orders/{id}/pay`: pago simulado, **no debe registrarse si `env=production`**.
+
+Pendiente después: callbacks de las máquinas (T10), pagos reales (T7, bloqueado por la decisión del proveedor), y la app Android.
+
+**Deuda que no hay que olvidar:** `internal/preflight` existe y está probado, pero **el motor todavía no lo llama**. La puerta de disponibilidad nunca se conectó a `Place`, así que hoy se puede crear una orden sobre una máquina caída. Está diseñada la interfaz `Gate` pero no implementada.
+
+**Dos verificaciones que nunca se corrieron:** `go test -race` (no hay compilador de C en la máquina) y las tres migraciones contra un PostgreSQL real (no hay `psql` ni daemon de Docker).
+
 ## Specs
 
 Cada spec cita literalmente lo que pidió el dueño del producto. No se agrega nada que no haya sido pedido.
@@ -379,3 +403,9 @@ Las unidades: (1) `SaveAttempt` en el puerto del store, (2) el motor en `interna
    - **Limpio:** sacar `MachineType` de `Item` y tomarlo de `Machine.Type`, dejando una sola fuente. Cambia el `Draft` y a sus llamadores.
 
    Riesgo real: el motor elegiría el driver correcto y le mandaría la identidad equivocada — un despacho que falla en el proveedor con un error que no explica nada. Hoy nadie construye `Draft` todavía (no hay capa HTTP), así que el costo de arreglarlo es mínimo.
+
+**L32 — El proyecto se movió de lugar y esta sesión perdió su writer.** La carpeta pasó de `.../GO/compras-remotas` a `.../GO/Powermix BI-MAQUINA/compras-remotas`. El repo no se dañó: mismo remoto, mismo `HEAD`, árbol limpio, suite verde.
+
+Consecuencia técnica: el subagente writer quedó **inutilizable** en esa sesión. `gentle-agents.ts` ancla el writer al `originalCwd` de la sesión y exige `safeBootstrapDirectory(originalCwd)`; con la ruta vieja borrada, falla cerrado con "Writer bootstrap requires the original safe project root". No es un bug del repo ni del path nuevo: el ancla es inmutable y apunta a algo que ya no existe. La sesión tampoco puede reubicarse: su storage está nombrado por la ruta vieja (`sessions/--D--Descargas-Seba-Proyects-GO-compras-remotas--`).
+
+Se continuó inline con la idempotencia de la orden y se abrió una sesión nueva desde la raíz correcta para el resto.
