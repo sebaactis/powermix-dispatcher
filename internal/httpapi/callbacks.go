@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/order"
@@ -37,39 +37,45 @@ type CallbackSecrets struct {
 	Snacks  string
 }
 
-func WithCallbacks(receiver Receiver, secrets CallbackSecrets) Option {
-	return func(h *Handler) {
-		if receiver == nil {
-			return
+type Callbacks struct {
+	receiver Receiver
+	secrets  CallbackSecrets
+	logger   *slog.Logger
+}
+
+type CallbacksOption func(*Callbacks)
+
+func WithCallbacksLogger(logger *slog.Logger) CallbacksOption {
+	return func(c *Callbacks) {
+		if logger != nil {
+			c.logger = logger
 		}
-
-		h.callbacks = receiver
-		h.callbackSecrets = secrets
 	}
 }
 
-func BatidosCallbackURL(baseURL, secret, orderID string) string {
-	if baseURL == "" || secret == "" || orderID == "" {
-		return ""
+func NewCallbacks(receiver Receiver, secrets CallbackSecrets, opts ...CallbacksOption) *Callbacks {
+	callbacks := &Callbacks{
+		receiver: receiver,
+		secrets:  secrets,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	return strings.TrimSuffix(baseURL, "/") +
-		"/callbacks/batidos/" + url.PathEscape(secret) + "/" + url.PathEscape(orderID)
+	for _, opt := range opts {
+		if opt != nil {
+			opt(callbacks)
+		}
+	}
+
+	return callbacks
 }
 
-func redactCallbackPath(path string) string {
-	const prefix = "/callbacks/"
-
-	if !strings.HasPrefix(path, prefix) {
-		return path
+func (c *Callbacks) Register(mux *http.ServeMux) {
+	if c.receiver == nil {
+		return
 	}
 
-	source, _, found := strings.Cut(path[len(prefix):], "/")
-	if !found || source == "" {
-		return path
-	}
-
-	return prefix + source + "/***"
+	mux.HandleFunc("POST /callbacks/batidos/{secret}/{orderId}", c.batidosCallback)
+	mux.HandleFunc("POST /callbacks/snacks/{secret}", c.snacksCallback)
 }
 
 type batidosCallbackPayload struct {
@@ -107,23 +113,23 @@ type snacksAck struct {
 	Message string `json:"message"`
 }
 
-func (h *Handler) batidosCallback(w http.ResponseWriter, r *http.Request) {
+func (c *Callbacks) batidosCallback(w http.ResponseWriter, r *http.Request) {
 	ack := batidosAck{Code: http.StatusOK, Success: true, Data: true, Message: batidosAckMessage}
 
-	if !h.secretMatches(r.PathValue("secret"), h.callbackSecrets.Batidos) {
-		h.callbackNotFound(w)
+	if !c.secretMatches(r.PathValue("secret"), c.secrets.Batidos) {
+		c.callbackNotFound(w)
 		return
 	}
 
 	var payload batidosCallbackPayload
 	if err := decodeCallback(w, r, &payload); err != nil {
-		h.acknowledgeBrokenCallback(w, r, err, ack)
+		c.acknowledgeBrokenCallback(w, r, err, ack)
 		return
 	}
 
 	state, known := batidosState(payload.Status)
 	if !known {
-		h.logger.WarnContext(r.Context(), "el callback de batidos informó un estado que no está en la tabla: se acusa recibo sin tocarlo",
+		c.logger.WarnContext(r.Context(), "el callback de batidos informó un estado que no está en la tabla: se acusa recibo sin tocarlo",
 			"status", payload.Status,
 			"code", payload.Code,
 			"order_no", payload.OrderNo,
@@ -143,25 +149,25 @@ func (h *Handler) batidosCallback(w http.ResponseWriter, r *http.Request) {
 		Reason:      batidosFailureReason,
 	}
 
-	h.writeCallbackResult(w, r, h.applyCallback(r.Context(), event, h.callbacks.ConfirmFromCallback), ack)
+	c.writeCallbackResult(w, r, c.applyCallback(r.Context(), event, c.receiver.ConfirmFromCallback), ack)
 }
 
-func (h *Handler) snacksCallback(w http.ResponseWriter, r *http.Request) {
+func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
 	ack := snacksAck{Success: true, Code: http.StatusOK, Message: "ok"}
 
-	if !h.secretMatches(r.PathValue("secret"), h.callbackSecrets.Snacks) {
-		h.callbackNotFound(w)
+	if !c.secretMatches(r.PathValue("secret"), c.secrets.Snacks) {
+		c.callbackNotFound(w)
 		return
 	}
 
 	var payload snacksCallbackPayload
 	if err := decodeCallback(w, r, &payload); err != nil {
-		h.acknowledgeBrokenCallback(w, r, err, ack)
+		c.acknowledgeBrokenCallback(w, r, err, ack)
 		return
 	}
 
 	if len(payload.OrderProductResults) == 0 {
-		h.logger.WarnContext(r.Context(), "el callback de snacks llegó sin resultados de suborden",
+		c.logger.WarnContext(r.Context(), "el callback de snacks llegó sin resultados de suborden",
 			"order_no", payload.OrderNo,
 			"payment_order_id", payload.PaymentOrderID,
 		)
@@ -175,7 +181,7 @@ func (h *Handler) snacksCallback(w http.ResponseWriter, r *http.Request) {
 	for _, result := range payload.OrderProductResults {
 		state, known := shipmentState(result.ShipmentStatus)
 		if !known {
-			h.logger.WarnContext(r.Context(), "el callback de snacks informó un estado de despacho que no está en la tabla: se acusa recibo sin tocarlo",
+			c.logger.WarnContext(r.Context(), "el callback de snacks informó un estado de despacho que no está en la tabla: se acusa recibo sin tocarlo",
 				"shipment_status", result.ShipmentStatus,
 				"sub_order_no", result.SubOrderNo,
 				"payment_order_id", payload.PaymentOrderID,
@@ -195,20 +201,20 @@ func (h *Handler) snacksCallback(w http.ResponseWriter, r *http.Request) {
 			Reason:       result.ShipmentErrorReason,
 		}
 
-		failures = append(failures, h.applyCallback(r.Context(), event, h.callbacks.CloseFromCallback))
+		failures = append(failures, c.applyCallback(r.Context(), event, c.receiver.CloseFromCallback))
 	}
 
-	h.writeCallbackResult(w, r, errors.Join(failures...), ack)
+	c.writeCallbackResult(w, r, errors.Join(failures...), ack)
 }
 
-func (h *Handler) applyCallback(ctx context.Context, event order.Callback, apply func(context.Context, order.Callback) (bool, error)) error {
+func (c *Callbacks) applyCallback(ctx context.Context, event order.Callback, apply func(context.Context, order.Callback) (bool, error)) error {
 	duplicate, err := apply(ctx, event)
 	if err != nil {
 		return err
 	}
 
 	if duplicate {
-		h.logger.InfoContext(ctx, "el callback ya se había procesado: se ignora",
+		c.logger.InfoContext(ctx, "el callback ya se había procesado: se ignora",
 			"source", event.Source,
 			"key", event.DedupeKey,
 			"order_id", event.OrderID,
@@ -218,13 +224,13 @@ func (h *Handler) applyCallback(ctx context.Context, event order.Callback, apply
 	return nil
 }
 
-func (h *Handler) writeCallbackResult(w http.ResponseWriter, r *http.Request, err error, ack any) {
+func (c *Callbacks) writeCallbackResult(w http.ResponseWriter, r *http.Request, err error, ack any) {
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, ack)
 
 	case errors.Is(err, order.ErrCallbackUnknownLine), errors.Is(err, store.ErrNotFound):
-		h.logger.WarnContext(r.Context(), "el callback no corresponde a ninguna línea conocida: se acusa recibo igual para que no se reintente",
+		c.logger.WarnContext(r.Context(), "el callback no corresponde a ninguna línea conocida: se acusa recibo igual para que no se reintente",
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
 		)
@@ -232,7 +238,7 @@ func (h *Handler) writeCallbackResult(w http.ResponseWriter, r *http.Request, er
 		writeJSON(w, http.StatusOK, ack)
 
 	case errors.Is(err, order.ErrCallbackAmbiguous):
-		h.logger.ErrorContext(r.Context(), "el callback corresponde a más de una línea: se acusa recibo igual para que no se reintente y no se cierra nada",
+		c.logger.ErrorContext(r.Context(), "el callback corresponde a más de una línea: se acusa recibo igual para que no se reintente y no se cierra nada",
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
 		)
@@ -240,7 +246,7 @@ func (h *Handler) writeCallbackResult(w http.ResponseWriter, r *http.Request, er
 		writeJSON(w, http.StatusOK, ack)
 
 	case errors.Is(err, order.ErrCallbackIncomplete):
-		h.logger.ErrorContext(r.Context(), "el callback llegó incompleto: se acusa recibo igual para que no se reintente",
+		c.logger.ErrorContext(r.Context(), "el callback llegó incompleto: se acusa recibo igual para que no se reintente",
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
 		)
@@ -248,12 +254,12 @@ func (h *Handler) writeCallbackResult(w http.ResponseWriter, r *http.Request, er
 		writeJSON(w, http.StatusOK, ack)
 
 	default:
-		h.fail(w, r, err)
+		fail(w, r, c.logger, err)
 	}
 }
 
-func (h *Handler) acknowledgeBrokenCallback(w http.ResponseWriter, r *http.Request, err error, ack any) {
-	h.logger.ErrorContext(r.Context(), "el callback llegó con un cuerpo que no se puede leer: se acusa recibo igual para que no se reintente",
+func (c *Callbacks) acknowledgeBrokenCallback(w http.ResponseWriter, r *http.Request, err error, ack any) {
+	c.logger.ErrorContext(r.Context(), "el callback llegó con un cuerpo que no se puede leer: se acusa recibo igual para que no se reintente",
 		"path", redactCallbackPath(r.URL.Path),
 		"error", err,
 	)
@@ -261,7 +267,7 @@ func (h *Handler) acknowledgeBrokenCallback(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, ack)
 }
 
-func (h *Handler) secretMatches(given, expected string) bool {
+func (c *Callbacks) secretMatches(given, expected string) bool {
 	if expected == "" || given == "" {
 		return false
 	}
@@ -269,7 +275,7 @@ func (h *Handler) secretMatches(given, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(given), []byte(expected)) == 1
 }
 
-func (h *Handler) callbackNotFound(w http.ResponseWriter) {
+func (c *Callbacks) callbackNotFound(w http.ResponseWriter) {
 	writeError(w, http.StatusNotFound, "no existe")
 }
 

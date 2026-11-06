@@ -3,16 +3,12 @@ package httpapi
 import (
 	"bytes"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
-	"compras-remotas/internal/catalog"
-	"compras-remotas/internal/config"
 	"compras-remotas/internal/order"
-	"compras-remotas/internal/store"
 )
 
 func TestBatidosCallbackURL(t *testing.T) {
@@ -160,39 +156,6 @@ func TestCallbackLogsNeverCarryTheSecretSegment(t *testing.T) {
 			}
 		})
 	}
-}
-
-func newLoggingCallbackFixture(t *testing.T, secret string, logged *bytes.Buffer) (*http.ServeMux, *fakeReceiver) {
-	t.Helper()
-
-	combos, err := catalog.NewMemory(testCombos())
-	if err != nil {
-		t.Fatalf("no se pudo construir el catálogo: %v", err)
-	}
-
-	memory := store.NewMemory()
-	receiver := &fakeReceiver{}
-
-	handler, err := New(
-		Deps{
-			Catalog:   combos,
-			Placer:    order.New(memory, testMachines()),
-			Confirmer: &fakeConfirmer{orders: memory},
-			Orders:    memory,
-			Kiosks:    []config.Kiosk{testKiosk("kiosco-centro")},
-			Env:       config.EnvSandbox,
-		},
-		WithCallbacks(receiver, CallbackSecrets{Batidos: secret}),
-		WithLogger(slog.New(slog.NewTextHandler(logged, nil))),
-	)
-	if err != nil {
-		t.Fatalf("no se pudo construir el handler: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	return mux, receiver
 }
 
 func TestBatidosCallbackURLMatchesTheRegisteredRoute(t *testing.T) {

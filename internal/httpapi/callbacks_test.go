@@ -3,71 +3,14 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"testing"
-	"time"
 
-	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
-
-type fakeReceiver struct {
-	closed    []order.Callback
-	confirmed []order.Callback
-
-	closeErr   error
-	confirmErr error
-}
-
-func (f *fakeReceiver) CloseFromCallback(ctx context.Context, cb order.Callback) (bool, error) {
-	f.closed = append(f.closed, cb)
-
-	return false, f.closeErr
-}
-
-func (f *fakeReceiver) ConfirmFromCallback(ctx context.Context, cb order.Callback) (bool, error) {
-	f.confirmed = append(f.confirmed, cb)
-
-	return false, f.confirmErr
-}
-
-func newCallbackFixture(t *testing.T, secrets CallbackSecrets) (*http.ServeMux, *fakeReceiver) {
-	t.Helper()
-
-	combos, err := catalog.NewMemory(testCombos())
-	if err != nil {
-		t.Fatalf("no se pudo construir el catálogo: %v", err)
-	}
-
-	memory := store.NewMemory()
-	receiver := &fakeReceiver{}
-
-	handler, err := New(
-		Deps{
-			Catalog:   combos,
-			Placer:    order.New(memory, testMachines()),
-			Confirmer: &fakeConfirmer{orders: memory},
-			Orders:    memory,
-			Kiosks:    []config.Kiosk{testKiosk("kiosco-centro")},
-			Env:       config.EnvSandbox,
-		},
-		WithCallbacks(receiver, secrets),
-		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-	)
-	if err != nil {
-		t.Fatalf("no se pudo construir el handler: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	return mux, receiver
-}
 
 func TestBatidosCallbackConfirmsWithTheProvider(t *testing.T) {
 	mux, receiver := newCallbackFixture(t, CallbackSecrets{Batidos: "ruta-secreta"})
@@ -307,96 +250,6 @@ func TestCallbackRoutesAreAbsentWithoutAReceiver(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("sin receptor de callbacks la ruta no debe existir: 404 y llegó %d", recorder.Code)
 	}
-}
-
-type silentRefDispenser struct{}
-
-func (silentRefDispenser) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
-func (silentRefDispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
-	return dispenser.DispatchResult{Accepted: true, Detail: "despacho encolado: el resultado real llega por callback"}, nil
-}
-
-func (silentRefDispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
-	return dispenser.Status{State: dispenser.LineInDoubt}, nil
-}
-
-type liveCallbackFixture struct {
-	mux    *http.ServeMux
-	orders *store.Memory
-}
-
-func newLiveCallbackFixture(t *testing.T, combos []catalog.Combo, machines map[string]dispenser.Dispenser) *liveCallbackFixture {
-	t.Helper()
-
-	comboCatalog, err := catalog.NewMemory(combos)
-	if err != nil {
-		t.Fatalf("no se pudo construir el catálogo: %v", err)
-	}
-
-	memory := store.NewMemory()
-	engine := order.New(memory, machines, order.WithClock(func() time.Time { return fixedClock }))
-
-	handler, err := New(
-		Deps{
-			Catalog:   comboCatalog,
-			Placer:    engine,
-			Confirmer: engine,
-			Orders:    memory,
-			Kiosks:    []config.Kiosk{testKiosk("kiosco-centro")},
-			Env:       config.EnvSandbox,
-		},
-		WithCallbacks(engine, CallbackSecrets{Snacks: "ruta-secreta"}),
-		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-	)
-	if err != nil {
-		t.Fatalf("no se pudo construir el handler: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	handler.Register(mux)
-
-	return &liveCallbackFixture{mux: mux, orders: memory}
-}
-
-func twoSnackItemsCombos() []catalog.Combo {
-	return []catalog.Combo{
-		{
-			ID:         "combo-doble-snack",
-			Name:       "Dos snacks",
-			PriceCents: 300,
-			Currency:   "ARS",
-			Active:     true,
-			Items: []catalog.Item{
-				{MachineType: "snacks", SKU: "snack-uno"},
-				{MachineType: "snacks", SKU: "snack-dos"},
-			},
-		},
-	}
-}
-
-func paidOrder(t *testing.T, fx *liveCallbackFixture, comboID string) store.Order {
-	t.Helper()
-
-	created := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"`+comboID+`"}`)
-	if created.Code != http.StatusOK {
-		t.Fatalf("no se pudo crear la orden: %d %s", created.Code, created.Body.String())
-	}
-
-	orderID := decode(t, created)["id"].(string)
-
-	if paid := call(t, fx.mux, http.MethodPost, "/orders/"+orderID+"/pay", ""); paid.Code != http.StatusOK {
-		t.Fatalf("no se pudo pagar la orden: %d %s", paid.Code, paid.Body.String())
-	}
-
-	loaded, err := fx.orders.LoadOrder(context.Background(), orderID)
-	if err != nil {
-		t.Fatalf("la orden no se pudo releer: %v", err)
-	}
-
-	return loaded
 }
 
 func TestSnacksCallbackClosesTheLineByThirdOrderNo(t *testing.T) {

@@ -24,12 +24,14 @@ import (
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/preflight"
 	"compras-remotas/internal/store"
+	"compras-remotas/internal/store/postgres"
 	"compras-remotas/internal/sweep"
 )
 
 const (
 	sweepInterval = 30 * time.Second
 	sweepLimit    = 10
+	seedTimeout   = 30 * time.Second
 )
 
 func main() {
@@ -90,24 +92,26 @@ func main() {
 		string(config.MachineSnacks):  snacks.NewDispenser(snacksClient),
 	}
 
-	memory := store.NewMemory()
+	orders, closeStore, err := openStore(cfg, combos, logger)
+	if err != nil {
+		logger.Error("no se pudo preparar el store", "store", cfg.Store, "error", err)
+		os.Exit(1)
+	}
+	defer closeStore()
+
 	availability := gate.New(preflight.New(batidosClient, snacksClient))
-	engine := order.New(memory, machines, order.WithNotifier(notify.NewLog(logger)), order.WithGate(availability))
+	engine := order.New(orders, machines, order.WithNotifier(notify.NewLog(logger)), order.WithGate(availability))
 	runner := sweep.New(engine, logger, sweep.WithInterval(sweepInterval), sweep.WithLimit(sweepLimit))
 
 	tabletAPI, err := httpapi.New(httpapi.Deps{
 		Catalog:   comboCatalog,
 		Placer:    engine,
 		Confirmer: engine,
-		Orders:    memory,
+		Orders:    orders,
 		Kiosks:    cfg.Kiosks,
 		Env:       cfg.Env,
 	},
 		httpapi.WithLogger(logger),
-		httpapi.WithCallbacks(engine, httpapi.CallbackSecrets{
-			Batidos: cfg.BatidosCallbackSecret,
-			Snacks:  cfg.SnacksCallbackSecret,
-		}),
 	)
 	if err != nil {
 		logger.Error("no se pudo construir la API de la tablet", "error", err)
@@ -119,15 +123,13 @@ func main() {
 		"kiosks", len(cfg.Kiosks),
 		"combos", len(combos),
 		"sweep_interval", sweepInterval.String(),
-		"store", "memory",
+		"store", cfg.Store,
 	)
 
 	logger.Info("chequeo previo de disponibilidad activo: no se crea una orden si alguna de las dos máquinas no puede vender",
 		"gate", "preflight",
 		"machines", len(machines),
 	)
-
-	logger.Warn("el store es en memoria: el estado se pierde al reiniciar y solo puede correr una instancia")
 
 	mux := http.NewServeMux()
 
@@ -145,11 +147,15 @@ func main() {
 			"env":    cfg.Env,
 			"kiosks": len(cfg.Kiosks),
 			"combos": len(available),
-			"store":  "memory",
+			"store":  cfg.Store,
 		})
 	})
 
 	tabletAPI.Register(mux)
+	httpapi.NewCallbacks(engine, httpapi.CallbackSecrets{
+		Batidos: cfg.BatidosCallbackSecret,
+		Snacks:  cfg.SnacksCallbackSecret,
+	}, httpapi.WithCallbacksLogger(logger)).Register(mux)
 
 	server := &http.Server{
 		Addr:              envOr("HTTP_ADDR", "127.0.0.1:8080"),
@@ -193,6 +199,34 @@ func main() {
 	case <-shutdownCtx.Done():
 		logger.Error("el barrido de reconciliación no se detuvo a tiempo")
 	}
+}
+
+func openStore(cfg *config.Config, combos []catalog.Combo, logger *slog.Logger) (store.Store, func(), error) {
+	if cfg.Store != config.StorePostgres {
+		logger.Warn("el store es en memoria: el estado se pierde al reiniciar y solo puede correr una instancia")
+
+		return store.NewMemory(), func() {}, nil
+	}
+
+	database, err := postgres.Open(cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), seedTimeout)
+	defer cancel()
+
+	if err := database.Seed(ctx, cfg.Kiosks, combos); err != nil {
+		database.Close()
+
+		return nil, nil, err
+	}
+
+	return database, func() {
+		if err := database.Close(); err != nil {
+			logger.Error("no se pudo cerrar el store de postgres", "error", err)
+		}
+	}, nil
 }
 
 func envOr(name, fallback string) string {
