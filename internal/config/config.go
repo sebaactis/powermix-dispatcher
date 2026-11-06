@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -52,34 +53,41 @@ func (k Kiosk) Machine(t MachineType) (Machine, bool) {
 type Config struct {
 	Env string
 
-	BatidosBaseURL string
-	BatidosKey     string
-	BatidosSecret  string
+	PublicBaseURL string
 
-	SnacksBaseURL   string
-	SnacksAccessKey string
-	SnacksAppSecret string
+	BatidosBaseURL        string
+	BatidosKey            string
+	BatidosSecret         string
+	BatidosCallbackSecret string
+
+	SnacksBaseURL        string
+	SnacksAccessKey      string
+	SnacksAppSecret      string
+	SnacksCallbackSecret string
 
 	Kiosks []Kiosk
 }
 
 type batidosFile struct {
-	BaseURL string `json:"base_url"`
-	Key     string `json:"key"`
-	Secret  string `json:"secret"`
+	BaseURL        string `json:"base_url"`
+	Key            string `json:"key"`
+	Secret         string `json:"secret"`
+	CallbackSecret string `json:"callback_secret"`
 }
 
 type snacksFile struct {
-	BaseURL   string `json:"base_url"`
-	AccessKey string `json:"access_key"`
-	AppSecret string `json:"app_secret"`
+	BaseURL        string `json:"base_url"`
+	AccessKey      string `json:"access_key"`
+	AppSecret      string `json:"app_secret"`
+	CallbackSecret string `json:"callback_secret"`
 }
 
 type fileConfig struct {
-	Env     string      `json:"env"`
-	Batidos batidosFile `json:"batidos"`
-	Snacks  snacksFile  `json:"snacks"`
-	Kiosks  []Kiosk     `json:"kiosks"`
+	Env           string      `json:"env"`
+	PublicBaseURL string      `json:"public_base_url"`
+	Batidos       batidosFile `json:"batidos"`
+	Snacks        snacksFile  `json:"snacks"`
+	Kiosks        []Kiosk     `json:"kiosks"`
 }
 
 func Load(path string) (*Config, error) {
@@ -96,17 +104,21 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Env:             strings.TrimSpace(file.Env),
-		BatidosBaseURL:  strings.TrimSuffix(strings.TrimSpace(file.Batidos.BaseURL), "/"),
-		BatidosKey:      file.Batidos.Key,
-		BatidosSecret:   file.Batidos.Secret,
-		SnacksBaseURL:   strings.TrimSuffix(strings.TrimSpace(file.Snacks.BaseURL), "/"),
-		SnacksAccessKey: file.Snacks.AccessKey,
-		SnacksAppSecret: file.Snacks.AppSecret,
-		Kiosks:          file.Kiosks,
+		Env:                   strings.TrimSpace(file.Env),
+		PublicBaseURL:         strings.TrimSpace(file.PublicBaseURL),
+		BatidosBaseURL:        strings.TrimSuffix(strings.TrimSpace(file.Batidos.BaseURL), "/"),
+		BatidosKey:            file.Batidos.Key,
+		BatidosSecret:         file.Batidos.Secret,
+		BatidosCallbackSecret: file.Batidos.CallbackSecret,
+		SnacksBaseURL:         strings.TrimSuffix(strings.TrimSpace(file.Snacks.BaseURL), "/"),
+		SnacksAccessKey:       file.Snacks.AccessKey,
+		SnacksAppSecret:       file.Snacks.AppSecret,
+		SnacksCallbackSecret:  file.Snacks.CallbackSecret,
+		Kiosks:                file.Kiosks,
 	}
 
 	cfg.applyEnvOverrides()
+	cfg.PublicBaseURL = strings.TrimSuffix(cfg.PublicBaseURL, "/")
 
 	if err := cfg.validateEnv(); err != nil {
 		return nil, err
@@ -120,10 +132,13 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyEnvOverrides() {
+	override(&c.PublicBaseURL, "PUBLIC_BASE_URL")
 	override(&c.BatidosKey, "BATIDOS_KEY")
 	override(&c.BatidosSecret, "BATIDOS_SECRET")
 	override(&c.SnacksAccessKey, "SNACKS_ACCESS_KEY")
 	override(&c.SnacksAppSecret, "SNACKS_APP_SECRET")
+	override(&c.BatidosCallbackSecret, "BATIDOS_CALLBACK_SECRET")
+	override(&c.SnacksCallbackSecret, "SNACKS_CALLBACK_SECRET")
 }
 
 func override(target *string, envName string) {
@@ -175,6 +190,18 @@ func (c *Config) validate() error {
 	}
 	if len(c.Kiosks) == 0 {
 		problems = append(problems, "se requiere al menos un mueble")
+	}
+
+	if c.PublicBaseURL != "" {
+		problems = append(problems, publicBaseURLProblems(c.PublicBaseURL, c.Env)...)
+	}
+
+	if c.BatidosCallbackSecret != "" {
+		problems = append(problems, callbackSecretProblems("batidos.callback_secret", c.BatidosCallbackSecret)...)
+	}
+
+	if c.SnacksCallbackSecret != "" {
+		problems = append(problems, callbackSecretProblems("snacks.callback_secret", c.SnacksCallbackSecret)...)
 	}
 
 	seen := make(map[string]struct{}, len(c.Kiosks))
@@ -232,4 +259,41 @@ func kioskProblems(kiosk Kiosk) []string {
 	}
 
 	return problems
+}
+
+func publicBaseURLProblems(baseURL, env string) []string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Host == "" {
+		return []string{fmt.Sprintf("public_base_url %q no es una URL absoluta con host", baseURL)}
+	}
+
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return []string{fmt.Sprintf("public_base_url %q debe ser http o https", baseURL)}
+	}
+
+	if env == EnvProduction && parsed.Scheme != "https" {
+		return []string{"public_base_url debe ser https en producción: el notifyUrl lleva la ruta secreta del callback de batidos"}
+	}
+
+	return nil
+}
+
+func callbackSecretProblems(field, secret string) []string {
+	if secret == "." || secret == ".." {
+		return []string{fmt.Sprintf("%s no puede ser %q: el path del callback se colapsa y nunca matchea", field, secret)}
+	}
+
+	for _, char := range secret {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+
+		if char == '.' || char == '-' || char == '_' {
+			continue
+		}
+
+		return []string{fmt.Sprintf("%s tiene el carácter %q y sólo admite letras, números, punto, guion y guion bajo", field, char)}
+	}
+
+	return nil
 }
