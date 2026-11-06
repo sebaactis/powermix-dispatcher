@@ -1,0 +1,41 @@
+{
+  "env": "sandbox",
+  "store": "postgres",
+  "public_base_url": "http://127.0.0.1:18080",
+  "batidos": {
+    "base_url": "http://fakeapi:9401",
+    "key": "mykey",
+    "secret": "mysecret",
+    "callback_secret": "demo-batidos-callback"
+  },
+  "snacks": {
+    "base_url": "http://fakeapi:9402",
+    "access_key": "ak_test",
+    "app_secret": "testsecret",
+    "callback_secret": "demo-snacks-callback"
+  },
+  "kiosks": [
+    {
+      "id": "kiosk-demo",
+      "name": "Mueble demo",
+      "machines": [
+        {
+          "type": "batidos",
+          "name": "Batidos Powermix",
+          "device_id": "dev-e2e-1",
+          "device_no": "devno-demo",
+          "device_type_id": "dtype-demo",
+          "mid": ""
+        },
+        {
+          "type": "snacks",
+          "name": "Snacks Powermix",
+          "device_id": "",
+          "device_no": "",
+          "device_type_id": "",
+          "mid": "P50DEMO0001"
+        }
+      ]
+    }
+  ]
+}

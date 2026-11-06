@@ -1,0 +1,78 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: compras
+      POSTGRES_PASSWORD: compras
+      POSTGRES_DB: compras
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U compras -d compras"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    image: postgres:16
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: compras
+    volumes:
+      - ./migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for file in $$(ls /migrations/*.sql | sort); do
+          echo "aplicando $$file"
+          psql -v ON_ERROR_STOP=1 -q -h db -U compras -d compras -f "$$file"
+        done
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      STORE: postgres
+      DATABASE_URL: postgres://compras:compras@db:5432/compras?sslmode=disable
+      PUBLIC_BASE_URL: http://127.0.0.1:18080
+      BATIDOS_CALLBACK_SECRET: demo-batidos-callback
+      SNACKS_CALLBACK_SECRET: demo-snacks-callback
+      HTTP_ADDR: 0.0.0.0:8080
+      CONFIG_PATH: /app/config.docker.json
+      COMBOS_PATH: /app/combos.example.json
+    volumes:
+      - ./config.docker.json:/app/config.docker.json:ro
+      - ./combos.example.json:/app/combos.example.json:ro
+    ports:
+      - "18080:8080"
+    restart: unless-stopped
+
+  fakeapi:
+    build:
+      context: .
+      target: fakeapi
+    command:
+      - "-batidos-addr"
+      - "0.0.0.0:9401"
+      - "-snacks-addr"
+      - "0.0.0.0:9402"
+      - "-batidos-goods"
+      - "DEMO-BATIDO-VAINILLA"
+    ports:
+      - "127.0.0.1:9401:9401"
+      - "127.0.0.1:9402:9402"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

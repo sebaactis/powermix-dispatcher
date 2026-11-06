@@ -104,6 +104,39 @@ fake forgets them.
 > reachable from another machine: `-admin-addr` defaults to `127.0.0.1:9403` and
 > the process refuses to start with a non-loopback host.
 
+## Run with Docker Compose
+
+```bash
+docker compose up -d --build
+docker compose down          # keeps the database volume
+docker compose down -v       # drops the database too
+```
+
+The backend answers on <http://127.0.0.1:18080> (`GET /healthz`, `GET /combos`,
+`POST /orders`). Everything in this stack is local: sandbox environment, example
+callback secrets and the fake providers. No real credential is involved.
+
+| Service | What it does |
+| --- | --- |
+| `db` | PostgreSQL 16, named volume `pgdata`, `pg_isready` healthcheck |
+| `migrate` | one-shot `psql` run over every `migrations/*.sql` in alphabetical order; exits when done |
+| `api` | builds the `runtime` target of the `Dockerfile` and serves the tablet backend, store on PostgreSQL |
+| `fakeapi` | builds the `fakeapi` target; both stand-in provider APIs, with `DEMO-BATIDO-VAINILLA` seeded so the drink half of a combo exists |
+
+The `api` container seeds the kiosks, machines and combos it read from
+`config.docker.json` and `combos.example.json` on every start, because an order
+row references both a kiosk and a combo. That write is an upsert, so restarting
+is safe.
+
+`migrate` runs the files without a version table: the first `up` against a fresh
+volume succeeds, and a second `up` fails on the already applied DDL. Use
+`docker compose down -v` when you need to replay the schema.
+
+The fake's admin port (9403) is not published. The fake refuses to bind its admin
+surface outside loopback, and a process bound to `127.0.0.1` inside a container
+cannot be reached through a published port. The two provider ports are published
+on loopback only, so the fakes are never reachable from another machine.
+
 ## Secrets
 
 Credentials never live in a tracked file. They come from four environment
@@ -118,6 +151,8 @@ variables, which override anything written in the JSON:
 | `BATIDOS_CALLBACK_SECRET` | Secret path segment for the Batidos callback (optional) |
 | `SNACKS_CALLBACK_SECRET` | Secret path segment for the Snacks callback (optional) |
 | `PUBLIC_BASE_URL` | Public base URL of this backend (optional). Without it the Batidos campaign is created without `notifyUrl`, so the Batidos callback never arrives |
+| `STORE` | `memory` (default) or `postgres`; overrides `store` in the JSON |
+| `DATABASE_URL` | PostgreSQL DSN, required when the store is `postgres`; overrides `database_url` in the JSON |
 
 Both callback secrets are optional. When a secret is empty, that callback
 endpoint answers 404: an unauthenticated machine callback never reaches the
