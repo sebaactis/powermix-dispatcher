@@ -611,3 +611,43 @@ Sobre el método: el cambio de `SaveOrder` se hizo sin rojo previo (el test viej
 Evidencia: `gofmt -l .` sin salida, `go vet ./...` sin salida, `go build ./...` ok, `go test ./...` con **14 paquetes en verde y 270 funciones de test** (antes 263).
 
 Sigue abierto, y es lo que viene: la versión vive sólo en `store.Memory`; el store sobre Postgres, su columna `version` y la ejecución del contenedor quedan para la unidad siguiente. Y `go test -race` sigue sin correr: la carrera se demuestra de forma determinista por la copia vieja inyectada, no por concurrencia real.
+
+**L43 — Store sobre Postgres, migración 0004 y contenedor.** Lo que faltaba para dejar de perder el estado al reiniciar.
+
+**La migración 0004** cierra tres huecos que el esquema tenía respecto del código, y no son cosméticos:
+
+- `order_line.version`, porque el guardado condicional de L42 necesitaba su columna.
+- `orders.client_key` con índice único parcial, porque la idempotencia de la creación vivía en el mapa del store en memoria y no tenía dónde persistir.
+- Las seis columnas `machine_*` en `order_line`, porque la identidad de la máquina vive en la línea (L31) y el esquema no la guardaba: con Postgres, un reinicio habría dejado líneas sin saber a qué máquina despachar.
+- Dos índices únicos que creí faltantes y **no** faltaban: 0001 ya declaraba `dispatch_attempt_idempotency_idx` y `webhook_event_dedupe_idx`. La verificación lo detectó; los saqué de 0004 antes de aplicarla en ninguna base, así que el esquema no queda con índices duplicados. La corrección de este párrafo es parte de L43, no un apéndice.
+
+**El store**: paquete `internal/store/postgres`, implementando el mismo puerto que la memoria, con `SaveLine` como `UPDATE … WHERE id = $1 AND version = $2 RETURNING …` (cero filas → `ErrStale` si la línea existe, `ErrNotFound` si no) y `SaveOrder` que toca **sólo** la cabecera. La primera dependencia externa del proyecto: `jackc/pgx/v5`, fijada en la última versión que no obliga a subir el `go` del módulo.
+
+**El sembrado**: `orders` tiene FK a `kiosk` y a `combo`, así que con Postgres no se puede insertar una orden si esas filas no existen. `internal/topology` hace upsert idempotente de muebles, máquinas, combos e ítems al arrancar, siguiendo las columnas exactas de 0001.
+
+**El contenedor**: `Dockerfile` multi-stage (builder `golang:1.23`, final distroless nonroot) y `docker-compose.yml` con cuatro servicios —`db` (postgres:16 con healthcheck), `migrate` (aplica los `.sql` con `psql`), `api` (store por Postgres, puerto 18080) y `fakeapi`—, más `config.docker.json` con las URLs internas y secretos de prueba.
+
+Estado de la verificación, y esto es lo importante: **nada de esto se ejecutó todavía contra un PostgreSQL real.** El daemon de Docker no está corriendo en esta máquina y no hay `psql`, así que 13 de los 14 tests del paquete Postgres se saltean y la migración 0004 nunca se aplicó. `docker compose config` sí parsea y resuelve los cuatro servicios. La primera corrida contra la base es la única prueba definitiva, y es exactamente el siguiente paso.
+
+Evidencia de lo que sí se puede afirmar: `gofmt -l .` sin salida, `go vet ./...` sin salida, `go build ./...` ok, `go test ./...` con **16 paquetes en verde y 298 funciones de test**.
+
+Decisiones a tener presentes cuando levantemos: el puerto de administración del falso (9403) **no** se publica en el compose, porque el falso se niega a escuchar fuera de loopback; y `migrate` no lleva tabla de versiones, así que repetir el esquema exige `docker compose down -v`.
+
+**L44 — Reorganización por responsabilidad: ni cajones de varias cosas ni carpetas de un solo archivo suelto.** Pedido del dueño del producto:
+
+> "Antes de eso, revisemos la arquitectura del proyecto para que no queden mezcladas cosas ni carpetas llenas de varios archivos"
+
+Criterio con el que se decidió cada corte, y que vale para lo que venga: **un paquete se separa por audiencia y contrato, no por cantidad de líneas; un archivo se separa por una sola razón para cambiar.** Con eso, el borde HTTP quedó en un paquete (misma audiencia interna, mismo glue) pero con dos tipos distintos, y el motor quedó en un paquete con seis archivos.
+
+Lo que se movió:
+
+- **`internal/order`**: `engine.go` pasó de 708 líneas a 139 (tipo, `New`, opciones, generación de ids) y el resto se repartió en `place.go`, `payment.go`, `dispatch.go`, `reconcile.go` y `settle.go`. Los tests siguieron el mismo corte y **todos los fixtures quedaron en `helpers_test.go`**, uno solo, para que no se dupliquen.
+- **`internal/httpapi`**: se separaron los dos contratos que compartían el tipo `Handler`. La tablet quedó en `Handler` (`orders.go`, `combos.go`, `draft.go`, `responses.go`) y los proveedores en `Callbacks` (`callbacks.go`, `callback_url.go`), cada uno con su constructor y su `Register`; el glue común en `respond.go` y `errors.go`. `cmd/api` registra los dos. No se partió en dos paquetes a propósito: obligaría a duplicar `writeJSON`/`fail` o a inventar un paquete para tres funciones, y eso es la otra forma de romper el orden, la de fragmentar de más.
+- **`internal/fakeapi`**: la superficie de administración salió de `cmd/fakeapi/main.go` (465 → 133 líneas) y se mudó a `internal/fakeapi/admin.go`, junto a los setters que llama. **Ganó 13 tests que no tenía**: era código de arnés viviendo en un `main` sin cobertura.
+- **`internal/config`**: `config.go` 325 → 174 (tipos, `Load`, overrides) y `validate.go` con todas las reglas; los tres tests de validación se consolidaron en uno.
+
+Lo que se dejó como estaba, y por qué: el puerto `dispenser` con sus dos adaptadores, `store` con `postgres` como subpaquete, y `gate`/`topology` como adaptadores en la costura. También se dejaron los `Dockerfile`/`docker-compose.yml` en la raíz, porque `docker compose up` los busca ahí por convención.
+
+Evidencia: `gofmt -l .` sin salida, `go vet ./...` sin salida, `go build ./...` ok, `go test ./...` con **16 paquetes en verde y 311 funciones de test** (298 conservadas, ninguna con la expectativa cambiada, más 13 nuevas de administración). Ningún comportamiento cambió: la reorganización se valida comparando el contenido de `HEAD` contra los archivos nuevos, y lo único distinto son las adaptaciones mecánicas (receptor, `fail` como función libre con logger, campos que se mudaron de `Handler` a `Callbacks`).
+
+Costo declarado: el diff es grande y ensucia `git blame` en archivos jóvenes, y hubo tres borrados por consolidación (`callback_safety_test.go`, `publicbaseurl_test.go`, `engine_test.go`), con su contenido íntegro en los archivos nuevos. Se hizo ahora, antes de seguir agregando piezas, justamente porque después es más caro.
