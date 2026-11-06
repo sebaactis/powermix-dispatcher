@@ -82,7 +82,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Load lee el archivo de topología, aplica los reemplazos de secretos desde el
 > entorno, resuelve los valores por defecto documentados y valida el resultado.
 
-### (archivo)
+## internal/config/validate.go
+
+### kioskProblems
 
 > Un combo siempre empareja una bebida con un snack, así que cada mueble debe
 > tener exactamente una máquina de cada tipo. Cualquier otra cosa se detecta
@@ -1239,15 +1241,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Store
 
-> `CreateOrder`/`LoadOrder`/`SaveOrder` mueven la orden entera con sus líneas, porque el motor la lee y la reescribe como unidad y las líneas nacen sólo junto a su orden. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció.
+> `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció.
 >
 > `SaveLine` recibe una línea con su versión y **devuelve la línea persistida con la versión nueva**: es un guardado condicional, no un reemplazo. Si la versión recibida no es la que tiene el store, devuelve `ErrStale` y no escribe nada; si coincide, guarda con `Version+1`. Devolver la línea y no sólo un error es lo que evita que el motor tenga que releer para la escritura siguiente, y es la diferencia entre un puerto que compite por la última escritura y uno que la rechaza.
 >
-> `SaveOrder` sigue siendo un reemplazo entero y sin versión: la orden es la cabecera —estado, importes, fechas— y no compite con el worker, que sólo escribe líneas. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
+> `SaveOrder` guarda sólo la cabecera y no lleva versión: la orden es la cabecera —estado, importes, fechas— y no compite con el worker, que sólo escribe líneas. Las líneas quedan fuera a propósito, porque escribirlas también convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
 
 ## internal/store/memory.go
 
-> Implementación en memoria: permite escribir y probar el motor de punta a punta sin driver. No es un caché, es la única implementación hasta que exista el SQL, y por eso impone las mismas reglas que impondría la base —unicidad de orden, de clave de idempotencia y de dedupe— en vez de ser permisiva.
+> Implementación en memoria: permite escribir y probar el motor de punta a punta sin driver. No es un caché: es la implementación de referencia del puerto —la que define el comportamiento observable— y por eso impone las mismas reglas que impone la base —unicidad de orden, de clave de idempotencia y de dedupe— en vez de ser permisiva. `internal/store/postgres` aplica esas mismas reglas en SQL.
 >
 > Un solo mutex protege el estado entero: las operaciones duran microsegundos y un lock único elimina el deadlock por orden de adquisición.
 >
@@ -1317,6 +1319,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `Draft` es lo que la tablet manda antes de que exista una orden. `Item` lleva la máquina en un solo lugar: `Item.Machine`, y el tipo de máquina sale de `Item.Machine.Type`. La orden guarda la referencia completa en `store.Line.Machine`, así que el motor no retiene nada en memoria y un reinicio no le quita con qué hablarle a la máquina.
 
+### WithLineDeadline
+
+> Sólo acepta valores positivos: cero o negativo produciría un plazo ya vencido en el instante del despacho, que es peor que no tener plazo. `WithClock` y `WithIDGenerator` ignoran `nil` para que un test no deje el motor sin reloj ni sin ids.
+
+## internal/order/place.go
+
 ### El tipo de máquina como fuente única
 
 > Antes el tipo estaba dos veces —`Item.MachineType` y `Item.Machine.Type`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `MachineRef{Type: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
@@ -1327,13 +1335,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Riesgo residual anotado: `machineIdentified` sigue aceptando **algún** identificador, así que `Machine.Type: snacks` con un `DeviceID` de batidos es expresable. Ya no hay dos fuentes de tipo, pero la identidad no se valida contra el tipo.
 
-### WithLineDeadline
-
-> Sólo acepta valores positivos: cero o negativo produciría un plazo ya vencido en el instante del despacho, que es peor que no tener plazo. `WithClock` y `WithIDGenerator` ignoran `nil` para que un test no deje el motor sin reloj ni sin ids.
-
 ### Place
 
 > Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
+
+## internal/order/payment.go
 
 ### ConfirmPayment
 
@@ -1344,6 +1350,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Al final se **recarga** la orden y se deriva el estado con `AdvanceOrder` sobre las líneas leídas. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
 >
 > Sólo los errores de store vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
+
+## internal/order/dispatch.go
 
 ### dispatchLine
 
@@ -1365,11 +1373,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El `ProviderRef` se copia a la línea aunque venga vacío: el asa del proveedor es opcional, pero perderla cuando existe sería perder la única forma de reconciliar.
 
+## internal/order/reconcile.go
+
 ### transitionLine
 
 > `status.go` permite una sola salida desde `pending`: `sent`. Un rechazo o una duda significan que la línea **sí** se despachó, así que el estado se recorre `pending → sent → failed|in_doubt` y se persiste sólo el estado final, con una escritura.
 
-## internal/order/engine_test.go
+## internal/order/helpers_test.go
 
 > `recordingStore` envuelve la memoria para poder ver lo que el puerto no deja leer: qué intentos se registraron, con qué clave y cómo se cerraron. Sin ese registro no habría forma de afirmar que el intento se grabó antes de la llamada ni que terminó en `rejected` o `error`.
 >
@@ -1387,10 +1397,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Se guarda como un único campo con la `MachineRef` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
 
-## internal/order/engine.go — cambios
+## internal/order/place.go — cambios
 
 > `Place` copia la máquina del ítem a la línea antes de persistir: es lo que convierte la orden en algo autosuficiente. El motor ya no retiene nada en memoria, así que puede perder el proceso entero entre el cobro y el despacho sin perder con qué hablarle a la máquina.
->
+
+## internal/order/dispatch.go — cambios
+
 > `dispatchLine` toma la máquina de la línea. Un reinicio es indistinguible de una llamada normal: sólo cambia de dónde vino el store. Ya no existe el caso «no se conoce la máquina» porque la línea no puede nacer sin máquina: `validateDraft` lo impide en `Place`.
 >
 > `isProviderRejection` pregunta por el error del puerto y no por los tipos de cada proveedor. Ese era el punto: el motor no debe conocer que Batidos y Snacks existen, y con los dos imports cualquier proveedor nuevo obligaba a editar el motor para clasificar sus rechazos.
@@ -1401,11 +1413,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un error que no es del proveedor —red, JSON roto, contexto cortado— pasa intacto: no es un rechazo, y convertirlo en uno haría que una duda se declarara fallo.
 
-## internal/order/engine_test.go — el test del reinicio
+## internal/order/payment_test.go — el test del reinicio
 
 > Es el test que prueba que la deuda está pagada: el motor que cobra no es el que despacha. Un segundo `order.New` sobre el mismo store no comparte ni memoria ni mapa de referencias con el primero, así que si la máquina no estuviera guardada en la línea, el despacho no tendría con qué hablarle. Antes de mover la referencia al store, esto fallaba con «no se conoce la máquina de la línea».
 
-## internal/order — el reintento del fallido (T9a)
+## internal/order/dispatch.go — el reintento del fallido (T9a): `defaultMaxAttempts` y `dispatchLine`
 
 ### CanLineTransition: `failed -> sent`
 
@@ -1427,7 +1439,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > E4 no entra nunca acá: sin respuesta no se sabe si el producto salió, y el reintento a ciegas puede producir dos entregas.
 
-## internal/order — el worker de reconciliación (T9b)
+## internal/order — el worker de reconciliación (T9b): `reconcile.go`, `settle.go` y `dispatch.go`
 
 ### Presupuesto de tiempo
 
@@ -1475,7 +1487,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### (archivo)
 
-> Los cuatro endpoints con los que habla la tablet: el catálogo, la creación de la orden, el estado en vivo y el pago. El paquete no sabe de proveedores ni de firmas; traduce HTTP a las tres piezas que ya existen —catálogo, motor y store— y traduce lo que vuelve a JSON.
+> Los cuatro endpoints con los que habla la tablet: el catálogo, la creación de la orden, el estado en vivo y el pago. `Handler` es el contrato de la tablet: no sabe de proveedores ni de firmas, traduce HTTP a las tres piezas que ya existen —catálogo, motor y store— y traduce lo que vuelve a JSON. El contrato de los proveedores es otro tipo, `Callbacks`, con su propio constructor y su propio `Register`, y vive en `callbacks.go`.
 >
 > Los contratos de entrada y salida son nuestros, así que van en inglés como el resto de los identificadores, y los mensajes de error van en español porque los lee una persona del equipo.
 
@@ -1489,7 +1501,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Las rutas se declaran con patrón de método (`GET /combos`, `POST /orders/{id}/pay`), así que un método no soportado lo rechaza el `ServeMux` con 405 antes de tocar el store.
 
-### createOrder / resolveKiosk / buildDraft
+## internal/httpapi/orders.go
+
+### createOrder / readOrder / payOrder
+
+> Primero el guardia del entorno y después el motor: en producción la petición muere antes de que nada se registre.
+>
+> Si el motor devuelve error, no se responde 500 a ciegas. Se relee la orden: si ya no está pendiente de pago, el pago quedó registrado y lo que falló fue el despacho, así que la respuesta es 200 con el estado real (y el detalle en cada línea). Si sigue pendiente, el pago no se registró y ahí sí es un 500 que el cliente puede reintentar. Un 5xx en el primer caso sería una mentira que la tablet traduciría en un pago repetido.
+
+## internal/httpapi/draft.go
+
+### resolveKiosk / buildDraft
 
 > El `kiosk_id` puede venir vacío sólo cuando hay un único mueble configurado: con varios, adivinar sería elegir por el cliente. Un mueble que no está en la configuración es 404, igual que un combo inactivo o inexistente.
 >
@@ -1499,18 +1521,20 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El importe de cada línea queda en cero: el catálogo define un precio por combo, no por ítem, y repartirlo sería inventar un dato que nadie definió. El importe de la orden es el del combo.
 
-### payOrder
-
-> Primero el guardia del entorno y después el motor: en producción la petición muere antes de que nada se registre.
->
-> Si el motor devuelve error, no se responde 500 a ciegas. Se relee la orden: si ya no está pendiente de pago, el pago quedó registrado y lo que falló fue el despacho, así que la respuesta es 200 con el estado real (y el detalle en cada línea). Si sigue pendiente, el pago no se registró y ahí sí es un 500 que el cliente puede reintentar. Un 5xx en el primer caso sería una mentira que la tablet traduciría en un pago repetido.
-
-### decodeCreateOrder / fail / newOrderResponse
+### decodeCreateOrder
 
 > El cuerpo se lee con `DisallowUnknownFields` y con un tope de tamaño, y se exige un único objeto JSON. Un cuerpo inválido no llega a crear nada.
->
+
+## internal/httpapi/errors.go
+
+### fail
+
 > `fail` es el único lugar que decide el código de estado: los errores propios viajan como `apiError` con su status, `catalog.ErrNotFound` y `store.ErrNotFound` son 404, y el resto es 500 con el detalle sólo en el log, nunca en la respuesta. El `path` que va al log pasa por `redactCallbackPath`: el secreto de los callbacks viaja en la ruta y no puede quedar escrito.
->
+
+## internal/httpapi/responses.go
+
+### newOrderResponse
+
 > `newOrderResponse` armado a mano —y no serializando `store.Order`— porque el contrato de la tablet es una decisión nuestra: no quiero que un campo nuevo interno del store se filtre a la app, ni que las fechas en cero viajen como `0001-01-01`.
 
 ## internal/order/callback.go
@@ -1565,21 +1589,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El `orderId` va en la ruta de batidos porque su callback no trae ningún identificador nuestro salvo el código de canje, y el `notifyUrl` se entrega por campaña: la campaña se crea por línea, así que la URL puede llevar la orden. En snacks el identificador viaja en el cuerpo (`PaymentOrderId`, que es la orden que nosotros mandamos al despachar).
 
-### WithCallbacks / CallbackSecrets
+### NewCallbacks / CallbackSecrets
 
 > Sin receptor no se registran las rutas: un servidor al que nadie le cableó los callbacks responde 404, que es lo mismo que ve un atacante. Con receptor pero sin secreto configurado, las rutas existen y rechazan todo, también con 404. Las dos formas de fallar cerrado no se distinguen desde afuera.
-
-### BatidosCallbackURL
-
-> Única fuente de la forma de la ruta del callback de batidos. Devuelve vacío si falta cualquiera de las tres piezas: una URL a medias haría que el proveedor avise a ninguna parte, y el silencio se descubre recién cuando un cliente se queda sin batido.
->
-> La base se normaliza sin barra final y los dos segmentos variables se escapan con `url.PathEscape`, porque el secreto y el `orderId` viajan dentro del path. Si algún día cambia la ruta, acá y en el patrón de `Register` están los únicos dos lugares que hay que acompañar: nadie más arma la URL a mano.
-
-### redactCallbackPath
-
-> El secreto del callback viaja en el path, así que escribirlo completo en el log equivale a publicarlo: cualquiera con acceso al log puede forjar cierres de línea contra la máquina. Se conserva sólo el origen —lo que hace falta para saber qué proveedor avisó— y se tapa el resto.
->
-> Cualquier otra ruta se devuelve intacta: la redacción es una regla de los callbacks, no un filtro general de logs.
 
 ### secretMatches
 
@@ -1609,7 +1621,21 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Los tres logs de este bloque usan `redactCallbackPath` en lugar del path crudo: el secreto de la ruta nunca se escribe completo.
 
-## internal/config — publicBaseURLProblems / callbackSecretProblems
+## internal/httpapi/callback_url.go
+
+### BatidosCallbackURL
+
+> Única fuente de la forma de la ruta del callback de batidos. Devuelve vacío si falta cualquiera de las tres piezas: una URL a medias haría que el proveedor avise a ninguna parte, y el silencio se descubre recién cuando un cliente se queda sin batido.
+>
+> La base se normaliza sin barra final y los dos segmentos variables se escapan con `url.PathEscape`, porque el secreto y el `orderId` viajan dentro del path. Si algún día cambia la ruta, acá y en el patrón de `Register` están los únicos dos lugares que hay que acompañar: nadie más arma la URL a mano.
+
+### redactCallbackPath
+
+> El secreto del callback viaja en el path, así que escribirlo completo en el log equivale a publicarlo: cualquiera con acceso al log puede forjar cierres de línea contra la máquina. Se conserva sólo el origen —lo que hace falta para saber qué proveedor avisó— y se tapa el resto.
+>
+> Cualquier otra ruta se devuelve intacta: la redacción es una regla de los callbacks, no un filtro general de logs.
+
+## internal/config/validate.go — publicBaseURLProblems / callbackSecretProblems
 
 > `public_base_url` es opcional, pero cuando está se valida: tiene que ser una URL absoluta con host, de esquema `http` o `https`, y **en producción tiene que ser `https`**. El motivo no es estético: esa URL viaja al proveedor dentro del `notifyUrl` con la ruta secreta del callback adentro, así que en claro el secreto queda expuesto en su log y en el de cualquier proxy. En sandbox se permite `http` a propósito, para poder probar con un túnel.
 >
@@ -1637,7 +1663,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Lleva las razones para que el mensaje se entienda sin abrir el log, y las expone como campo para que la respuesta HTTP las pueda listar. `Unwrap` devuelve `ErrNotSellable`, así que `errors.Is` funciona y `errors.As` sigue dando acceso a las razones. Sin razones el mensaje es sólo la frase: un bloqueo que no se pudo explicar no inventa una causa.
 
-## internal/order/engine.go — Place y la puerta de disponibilidad
+## internal/order/place.go — Place y la puerta de disponibilidad
 
 > La consulta va exactamente en un lugar: **después** de validar el draft, **después** del lookup de idempotencia por `client_key` y **antes** de generar cualquier identificador. Las tres posiciones son decisiones, no casualidad.
 >
@@ -1673,7 +1699,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Si el draft no tiene exactamente un ítem de cada tipo, no se consulta nada y se devuelve un error que lo explica: la regla actual no sabe evaluar esa forma. **Fallar cerrado es la decisión** —no se vende algo que no se pudo chequear— pero tiene que ser un error visible y no un silencio que se lea como «todo bien». Por eso se cuentan los ítems de los dos tipos y se ignoran los de máquinas que la regla no conoce.
 
-## internal/httpapi/handler.go — fail y el combo no vendible
+## internal/httpapi/errors.go — fail y el combo no vendible
 
 > El mapeo nuevo vive donde ya se decidía el código de estado, y va antes del 500 genérico.
 >
@@ -1681,15 +1707,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un fallo del proveedor durante el chequeo **no** es 409: cae en el 500 que ya existía y sigue ahí por la misma razón, porque reintentar puede servir. Distinguirlos es lo que impide que la tablet le diga «combo agotado» a un cliente cuando en realidad el proveedor no contestaba.
 
-## cmd/fakeapi/main.go — adminHandler / decodeAdmin / requireLoopback
+## internal/fakeapi/admin.go — NewAdmin / adminHandler / decodeAdmin
 
 > El tercer servidor del falso: una superficie de administración para poder preparar una prueba end-to-end sin escribir código. Existe porque los setters de `internal/fakeapi` son métodos Go: sin esto, un catálogo de batidos vacío bloqueaba cualquier venta (el chequeo previo responde `batidos_sku_not_listed`) y no había forma de sembrarlo desde afuera.
 >
 > Es una capa fina sobre los setters existentes: no cambia sus firmas ni la lógica de los handlers documentados. Los cuerpos rechazan campos desconocidos, responden `{"ok":true}` o `{"ok":false,"error":"…"}` en español, y un setter que no existe no se simula: se responde 501 con el motivo, porque un `ok` falso en una herramienta de prueba es peor que un error claro.
->
+
+## cmd/fakeapi/main.go — requireLoopback
+
 > `requireLoopback` es la única defensa que tiene: no hay autenticación y no la necesita, pero el servidor de administración se niega a arrancar fuera de loopback (incluidos `0.0.0.0` y cualquier IP no local). Es una herramienta de desarrollo, no una API.
 
-## internal/order — el worker y los callbacks sobre la misma línea
+## internal/order — el worker y los callbacks sobre la misma línea: `reconcile.go`, `callback.go` y `dispatch.go`
 
 > `ReconcileDue` corre en su propia goroutine —el barrido cada 30 s de `internal/sweep`— mientras el callback llega por HTTP en otra. Los dos escriben la misma línea, y hasta que existió `Line.Version` el último en escribir ganaba: el worker tomaba una copia de las líneas al empezar (`DueLines`), el callback cerraba la línea como entregada en el medio, y el worker guardaba su copia vieja encima. El resultado era un `delivered` revertido y el `Ref` adoptado borrado, con la orden recalculada sobre el estado revertido. No era teórico: es la primera carrera real del sistema.
 >
@@ -1699,7 +1727,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 > - `extendReconcile` — `(false, nil)`. La línea ya tiene dueño: no se reprograma ni se cierra, porque rearmar un plazo sobre una línea que otro acaba de cerrar es reabrirla de costado.
 > - `dispatchLine` — nil, sin revertir nada. El efecto del despacho ya ocurrió y el estado de la línea lo resuelve la reconciliación con lo que diga el proveedor; el cierre del intento ya se registró antes, así que no se pierde la evidencia.
 > - `markBrewing` — `(false, nil)`. «En curso» es la información más débil de las tres y no gana una carrera contra un cierre o contra un aplazo.
-> - `settleOrder`, `Place` y `ConfirmPayment` — sin reacción propia: escriben la orden, no la línea, y `SaveOrder` sigue siendo un reemplazo entero.
+> - `settleOrder`, `Place` y `ConfirmPayment` — sin reacción propia: escriben la orden, no la línea, y `SaveOrder` guarda sólo la cabecera.
 >
 > La carrera se demuestra sin goroutines, porque una carrera reproducida por suerte no es un test. `staleDueStore` (`internal/order/callback_test.go`) guarda la copia que devolvió `DueLines` y la repite en las llamadas siguientes: es exactamente el estado en el que está el worker cuando el callback se le adelanta. El test `TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade` copia la línea abierta, la cierra por el camino real del callback —que además adopta un `Ref`— y recién ahí corre el barrido con la copia vieja, en tres variantes según lo que la máquina le conteste al worker (cierre fallido, entrega y aplazo). Las tres afirman lo mismo: la línea sigue `delivered`, el `Ref` adoptado sigue ahí, los plazos siguen en cero, no hay error en `LastError` y la orden sigue `delivered`.
 >
@@ -1711,4 +1739,120 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > No siempre fue así: antes reemplazaba la orden entera, líneas incluidas, y había un test que lo fijaba como intención. Ese contrato se volvió una carrera en cuanto las líneas empezaron a tener escritura propia y condicional: `settleOrder` y `ConfirmPayment` leen la orden, y si entre la lectura y el guardado un callback cierra una línea, el guardado de la orden devolvía la línea a su estado anterior — con el `Ref` adoptado borrado y la versión pisada. Ahora las líneas sólo cambian por `SaveLine`, que sí es condicional, y la orden sólo cambia por acá.
 >
-> Consecuencia para el futuro store sobre Postgres: el guardado de la orden es un `UPDATE` de las columnas de cabecera, sin tocar `order_line`.
+> El store sobre Postgres (`internal/store/postgres`) cumple ese contrato al pie de la letra: el guardado de la orden es un `UPDATE` de las columnas de cabecera, sin tocar `order_line`.
+
+## internal/store/postgres
+
+### (archivo)
+
+> El puerto sobre PostgreSQL, con `database/sql` y el `stdlib` de `github.com/jackc/pgx/v5`, que es la primera y única dependencia externa del proyecto. Se eligió `pgx` por su `stdlib` y no por su API nativa: expone `database/sql`, así que el puerto sigue escrito contra la interfaz estándar y ningún otro paquete aprende qué driver hay abajo.
+>
+> `Open` abre el pool, hace `Ping` y recién entonces devuelve el store. El `Ping` no es ceremonia: sin él un DSN equivocado no se nota hasta la primera operación real, que es exactamente cuando hay dinero de por medio. `Close` cierra el pool.
+>
+> Todas las consultas usan `ctx` (`QueryContext`/`QueryRowContext`/`ExecContext`): el llamador que corta por plazo necesita que el corte llegue a la base y no que quede una conexión esperando.
+>
+> Un tiempo en cero se escribe como `NULL` y vuelve como `time.Time` en cero, que es la convención del puerto —`DeadlineAt` en cero significa «sin plazo armado», no un plazo vencido en el año 1—. Los `text` vacíos también viajan como `NULL`; los campos con `CHECK` (`state`, `outcome`) nunca, porque la base los rechazaría.
+>
+> Un conflicto de unicidad (`23505`) se traduce a `store.ErrAlreadyExists` en vez de propagarse como error de driver: para el motor es el mismo hecho que en memoria —se pidió crear algo que ya existe— y no tiene por qué enterarse de que abajo hay una base. Cualquier otro error de escritura se envuelve con el contexto de qué se estaba guardando.
+>
+> Los tres errores de dominio (`ErrNotFound`, `ErrAlreadyExists`, `ErrStale`) se devuelven como el valor centinela, sin envolver: así el llamador puede compararlos con `errors.Is` o con `==` y obtiene el mismo resultado, igual que con `store.Memory`.
+
+### Mapeo de columnas
+
+> - `Line.Ref` → `order_line.external_ref`. La columna `exchange_code` del esquema inicial quedó sin uso: era el nombre del proveedor de batidos y el asa de snacks no es un código de canje. Un campo con dos significados (R5) es menos código que dos campos de los cuales siempre se usa uno.
+> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Type` no tiene columna propia: se escribe y se lee de `order_line.machine_type`, que ya existía y ya guarda `Line.MachineType`, para no tener dos fuentes del mismo dato. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
+> - `Line.Version` → `order_line.version`, `bigint NOT NULL DEFAULT 0`.
+> - `Order.ClientKey` → `orders.client_key`, con índice único parcial (`WHERE client_key IS NOT NULL`) para que dos órdenes sin clave no choquen entre sí.
+> - `Attempt.Outcome`/`Detail` → `outcome`/`error_detail`. `request_payload` es `NOT NULL` en el esquema y se inserta `'{}'::jsonb`; `response_payload` y `http_status` quedan `NULL` porque hoy el motor no los recibe. No se inventa el cuerpo: un `NULL` dice «no hay dato» y un cuerpo vacío diría «el cuerpo estaba vacío».
+> - `Webhook.Payload` no existe en el tipo, así que se inserta `'{}'::jsonb`. La deduplicación necesita la identidad `(source, dedupe_key)`, no el cuerpo.
+
+### CreateOrder / SaveOrder
+
+> `CreateOrder` va en una transacción: orden y líneas entran juntas o no entra ninguna, y cada línea se inserta con `version = 0` sin importar lo que traiga el llamador. Una línea que naciera con versión inventada quedaría inmune a los conflictos durante toda su vida. Si el `INSERT` de la orden choca con la clave primaria o con `client_key`, la transacción se revierte y el error es `ErrAlreadyExists`: no puede quedar media orden escrita.
+>
+> `SaveOrder` es un `UPDATE` de las nueve columnas de cabecera —`kiosk_id`, `combo_id`, `client_key`, `amount_cents`, `currency`, `status`, `created_at`, `paid_at`, `closed_at`— y **nunca toca `order_line`**. Es la contraparte en SQL de la decisión del puerto: al escribir, la orden no es dueña de sus líneas. Si las escribiera, `settleOrder` o `ConfirmPayment` podrían revertir un `delivered` que un callback acaba de guardar —con su `Ref` adoptado y todo— aunque la línea tenga versión, porque un reemplazo total escribe todas las columnas y no compara ninguna. Cero filas afectadas es `ErrNotFound`.
+
+### SaveLine
+
+> Guardado condicional de verdad: `UPDATE … SET …, version = version + 1, updated_at = now() WHERE id = $1 AND version = $2 RETURNING` la fila completa. No es un reemplazo: si la versión no coincide, no se escribe nada.
+>
+> Con cero filas afectadas el `UPDATE` confunde dos causas, y hay que separarlas: la línea existe con otra versión (`ErrStale`) o no existe (`ErrNotFound`). Se resuelve con un `EXISTS` posterior y sólo en ese camino; preguntar primero por la versión agregaría una consulta al camino feliz, que es el que corre siempre.
+>
+> El `RETURNING` es lo que hace que la línea devuelta traiga la versión de la base y no la que el llamador creía: el llamador encadena esa versión en el guardado siguiente sin releer la fila. Y se comprueba con `RowsAffected`, no con `err != nil`, porque un `UPDATE` que no toca nada no es un error para la base.
+
+### AppendAttempt / SaveAttempt
+
+> `AppendAttempt` inserta y traduce el `23505` a `ErrAlreadyExists`: sirve tanto para la `idempotency_key` como para el par `(line_id, attempt_no)`, que son las dos unicidades que impiden registrar dos veces el mismo intento.
+>
+> `SaveAttempt` actualiza por `idempotency_key` sólo `outcome`, `error_detail` y `finished_at`, y cero filas es `ErrNotFound`. Nunca crea y nunca toca la línea: si el cierre pudiera insertar, un error de orden de llamadas inventaría intentos que nunca ocurrieron, y si tocara la línea estaría escribiendo sin condición sobre las mismas filas que protege la versión.
+
+### RegisterWebhook / DueLines
+
+> `RegisterWebhook` es un `INSERT … ON CONFLICT (source, dedupe_key) DO NOTHING` y devuelve `first` según las filas afectadas: un webhook repetido es el caso normal de un proveedor que reintenta, no un error. Un `INSERT` ciego más un `ErrAlreadyExists` obligaría al llamador a tratar un duplicado como excepción.
+>
+> `DueLines` filtra `deadline_at IS NOT NULL AND deadline_at <= $1` y ordena por `deadline_at` con `id` como desempate, para que dos plazos iguales salgan siempre en el mismo orden y un worker con tope no se comporte distinto entre corridas. El `LIMIT` sólo se agrega cuando el tope es mayor que cero: el puerto define que cero significa «sin tope», y un `LIMIT 0` de SQL devolvería nada, que es lo contrario.
+
+### Open / Close — la dependencia
+
+> La versión de `pgx` se eligió entre las que no obligan a subir el lenguaje declarado en `go.mod`: agregar la primera dependencia externa no debe cambiar la versión mínima de Go del proyecto. Actualizarla es una decisión aparte, con su propio diff.
+
+## migrations/0004_store_postgres.sql
+
+> Lo que el esquema inicial no tenía y el store sobre Postgres necesita para cumplir el puerto. Todo es aditivo y cada sentencia lleva `IF NOT EXISTS`, así que aplicarla dos veces no rompe nada. No se edita `0001_init.sql` a propósito: una migración ya aplicada no se reescribe, se corrige con otra.
+>
+> - `orders.client_key` y su índice único **parcial**: la idempotencia de la creación de la orden queda en la base, no en un `SELECT` previo, que sería un TOCTOU entre dos tablets tocando en el mismo instante. El `WHERE client_key IS NOT NULL` es lo que permite que muchas órdenes no tengan clave sin chocar entre sí.
+> - `order_line.version` (`bigint NOT NULL DEFAULT 0`): el `DEFAULT` es lo que hace que las filas viejas queden en la versión correcta sin backfill, y el `NOT NULL` es lo que impide que una línea quede fuera del guardado condicional.
+> - Las seis columnas `machine_*`: la `MachineRef` que antes sólo vivía en un mapa de RAM. Son nullable porque el esquema no puede exigir «las de batidos o la de snacks» sin repetir en SQL una regla que ya vive en el motor, y un `CHECK` duplicado sería una segunda fuente que se desincroniza.
+> - `dispatch_attempt_key_idx` y `webhook_event_source_dedupe_idx` son índices únicos que ya existían con otro nombre en `0001_init.sql` (`dispatch_attempt_idempotency_idx` y `webhook_event_dedupe_idx`). El `IF NOT EXISTS` compara el nombre y no la definición, así que la base queda con dos índices únicos equivalentes por tabla. Es inocuo —la unicidad ya se cumplía y el costo es un índice de más al escribir— y se deja tal cual porque quitarlo es una migración aparte; conviene saberlo antes de mirar el esquema y creer que falta un índice o que sobra una regla.
+
+## internal/config — Store / DatabaseURL: config.go y validate.go
+
+> El proceso tenía un solo store cableado y ninguna forma de elegir otro. `store` (`memory` por defecto) y `database_url` son la perilla: el archivo elige el motor y el entorno puede pisarlo con `STORE` y `DATABASE_URL`, igual que ya pasa con los secretos. `STORE` existe porque el compose declara el store por entorno, no editando el JSON.
+>
+> La validación vive en `validate`, donde ya viven las demás: `store` sólo acepta `memory` o `postgres`, y `postgres` sin `database_url` es un error de configuración, no un fallo de arranque del driver. El mensaje nombra el campo para que el operador sepa qué corregir sin leer el código.
+
+## internal/topology/seed.go
+
+> Existe porque `orders` referencia `kiosk(id)` y `combo(id)`: contra Postgres ninguna orden entra si esas filas no existen. La topología ya está en la configuración y el catálogo ya está en el JSON de combos, así que se copian a la base al arrancar en vez de exigir un sembrado manual que se desincroniza en cuanto alguien edita la configuración.
+>
+> Firmas contra `Execer` (sólo `ExecContext`) y no contra `*sql.DB`: el sembrado se prueba sin base, con un registrador que anota las sentencias. La versión transaccional la aporta `postgres.Store.Seed`.
+>
+> Las columnas son exactamente las de `0001_init.sql`, sin inventar ninguna: `kiosk (id, name)`, `machine (kiosk_id, type, name, batidos_device_id, batidos_device_no, batidos_device_type_id, snacks_mid)`, `combo (id, name, price_cents, currency, active)` y `combo_item (combo_id, position, machine_type, sku)`. `description`, `sort_order`, `sku_name` y los timestamps quedan en su `DEFAULT`: el `catalog.Combo` no los tiene y agregarlos al contrato del catálogo sería otra decisión.
+>
+> Cada sentencia es `INSERT … SELECT … WHERE to_regclass('tabla') IS NOT NULL … ON CONFLICT … DO UPDATE`, por dos motivos. El `ON CONFLICT` es lo que hace idempotente el arranque: reiniciar no duplica ni pisa la clave primaria. El `WHERE to_regclass(...)` es el «si la tabla existe» pedido: con una migración sin aplicar el sembrado no rompe el arranque, pero tampoco escribe. El costo de esa elección es explícito: el proceso arranca igual y la primera orden falla contra la tabla que falta, así que las migraciones siguen siendo obligatorias antes de vender.
+>
+> `NULLIF($n, '')` convierte el vacío de la configuración en `NULL`, que es lo que el `CHECK` de `machine` exige: la máquina de batidos no lleva `snacks_mid` y la de snacks no lleva los tres `batidos_*`. Mandar cadena vacía en vez de `NULL` chocaría contra el `CHECK` y `char(3)` de `combo.currency` no acepta un vacío con sentido, así que `COALESCE(NULLIF($4, ''), 'ARS')` cae en la moneda por defecto de la tabla.
+>
+> `combo_item.position` es el índice del ítem en el combo, empezando en cero, igual que el orden en que llegan del JSON. No se borran ítems sobrantes: si el catálogo se acorta, la fila vieja queda en la base. Se acepta porque nadie lee `combo_item` para vender —el menú sale del JSON— y borrar filas es una decisión destructiva que no corresponde a un sembrado.
+
+## internal/store/postgres/seed.go — Seed
+
+> `Seed` existe para que el arranque tenga una sola llamada y no necesite el `*sql.DB` que el store mantiene privado. Abre una transacción, delega en `topology.Seed` y la confirma: si una sentencia falla, no queda media topología escrita y el llamador aborta el arranque con el error del mueble, la máquina o el combo que falló.
+
+## cmd/api/main.go — openStore
+
+> `openStore` devuelve el store del puerto más su cierre, y por eso el `main` puede tener un solo `defer closeStore()` sin saber cuál de los dos motores salió. Con `memory` avisa con el `WARN` de siempre: el estado se pierde al reiniciar y sólo puede correr una instancia. Con `postgres` abre, siembra y, si el sembrado falla, cierra lo abierto antes de devolver el error: un store abierto que nadie va a usar es una conexión colgada.
+>
+> El sembrado usa un contexto propio con tope de 30 segundos, no el del servidor: en ese punto las señales todavía no están conectadas y una base que no responde dejaría el arranque colgado para siempre.
+
+## Dockerfile
+
+> Dos etapas para no llevar compilador a producción: `golang:1.23` compila con `CGO_ENABLED=0` y la imagen final es `gcr.io/distroless/static:nonroot`, sin shell, sin gestor de paquetes y con usuario no root. `-trimpath` y `-ldflags "-s -w"` sacan rutas locales y símbolos de depuración del binario.
+>
+> Hay dos etapas finales, `runtime` y `fakeapi`, porque el compose necesita el binario de los proveedores falsos con la misma receta de compilación. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`) y no `COPY . .`: así el contexto no arrastra `.git`, `design/` ni los documentos de terceros, y con BuildKit ni siquiera se envían.
+>
+> La imagen no lleva secretos: todo entra por variables de entorno en tiempo de ejecución.
+
+## docker-compose.yml
+
+> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` usa la misma imagen, monta `./migrations` y aplica los `.sql` en orden alfabético con `psql`; corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien, y `fakeapi` levanta los dos proveedores falsos.
+>
+> `migrate` no lleva tabla de versiones: es un `psql` sobre los archivos, como se pedía. La consecuencia es que el primer `up` sobre un volumen nuevo funciona y el segundo falla en el DDL ya aplicado; para repetir el esquema hay que bajar el volumen (`docker compose down -v`). Una tabla de control sería otra decisión y otro diff.
+>
+> `fakeapi` recibe `-batidos-addr 0.0.0.0:9401` y `-snacks-addr 0.0.0.0:9402` porque un proceso atado a `127.0.0.1` dentro del contenedor no es alcanzable ni por el servicio `api` ni por un puerto publicado. El puerto de administración (9403) **no** se publica: el falso se niega a escuchar su administración fuera de loopback, y esa defensa es correcta; publicarlo daría un puerto muerto. Los dos puertos de proveedor se publican sólo en `127.0.0.1` del host, igual que el arranque local.
+>
+> Los dos secretos de callback son de ejemplo y sólo llevan letras y guiones, porque la configuración valida el path del callback contra esos caracteres.
+
+## config.docker.json
+
+> Es `config.example.json` apuntado al compose: `store` en `postgres`, `public_base_url` con el puerto publicado (`18080`), y las dos URLs de proveedor con el nombre del servicio `fakeapi` en vez de `127.0.0.1`. Las credenciales son las que el falso espera por defecto (`mykey`/`mysecret`, `ak_test`/`testsecret`): valores de pruebas locales, no credenciales de nada, y así el stack levanta sin exportar variables. El `device_id` de batidos es `dev-e2e-1`, que es el dispositivo al que el falso le siembra el producto.
