@@ -1,14 +1,17 @@
 {
   "env": "sandbox",
+  "public_base_url": "",
   "batidos": {
     "base_url": "https://api.batidos.invalid",
     "key": "replace-me",
-    "secret": "replace-me"
+    "secret": "replace-me",
+    "callback_secret": "replace-me"
   },
   "snacks": {
     "base_url": "",
     "access_key": "replace-me",
-    "app_secret": "replace-me"
+    "app_secret": "replace-me",
+    "callback_secret": "replace-me"
   },
   "kiosks": [
     {

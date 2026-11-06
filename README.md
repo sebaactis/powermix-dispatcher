@@ -27,13 +27,14 @@ port: it never learns that a drink needs a code.
 ## Layout
 
 ```
-cmd/api          backend for the tablet (health endpoint only, for now)
-cmd/fakeapi      runs both local stand-ins
+cmd/api          backend for the tablet: catalog, orders, live status, simulated pay
+cmd/fakeapi      runs both local stand-ins plus their test-only admin surface
 internal/config  topology from JSON, secrets from env, validated at startup
 internal/dispenser          the port: Check / Dispatch / Reconcile
 internal/dispenser/batidos       signature and UTC+8 campaign dates
 internal/dispenser/snacks  HMAC signature, nonce, clock window
 internal/fakeapi            local Batidos and Snacks, with their real rules enforced
+internal/httpapi            the four tablet endpoints, mapped onto catalog + engine + store
 internal/payments           Refunder port + mock that never moves money
 internal/notify             Notifier port + structured log transport
 migrations                 PostgreSQL schema
@@ -53,7 +54,15 @@ go vet ./...
 go build ./...
 
 cp config.example.json config.local.json     # topology only, no values
-go run ./cmd/api -config config.local.json   # GET /healthz
+cp combos.example.json combos.local.json     # the menu
+
+go run ./cmd/api -config config.local.json -combos combos.local.json
+
+# GET  /healthz
+# GET  /combos
+# POST /orders               {"combo_id":"...","client_key":"...","kiosk_id":"..."}
+# GET  /orders/{id}
+# POST /orders/{id}/pay      simulated, sandbox only: 403 in production
 ```
 
 Local stand-ins, so integration work can start without credentials:
@@ -62,7 +71,38 @@ Local stand-ins, so integration work can start without credentials:
 go run ./cmd/fakeapi
 # fake batidos API  -> http://127.0.0.1:9401
 # fake snacks API   -> http://127.0.0.1:9402
+# admin surface     -> http://127.0.0.1:9403   (POST only, loopback only)
 ```
+
+The fake also seeds one listed batidos product on startup, so a fresh fake plus
+this backend can sell a combo without preparing anything: `-batidos-goods`
+(`goods-1` by default) for the device named by `-batidos-device` (`dev-e2e-1` by
+default). Pass `-batidos-goods ""` to start with an empty batidos catalogue and
+load the products through the admin surface instead. The snacks fake needs no
+seed: it already starts with slots that have stock.
+
+### Admin surface of the fake
+
+Test-only, and thin: every route calls one setter the fake already had, so an
+end-to-end run can put the machines in the state it needs. Every route is `POST`,
+takes a JSON body, answers `{"ok":true}` or `{"ok":false,"error":"…"}`, and
+rejects bodies with unknown fields. Values are not persisted: a restart of the
+fake forgets them.
+
+| Route | Body | Effect |
+| --- | --- | --- |
+| `/admin/batidos/goods` | `{"device_id":"dev-e2e-1","goods":[{"id":"goods-1","listing":true,"sold_out":0}]}` | replaces the device catalogue (`[]` leaves it empty) |
+| `/admin/batidos/offline` | `{"device_id":"dev-e2e-1","offline":true}` | takes the device offline; `false` is rejected because there is no setter to bring it back |
+| `/admin/batidos/abnormal` | `{"device_id":"dev-e2e-1","abnormal":true}` | marks a fault; `false` is rejected for the same reason |
+| `/admin/batidos/out_of_stock` | `{"device_id":"dev-e2e-1","out_of_stock":true}` | marks it without supplies; `false` is rejected for the same reason |
+| `/admin/batidos/advance` | `{"code":"000001","status":2}` | advances a redemption code, so `getOrderInfo` reports `0` failed, `1` brewing or `2` done |
+| `/admin/snacks/device` | `{"online":true,"sell_status":1,"fault_state":0,"lock_type":0,"stockout_state":0}` | applies only the fields present |
+| `/admin/snacks/slot` | `{"slot_no":"1","stock":5,"slot_status":1}` | sets the stock and/or the status of one slot |
+| `/admin/snacks/order` | `{"status":1,"name":"…"}` or `{"empty":true}` | changes what the orders page reports, or empties it |
+
+> Local tests only. There is no authentication, so the admin server must never be
+> reachable from another machine: `-admin-addr` defaults to `127.0.0.1:9403` and
+> the process refuses to start with a non-loopback host.
 
 ## Secrets
 
@@ -75,6 +115,14 @@ variables, which override anything written in the JSON:
 | `BATIDOS_SECRET` | Batidos |
 | `SNACKS_ACCESS_KEY` | Snacks (OurVend open API) |
 | `SNACKS_APP_SECRET` | Snacks |
+| `BATIDOS_CALLBACK_SECRET` | Secret path segment for the Batidos callback (optional) |
+| `SNACKS_CALLBACK_SECRET` | Secret path segment for the Snacks callback (optional) |
+| `PUBLIC_BASE_URL` | Public base URL of this backend (optional). Without it the Batidos campaign is created without `notifyUrl`, so the Batidos callback never arrives |
+
+Both callback secrets are optional. When a secret is empty, that callback
+endpoint answers 404: an unauthenticated machine callback never reaches the
+order. The Batidos callback is not signed by the provider (R6), so the secret
+lives in the URL path instead of a header.
 
 Keep them in a local `.env` file, which is git-ignored, and load it in the shell:
 
