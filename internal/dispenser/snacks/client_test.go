@@ -270,7 +270,7 @@ func TestDevicesReturnsThePaginatedPage(t *testing.T) {
 
 	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
 
-	page, err := client.Devices(context.Background(), 1, 10, "")
+	page, err := client.Devices(context.Background(), snacks.PageQuery{Page: 1, Size: 10})
 	if err != nil {
 		t.Fatalf("Devices: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestDevicesFiltersByDeviceCode(t *testing.T) {
 
 	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
 
-	page, err := client.Devices(context.Background(), 1, 10, "otra-maquina")
+	page, err := client.Devices(context.Background(), snacks.PageQuery{Page: 1, Size: 10, DeviceCode: "otra-maquina"})
 	if err != nil {
 		t.Fatalf("Devices: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestDevicesSurfacesTheMachineStates(t *testing.T) {
 
 			client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
 
-			page, err := client.Devices(context.Background(), 1, 10, "")
+			page, err := client.Devices(context.Background(), snacks.PageQuery{Page: 1, Size: 10})
 			if err != nil {
 				t.Fatalf("Devices: %v", err)
 			}
@@ -441,7 +441,7 @@ func TestDevicesSignsOnlyThePathAndNotTheQueryString(t *testing.T) {
 
 	client := snacks.NewClient(baseURL, testAccessKey, testAppSecret)
 
-	page, err := client.Devices(context.Background(), 1, 10, "")
+	page, err := client.Devices(context.Background(), snacks.PageQuery{Page: 1, Size: 10})
 	if err != nil {
 		t.Fatalf("Devices: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestOrdersSendsPageAndPageSizeAndDecodesTheItems(t *testing.T) {
 
 	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
 
-	page, err := client.Orders(context.Background(), 1, 10, "")
+	page, err := client.Orders(context.Background(), snacks.PageQuery{Page: 1, Size: 10})
 	if err != nil {
 		t.Fatalf("Orders: %v", err)
 	}
@@ -660,7 +660,7 @@ func TestOrdersSendsOrderNoOnlyWhenItIsSet(t *testing.T) {
 	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
 	ctx := context.Background()
 
-	page, err := client.Orders(ctx, 2, 5, "")
+	page, err := client.Orders(ctx, snacks.PageQuery{Page: 2, Size: 5})
 	if err != nil {
 		t.Fatalf("Orders sin OrderNo: %v", err)
 	}
@@ -668,7 +668,7 @@ func TestOrdersSendsOrderNoOnlyWhenItIsSet(t *testing.T) {
 		t.Fatalf("Items volvió nil, want una lista vacía")
 	}
 
-	if _, err := client.Orders(ctx, 2, 5, "20260717827745116217477_6"); err != nil {
+	if _, err := client.Orders(ctx, snacks.PageQuery{Page: 2, Size: 5, OrderNo: "20260717827745116217477_6"}); err != nil {
 		t.Fatalf("Orders con OrderNo: %v", err)
 	}
 

@@ -79,18 +79,22 @@ func mustCreate(t *testing.T, m *store.Memory, order store.Order) {
 
 func mustOrder(t *testing.T, m *store.Memory, orderID string) store.Order {
 	t.Helper()
-	order, err := m.Order(context.Background(), orderID)
+	order, err := m.LoadOrder(context.Background(), orderID)
 	if err != nil {
 		t.Fatalf("Order(%q): %v", orderID, err)
 	}
 	return order
 }
 
-func mustSaveLine(t *testing.T, m *store.Memory, line store.Line) {
+func mustSaveLine(t *testing.T, m *store.Memory, line store.Line) store.Line {
 	t.Helper()
-	if err := m.SaveLine(context.Background(), line); err != nil {
+
+	saved, err := m.SaveLine(context.Background(), line)
+	if err != nil {
 		t.Fatalf("SaveLine(%q): %v", line.ID, err)
 	}
+
+	return saved
 }
 
 func mustDue(t *testing.T, m *store.Memory, now time.Time, limit int) []store.Line {
@@ -152,7 +156,7 @@ func TestMemoryRejectsDuplicateOrderID(t *testing.T) {
 func TestMemoryOrderReturnsNotFoundForUnknownOrder(t *testing.T) {
 	m := store.NewMemory()
 
-	got, err := m.Order(context.Background(), "order-inexistente")
+	got, err := m.LoadOrder(context.Background(), "order-inexistente")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Order devolvió %v, se esperaba %v", err, store.ErrNotFound)
 	}
@@ -169,37 +173,56 @@ func TestMemorySaveOrderReturnsNotFoundForUnknownOrder(t *testing.T) {
 		t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrNotFound)
 	}
 
-	if _, err := m.Order(context.Background(), "order-1"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := m.LoadOrder(context.Background(), "order-1"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SaveOrder creó la orden: Order devolvió %v", err)
 	}
 }
 
-func TestMemorySaveOrderReplacesTheWholeOrder(t *testing.T) {
+func TestMemorySaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	m := store.NewMemory()
 	mustCreate(t, m, fixtureOrder())
 
-	edited := mustOrder(t, m, "order-1")
-	edited.Status = store.OrderDispatching
-	edited.ClosedAt = baseTime.Add(2 * time.Minute)
-	edited.Lines = edited.Lines[:1]
-	edited.Lines[0].State = dispenser.LineSent
-	edited.Lines[0].Ref = "order-no-1"
-	edited.Lines[0].Attempts = 1
-	edited.Lines[0].DeadlineAt = baseTime.Add(3 * time.Minute)
-	edited.Lines[0].ReconcileUntil = baseTime.Add(5 * time.Minute)
+	stale := mustOrder(t, m, "order-1")
 
-	if err := m.SaveOrder(context.Background(), edited); err != nil {
+	line := stale.Lines[0]
+	line.State = dispenser.LineSent
+	line.Ref = "order-no-1"
+
+	saved, err := m.SaveLine(context.Background(), line)
+	if err != nil {
+		t.Fatalf("SaveLine: %v", err)
+	}
+
+	if saved.Version != line.Version+1 {
+		t.Fatalf("la línea guardada debía quedar en la versión %d y quedó en la %d", line.Version+1, saved.Version)
+	}
+
+	stale.Status = store.OrderDispatching
+	stale.ClosedAt = baseTime.Add(2 * time.Minute)
+	stale.Lines = stale.Lines[:1]
+	stale.Lines[0].State = dispenser.LineDelivered
+	stale.Lines[0].Ref = "ref-vieja"
+
+	if err := m.SaveOrder(context.Background(), stale); err != nil {
 		t.Fatalf("SaveOrder: %v", err)
 	}
 
 	got := mustOrder(t, m, "order-1")
-	if !reflect.DeepEqual(got, edited) {
-		t.Fatalf("Order devolvió %+v, se esperaba %+v", got, edited)
+
+	if got.Status != store.OrderDispatching {
+		t.Fatalf("el estado de la orden sí se persiste y quedó %q", got.Status)
 	}
 
-	err := m.SaveLine(context.Background(), store.Line{ID: snackLineID, OrderID: "order-1", State: dispenser.LineDelivered})
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("SaveLine sobre una línea reemplazada devolvió %v, se esperaba %v", err, store.ErrNotFound)
+	if len(got.Lines) != len(stale.Lines)+1 {
+		t.Fatalf("SaveOrder no debe tocar las líneas: se guardaron %d y quedaron %d", len(stale.Lines), len(got.Lines))
+	}
+
+	if got.Lines[0].State != dispenser.LineSent || got.Lines[0].Ref != "order-no-1" {
+		t.Fatalf("la línea escrita por su propio camino debe sobrevivir al guardado de la orden: %+v", got.Lines[0])
+	}
+
+	if got.Lines[0].Version != saved.Version {
+		t.Fatalf("SaveOrder no debe revertir la versión de la línea: %d y %d", got.Lines[0].Version, saved.Version)
 	}
 }
 
@@ -252,7 +275,7 @@ func TestMemorySaveLineUpdatesOnlyThatLine(t *testing.T) {
 	line.DeadlineAt = baseTime.Add(2 * time.Minute)
 	line.ReconcileUntil = baseTime.Add(4 * time.Minute)
 	line.LastError = "el proveedor no respondió"
-	mustSaveLine(t, m, line)
+	line = mustSaveLine(t, m, line)
 
 	got := mustOrder(t, m, "order-1")
 	if !reflect.DeepEqual(lineByID(t, got.Lines, drinkLineID), line) {
@@ -269,7 +292,7 @@ func TestMemorySaveLineReturnsNotFoundForUnknownLine(t *testing.T) {
 	m := store.NewMemory()
 	mustCreate(t, m, fixtureOrder())
 
-	err := m.SaveLine(context.Background(), store.Line{
+	_, err := m.SaveLine(context.Background(), store.Line{
 		ID:      "line-inexistente",
 		OrderID: "order-1",
 		State:   dispenser.LineDelivered,
@@ -281,6 +304,98 @@ func TestMemorySaveLineReturnsNotFoundForUnknownLine(t *testing.T) {
 	got := mustOrder(t, m, "order-1")
 	if len(got.Lines) != 2 {
 		t.Fatalf("SaveLine creó una línea: la orden quedó con %d líneas", len(got.Lines))
+	}
+}
+
+func TestMemoryCreateOrderStartsEveryLineAtVersionZero(t *testing.T) {
+	m := store.NewMemory()
+	created := fixtureOrder()
+
+	for i := range created.Lines {
+		created.Lines[i].Version = 7
+	}
+
+	mustCreate(t, m, created)
+
+	for _, line := range mustOrder(t, m, created.ID).Lines {
+		if line.Version != 0 {
+			t.Fatalf("la línea %q nació con Version=%d, se esperaba 0", line.ID, line.Version)
+		}
+	}
+}
+
+func TestMemorySaveLineReturnsThePersistedVersion(t *testing.T) {
+	m := store.NewMemory()
+	mustCreate(t, m, fixtureOrder())
+
+	line := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
+	line.State = dispenser.LineSent
+	line.Ref = "order-no-1"
+
+	saved := mustSaveLine(t, m, line)
+	if saved.Version != line.Version+1 {
+		t.Fatalf("SaveLine devolvió Version=%d, se esperaba %d", saved.Version, line.Version+1)
+	}
+	if saved.State != line.State || saved.Ref != line.Ref {
+		t.Fatalf("SaveLine devolvió %+v, se esperaba lo que se guardó", saved)
+	}
+
+	stored := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
+	if !reflect.DeepEqual(stored, saved) {
+		t.Fatalf("la línea guardada es %+v, se esperaba %+v", stored, saved)
+	}
+}
+
+func TestMemorySaveLineRejectsAStaleVersionAndKeepsTheStoredLine(t *testing.T) {
+	m := store.NewMemory()
+	mustCreate(t, m, fixtureOrder())
+
+	stale := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
+
+	fresh := stale
+	fresh.State = dispenser.LineDelivered
+	saved := mustSaveLine(t, m, fresh)
+
+	stale.State = dispenser.LineFailed
+	stale.LastError = "el worker guardó su copia vieja"
+
+	_, err := m.SaveLine(context.Background(), stale)
+	if !errors.Is(err, store.ErrStale) {
+		t.Fatalf("SaveLine con una versión vieja devolvió %v, se esperaba %v", err, store.ErrStale)
+	}
+
+	stored := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
+	if !reflect.DeepEqual(stored, saved) {
+		t.Fatalf("un guardado con versión vieja tocó la línea: %+v, se esperaba %+v", stored, saved)
+	}
+	if stored.State != dispenser.LineDelivered {
+		t.Fatalf("el cierre de la línea se perdió: State=%q, se esperaba %q", stored.State, dispenser.LineDelivered)
+	}
+}
+
+func TestMemorySaveLineRejectsTheSecondSaveFromTheSameCopy(t *testing.T) {
+	m := store.NewMemory()
+	mustCreate(t, m, fixtureOrder())
+
+	copied := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
+	copied.State = dispenser.LineSent
+
+	first := mustSaveLine(t, m, copied)
+	if first.Version != copied.Version+1 {
+		t.Fatalf("el primer guardado devolvió Version=%d, se esperaba %d", first.Version, copied.Version+1)
+	}
+
+	copied.State = dispenser.LineFailed
+	copied.LastError = "segundo guardado con la misma copia"
+
+	_, err := m.SaveLine(context.Background(), copied)
+	if !errors.Is(err, store.ErrStale) {
+		t.Fatalf("el segundo guardado de la misma copia devolvió %v, se esperaba %v", err, store.ErrStale)
+	}
+
+	stored := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
+	if !reflect.DeepEqual(stored, first) {
+		t.Fatalf("el segundo guardado pisó la línea: %+v, se esperaba %+v", stored, first)
 	}
 }
 
@@ -674,7 +789,7 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 				return
 			}
 
-			loaded, err := m.Order(ctx, orderID)
+			loaded, err := m.LoadOrder(ctx, orderID)
 			if err != nil {
 				t.Errorf("Order(%q): %v", orderID, err)
 				return
@@ -687,7 +802,7 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 			line := loaded.Lines[0]
 			line.State = dispenser.LineBrewing
 			line.Attempts++
-			if err := m.SaveLine(ctx, line); err != nil {
+			if _, err := m.SaveLine(ctx, line); err != nil {
 				t.Errorf("SaveLine(%q): %v", lineID, err)
 			}
 
@@ -726,7 +841,7 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 
 	for i := 0; i < workers; i++ {
 		orderID := fmt.Sprintf("order-%03d", i)
-		order, err := m.Order(ctx, orderID)
+		order, err := m.LoadOrder(ctx, orderID)
 		if err != nil {
 			t.Fatalf("Order(%q): %v", orderID, err)
 		}

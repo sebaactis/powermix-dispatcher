@@ -39,7 +39,7 @@ func sequentialIDs() func() string {
 type stubMachine struct {
 	mu      sync.Mutex
 	calls   []dispenser.Request
-	attempt dispenser.Attempt
+	attempt dispenser.DispatchResult
 	err     error
 }
 
@@ -47,7 +47,7 @@ func (s *stubMachine) Check(ctx context.Context, machine dispenser.MachineRef) (
 	return dispenser.Availability{Available: true}, nil
 }
 
-func (s *stubMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.Attempt, error) {
+func (s *stubMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, req)
 	s.mu.Unlock()
@@ -83,21 +83,21 @@ type flakyMachine struct {
 	mu         sync.Mutex
 	calls      []dispenser.Request
 	rejections int
-	attempt    dispenser.Attempt
+	attempt    dispenser.DispatchResult
 }
 
 func (s *flakyMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
-func (s *flakyMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.Attempt, error) {
+func (s *flakyMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, req)
 	index := len(s.calls)
 	s.mu.Unlock()
 
 	if index <= s.rejections {
-		return dispenser.Attempt{}, &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}
+		return dispenser.DispatchResult{}, &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}
 	}
 
 	return s.attempt, nil
@@ -265,7 +265,7 @@ func drinkOnlyDraft() order.Draft {
 func mustOrder(t *testing.T, st store.Store, orderID string) store.Order {
 	t.Helper()
 
-	loaded, err := st.Order(context.Background(), orderID)
+	loaded, err := st.LoadOrder(context.Background(), orderID)
 	if err != nil {
 		t.Fatalf("Order(%q): %v", orderID, err)
 	}
@@ -521,8 +521,8 @@ func TestEnginePlaceTakesTheLineMachineTypeFromTheMachineRef(t *testing.T) {
 
 func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 	st := newRecordingStore()
-	batido := &stubMachine{attempt: dispenser.Attempt{Accepted: true, Ref: "order-no-1"}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -606,7 +606,7 @@ func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "nonce repetido"}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -654,8 +654,8 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 	placingEngine := order.New(
 		st,
 		map[string]dispenser.Dispenser{
-			"batidos": &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
-			"snacks":  &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
+			"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
+			"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 		},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
@@ -663,8 +663,8 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 
 	placed := place(t, placingEngine, comboDraft())
 
-	batido := &stubMachine{attempt: dispenser.Attempt{Accepted: true, Ref: "order-no-1"}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	afterRestart := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -714,7 +714,7 @@ func TestEngineConfirmPaymentKeepsAnUncertainLineInDoubt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newRecordingStore()
 			batido := &stubMachine{err: tc.err}
-			snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+			snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 			engine := order.New(
 				st,
 				map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -783,8 +783,8 @@ func TestEngineConfirmPaymentFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 
 func TestEngineConfirmPaymentIsIdempotent(t *testing.T) {
 	st := newRecordingStore()
-	batido := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -822,7 +822,7 @@ func TestEngineConfirmPaymentIsIdempotent(t *testing.T) {
 
 func TestEngineConfirmPaymentDoesNotDispatchTwiceAfterARestart(t *testing.T) {
 	st := newRecordingStore()
-	batido := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido},
@@ -879,8 +879,8 @@ func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
 			engine := order.New(
 				st,
 				map[string]dispenser.Dispenser{
-					"batidos": &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
-					"snacks":  &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
+					"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
+					"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 				},
 				order.WithClock(frozenClock()),
 				order.WithIDGenerator(sequentialIDs()),
@@ -907,8 +907,8 @@ func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
 
 func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
 	st := newRecordingStore()
-	batido := &flakyMachine{rejections: 1, attempt: dispenser.Attempt{Accepted: true, Ref: "order-no-1"}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	batido := &flakyMachine{rejections: 1, attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -978,7 +978,7 @@ func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
 func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -1016,7 +1016,7 @@ func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: errors.New("dial tcp 10.0.0.1:443: connect: connection refused")}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -1047,7 +1047,7 @@ func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
 func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}}
-	snack := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
@@ -1078,7 +1078,7 @@ func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 
 func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	st := newRecordingStore()
-	batido := &stubMachine{attempt: dispenser.Attempt{Accepted: true}}
+	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{"batidos": batido},
@@ -1090,7 +1090,7 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	line := placed.Lines[0]
 	line.Attempts = 2
 
-	if err := st.SaveLine(context.Background(), line); err != nil {
+	if _, err := st.SaveLine(context.Background(), line); err != nil {
 		t.Fatalf("SaveLine: %v", err)
 	}
 
@@ -1108,6 +1108,88 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	}
 	if reloaded := got.Lines[0]; reloaded.State != dispenser.LinePending {
 		t.Fatalf("la línea quedó en %q, se esperaba no tocarla en %q", reloaded.State, dispenser.LinePending)
+	}
+}
+
+type closingOnDispatchMachine struct {
+	onDispatch func()
+	attempt    dispenser.DispatchResult
+
+	mu         sync.Mutex
+	dispatches int
+}
+
+func (m *closingOnDispatchMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+	return dispenser.Availability{Available: true}, nil
+}
+
+func (m *closingOnDispatchMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
+	m.mu.Lock()
+	m.dispatches++
+	onDispatch := m.onDispatch
+	m.mu.Unlock()
+
+	if onDispatch != nil {
+		onDispatch()
+	}
+
+	return m.attempt, nil
+}
+
+func (m *closingOnDispatchMachine) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
+	return dispenser.Status{}, nil
+}
+
+func TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight(t *testing.T) {
+	ctx := context.Background()
+	st := newRecordingStore()
+
+	machine := &closingOnDispatchMachine{
+		attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-tardio"},
+	}
+
+	engine := order.New(
+		st,
+		map[string]dispenser.Dispenser{"batidos": machine},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, drinkOnlyDraft())
+
+	machine.onDispatch = func() {
+		duplicate, err := engine.CloseFromCallback(ctx, order.Callback{
+			Source:      "batidos",
+			DedupeKey:   "batidos-1",
+			OrderID:     placed.ID,
+			MachineType: "batidos",
+			State:       order.CallbackDelivered,
+		})
+		if err != nil {
+			t.Errorf("el callback no debía fallar: %v", err)
+		}
+		if duplicate {
+			t.Errorf("el primer callback no es un duplicado")
+		}
+	}
+
+	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("una línea ya resuelta por el callback no debe volver al despacho: %v", err)
+	}
+
+	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
+	if line.State != dispenser.LineDelivered {
+		t.Fatalf("el despacho tardío revirtió la línea: State=%q, se esperaba %q", line.State, dispenser.LineDelivered)
+	}
+	if line.Ref != "" {
+		t.Fatalf("el despacho tardío adoptó una referencia sobre una línea ya cerrada: Ref=%q", line.Ref)
+	}
+	if !line.DeadlineAt.IsZero() || !line.ReconcileUntil.IsZero() {
+		t.Fatalf("el despacho tardío rearmó los plazos de una línea cerrada: deadline=%v until=%v", line.DeadlineAt, line.ReconcileUntil)
+	}
+
+	if got := mustOrder(t, st, placed.ID); got.Status != store.OrderDelivered {
+		t.Fatalf("Status=%q, se esperaba %q", got.Status, store.OrderDelivered)
 	}
 }
 
@@ -1140,7 +1222,7 @@ type reconcileMachine struct {
 	mu           sync.Mutex
 	dispatched   []dispenser.Request
 	reconciled   []dispenser.Request
-	attempt      dispenser.Attempt
+	attempt      dispenser.DispatchResult
 	dispatchErr  error
 	status       dispenser.Status
 	reconcileErr error
@@ -1150,7 +1232,7 @@ func (m *reconcileMachine) Check(ctx context.Context, machine dispenser.MachineR
 	return dispenser.Availability{Available: true}, nil
 }
 
-func (m *reconcileMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.Attempt, error) {
+func (m *reconcileMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	m.mu.Lock()
 	m.dispatched = append(m.dispatched, req)
 	m.mu.Unlock()
@@ -1283,7 +1365,7 @@ func (f *reconcileFixture) reconcileDue(t *testing.T) error {
 }
 
 func acceptedDrinkMachine() *reconcileMachine {
-	return &reconcileMachine{attempt: dispenser.Attempt{Accepted: true, Ref: "exchange-code-1"}}
+	return &reconcileMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "exchange-code-1"}}
 }
 
 func TestEngineConfirmPaymentArmsTheReconcileWindow(t *testing.T) {
@@ -1335,7 +1417,7 @@ func TestEngineConfirmPaymentArmsTheReconcileWindow(t *testing.T) {
 
 func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 	machine := acceptedDrinkMachine()
-	machine.status = dispenser.Status{State: dispenser.LineDelivered, Ref: "order-no-1"}
+	machine.status = dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "order-no-1"}
 
 	setup := newReconcileFixture(t, machine)
 	setup.clock.set(engineNow.Add(2 * time.Minute))
@@ -1357,8 +1439,8 @@ func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 	if req.OrderID != setup.placed.ID || req.LineID != wantLine.ID {
 		t.Fatalf("la consulta llevó order=%q line=%q, se esperaba order=%q line=%q", req.OrderID, req.LineID, setup.placed.ID, wantLine.ID)
 	}
-	if req.Ref != "exchange-code-1" {
-		t.Fatalf("la consulta llevó Ref=%q, se esperaba el asa guardada en la línea", req.Ref)
+	if req.KnownRef != "exchange-code-1" {
+		t.Fatalf("la consulta llevó Ref=%q, se esperaba el asa guardada en la línea", req.KnownRef)
 	}
 	if req.SKU != "sku-batido" || req.AmountCents != 1500 {
 		t.Fatalf("la consulta llevó SKU=%q importe=%d", req.SKU, req.AmountCents)
@@ -1591,8 +1673,8 @@ func TestEnginePlaceIsIdempotentByClientKey(t *testing.T) {
 	engine := order.New(
 		st,
 		map[string]dispenser.Dispenser{
-			"batidos": &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
-			"snacks":  &stubMachine{attempt: dispenser.Attempt{Accepted: true}},
+			"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
+			"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 		},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),

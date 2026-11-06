@@ -19,7 +19,7 @@ type Batidos interface {
 }
 
 type Snacks interface {
-	Devices(ctx context.Context, page, pageSize int, deviceCode string) (snacks.DevicesPage, error)
+	Devices(ctx context.Context, query snacks.PageQuery) (snacks.DevicesPage, error)
 	Slots(ctx context.Context, deviceCode string) ([]snacks.Slot, error)
 }
 
@@ -111,7 +111,7 @@ func (c *Checker) checkBatidos(ctx context.Context, req Request) ([]Reason, erro
 }
 
 func (c *Checker) checkSnacks(ctx context.Context, req Request) ([]Reason, error) {
-	page, pageErr := c.snacks.Devices(ctx, devicesPage, devicesPageSize, req.SnacksDeviceCode)
+	page, pageErr := c.snacks.Devices(ctx, snacks.PageQuery{Page: devicesPage, Size: devicesPageSize, DeviceCode: req.SnacksDeviceCode})
 	slots, slotsErr := c.snacks.Slots(ctx, req.SnacksDeviceCode)
 	if err := errors.Join(pageErr, slotsErr); err != nil {
 		return nil, err

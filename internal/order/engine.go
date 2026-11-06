@@ -63,6 +63,7 @@ type Engine struct {
 	reconcileInterval time.Duration
 	maxAttempts       int
 	notifier          notify.Notifier
+	gate              Gate
 	newID             func() string
 
 	idMu sync.Mutex
@@ -166,6 +167,12 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 		}
 	}
 
+	if e.gate != nil {
+		if err := e.gate.Check(ctx, draft); err != nil {
+			return store.Order{}, err
+		}
+	}
+
 	orderID := e.nextID()
 	placed := store.Order{
 		ID:          orderID,
@@ -209,7 +216,7 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 }
 
 func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Time) error {
-	loaded, err := e.store.Order(ctx, orderID)
+	loaded, err := e.store.LoadOrder(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -254,7 +261,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 
 	joined := errors.Join(failures...)
 
-	reloaded, err := e.store.Order(ctx, orderID)
+	reloaded, err := e.store.LoadOrder(ctx, orderID)
 	if err != nil {
 		return errors.Join(joined, err)
 	}
@@ -326,7 +333,7 @@ func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, erro
 		Machine:     line.Machine,
 		SKU:         line.SKU,
 		AmountCents: line.AmountCents,
-		Ref:         line.Ref,
+		KnownRef:    line.Ref,
 	})
 
 	if reconcileErr != nil {
@@ -346,6 +353,29 @@ func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, erro
 }
 
 func (e *Engine) closeLine(ctx context.Context, line store.Line, target dispenser.LineState, detail string) error {
+	_, err := e.saveClosedLine(ctx, line, target, detail)
+	if !errors.Is(err, store.ErrStale) {
+		return err
+	}
+
+	fresh, reloadErr := e.reloadLine(ctx, line)
+	if reloadErr != nil {
+		return reloadErr
+	}
+
+	if lineClosed(fresh) {
+		return nil
+	}
+
+	_, retryErr := e.saveClosedLine(ctx, fresh, target, detail)
+	if errors.Is(retryErr, store.ErrStale) {
+		return nil
+	}
+
+	return retryErr
+}
+
+func (e *Engine) saveClosedLine(ctx context.Context, line store.Line, target dispenser.LineState, detail string) (store.Line, error) {
 	state, stateErr := transitionLine(line.State, target)
 
 	line.State = state
@@ -358,7 +388,24 @@ func (e *Engine) closeLine(ctx context.Context, line store.Line, target dispense
 		line.LastError = detail
 	}
 
-	return errors.Join(stateErr, e.store.SaveLine(ctx, line))
+	saved, err := e.store.SaveLine(ctx, line)
+
+	return saved, errors.Join(stateErr, err)
+}
+
+func (e *Engine) reloadLine(ctx context.Context, line store.Line) (store.Line, error) {
+	loaded, err := e.store.LoadOrder(ctx, line.OrderID)
+	if err != nil {
+		return store.Line{}, err
+	}
+
+	for _, candidate := range loaded.Lines {
+		if candidate.ID == line.ID {
+			return candidate, nil
+		}
+	}
+
+	return store.Line{}, store.ErrNotFound
 }
 
 func (e *Engine) extendReconcile(ctx context.Context, line store.Line, detail string) (bool, error) {
@@ -379,7 +426,15 @@ func (e *Engine) extendReconcile(ctx context.Context, line store.Line, detail st
 			line.LastError = reasonReconcileExpired
 		}
 
-		return true, errors.Join(stateErr, e.store.SaveLine(ctx, line))
+		if _, err := e.store.SaveLine(ctx, line); err != nil {
+			if errors.Is(err, store.ErrStale) {
+				return false, nil
+			}
+
+			return true, errors.Join(stateErr, err)
+		}
+
+		return true, stateErr
 	}
 
 	next := now.Add(e.reconcileInterval)
@@ -389,11 +444,19 @@ func (e *Engine) extendReconcile(ctx context.Context, line store.Line, detail st
 
 	line.DeadlineAt = next
 
-	return false, e.store.SaveLine(ctx, line)
+	if _, err := e.store.SaveLine(ctx, line); err != nil {
+		if errors.Is(err, store.ErrStale) {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return false, nil
 }
 
 func (e *Engine) settleOrder(ctx context.Context, orderID string) error {
-	loaded, err := e.store.Order(ctx, orderID)
+	loaded, err := e.store.LoadOrder(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -414,14 +477,14 @@ func (e *Engine) settleOrder(ctx context.Context, orderID string) error {
 	return e.notifyOrder(ctx, loaded)
 }
 
-func (e *Engine) notifyOrder(ctx context.Context, placed store.Order) error {
+func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 	if e.notifier == nil {
 		return nil
 	}
 
-	event := notify.Event{OrderID: placed.ID}
+	event := notify.Event{OrderID: loaded.ID}
 
-	switch placed.Status {
+	switch loaded.Status {
 	case store.OrderInDoubt:
 		event.Kind = kindOrderInDoubt
 		event.Detail = "el pedido quedó en duda: no se pudo confirmar la entrega y hace falta una persona"
@@ -485,7 +548,7 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 		if verdict.outcome == outcomeAccepted {
 			acceptedAt := e.now()
 
-			line.Ref = result.Ref
+			line.Ref = result.ProviderRef
 			line.DeadlineAt = acceptedAt.Add(e.deadline)
 			line.ReconcileUntil = acceptedAt.Add(e.deadline + e.reconcileWindow)
 			line.LastError = ""
@@ -499,7 +562,13 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			}
 		}
 
-		lineErr := e.store.SaveLine(ctx, line)
+		saved, lineErr := e.store.SaveLine(ctx, line)
+		if errors.Is(lineErr, store.ErrStale) {
+			return nil
+		}
+		if lineErr == nil {
+			line = saved
+		}
 
 		if verdict.outcome != outcomeRejected {
 			return errors.Join(attemptErr, stateErr, lineErr)
@@ -516,9 +585,15 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 
 		line.State = retry
 
-		if saveErr := e.store.SaveLine(ctx, line); saveErr != nil {
+		savedRetry, saveErr := e.store.SaveLine(ctx, line)
+		if errors.Is(saveErr, store.ErrStale) {
+			return nil
+		}
+		if saveErr != nil {
 			return errors.Join(attemptErr, stateErr, lineErr, saveErr)
 		}
+
+		line = savedRetry
 	}
 
 	return nil
@@ -571,7 +646,7 @@ func machineIdentified(machine dispenser.MachineRef) bool {
 	return machine.DeviceID != "" || machine.DeviceNo != "" || machine.MID != ""
 }
 
-func classifyDispatch(result dispenser.Attempt, dispatchErr error) dispatchVerdict {
+func classifyDispatch(result dispenser.DispatchResult, dispatchErr error) dispatchVerdict {
 	switch {
 	case dispatchErr != nil && isProviderRejection(dispatchErr):
 		return dispatchVerdict{

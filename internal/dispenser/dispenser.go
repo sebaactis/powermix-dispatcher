@@ -39,19 +39,19 @@ type Request struct {
 	SKU         string
 	AmountCents int64
 
-	Ref string
+	KnownRef string
 }
 
-type Attempt struct {
-	Accepted bool
-	Ref      string
-	Detail   string
+type DispatchResult struct {
+	Accepted    bool
+	ProviderRef string
+	Detail      string
 }
 
 type Status struct {
-	State  LineState
-	Ref    string
-	Reason string
+	State           LineState
+	ProviderOrderNo string
+	Reason          string
 }
 
 type Rejection struct {
@@ -73,7 +73,7 @@ func (r *Rejection) Error() string {
 type Dispenser interface {
 	Check(ctx context.Context, machine MachineRef) (Availability, error)
 
-	Dispatch(ctx context.Context, req Request) (Attempt, error)
+	Dispatch(ctx context.Context, req Request) (DispatchResult, error)
 
 	Reconcile(ctx context.Context, req Request) (Status, error)
 }

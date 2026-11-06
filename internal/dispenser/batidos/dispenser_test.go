@@ -52,7 +52,7 @@ func newRequest() dispenser.Request {
 
 func requestWithRef(ref string) dispenser.Request {
 	req := newRequest()
-	req.Ref = ref
+	req.KnownRef = ref
 	return req
 }
 
@@ -152,13 +152,13 @@ func TestDispenserDispatchIssuesACodeAndTriggersTheDrink(t *testing.T) {
 	if !attempt.Accepted {
 		t.Fatalf("el pedido no quedó aceptado: %+v", attempt)
 	}
-	if !sixDigitCode.MatchString(attempt.Ref) {
-		t.Fatalf("Ref = %q, se esperaba un código de canje de seis dígitos", attempt.Ref)
+	if !sixDigitCode.MatchString(attempt.ProviderRef) {
+		t.Fatalf("ProviderRef = %q, se esperaba un código de canje de seis dígitos", attempt.ProviderRef)
 	}
 
-	info, err := client.OrderInfo(ctx, attempt.Ref, dispatchDeviceID)
+	info, err := client.OrderInfo(ctx, attempt.ProviderRef, dispatchDeviceID)
 	if err != nil {
-		t.Fatalf("el proveedor no conoce el código %q: %v", attempt.Ref, err)
+		t.Fatalf("el proveedor no conoce el código %q: %v", attempt.ProviderRef, err)
 	}
 	if info.Status != batidos.OrderStatusInProgress {
 		t.Fatalf("status = %d, se esperaba %d (en preparación)", info.Status, batidos.OrderStatusInProgress)
@@ -190,8 +190,8 @@ func TestDispenserDispatchKeepsTheCodeWhenTheBrewIsRejected(t *testing.T) {
 	if attempt.Accepted {
 		t.Fatalf("el canje rechazado no quedó aceptado: %+v", attempt)
 	}
-	if attempt.Ref != "000001" {
-		t.Fatalf("Ref = %q, se esperaba el código emitido por la campaña (000001)", attempt.Ref)
+	if attempt.ProviderRef != "000001" {
+		t.Fatalf("ProviderRef = %q, se esperaba el código emitido por la campaña (000001)", attempt.ProviderRef)
 	}
 }
 
@@ -235,7 +235,7 @@ func TestDispenserDispatchReportsAProviderRefusalAsAPortRejection(t *testing.T) 
 		t.Fatalf("el adaptador dejó escapar el tipo propio del proveedor: %v", err)
 	}
 
-	var zero dispenser.Attempt
+	var zero dispenser.DispatchResult
 	if attempt != zero {
 		t.Fatalf("no debe inventar un intento: %+v", attempt)
 	}
@@ -250,7 +250,7 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	req := requestWithRef(attempt.Ref)
+	req := requestWithRef(attempt.ProviderRef)
 
 	status, err := d.Reconcile(ctx, req)
 	if err != nil {
@@ -259,12 +259,12 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	if status.State != dispenser.LineBrewing {
 		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineBrewing)
 	}
-	if status.Ref == "" {
+	if status.ProviderOrderNo == "" {
 		t.Fatalf("Reconcile volvió sin el orderNo del proveedor: %+v", status)
 	}
-	orderNo := status.Ref
+	orderNo := status.ProviderOrderNo
 
-	fake.Advance(attempt.Ref, 2)
+	fake.Advance(attempt.ProviderRef, 2)
 
 	status, err = d.Reconcile(ctx, req)
 	if err != nil {
@@ -273,11 +273,11 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	if status.State != dispenser.LineDelivered {
 		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineDelivered)
 	}
-	if status.Ref != orderNo {
-		t.Fatalf("Ref = %q, se esperaba %q", status.Ref, orderNo)
+	if status.ProviderOrderNo != orderNo {
+		t.Fatalf("ProviderOrderNo = %q, se esperaba %q", status.ProviderOrderNo, orderNo)
 	}
 
-	fake.Advance(attempt.Ref, 0)
+	fake.Advance(attempt.ProviderRef, 0)
 
 	status, err = d.Reconcile(ctx, req)
 	if err != nil {
@@ -286,8 +286,8 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	if status.State != dispenser.LineFailed {
 		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineFailed)
 	}
-	if status.Ref != orderNo {
-		t.Fatalf("Ref = %q, se esperaba %q", status.Ref, orderNo)
+	if status.ProviderOrderNo != orderNo {
+		t.Fatalf("ProviderOrderNo = %q, se esperaba %q", status.ProviderOrderNo, orderNo)
 	}
 }
 
@@ -340,8 +340,8 @@ func TestDispenserReconcileReportsUnknownProviderStatusAsInDoubt(t *testing.T) {
 	if !strings.Contains(status.Reason, "7") {
 		t.Fatalf("Reason = %q, se esperaba que nombre el estado desconocido 7", status.Reason)
 	}
-	if status.Ref != "A000042" {
-		t.Fatalf("Ref = %q, se esperaba %q", status.Ref, "A000042")
+	if status.ProviderOrderNo != "A000042" {
+		t.Fatalf("ProviderOrderNo = %q, se esperaba %q", status.ProviderOrderNo, "A000042")
 	}
 }
 
@@ -350,6 +350,7 @@ type capturedCampaign struct {
 	StartTime     string `json:"startTime"`
 	EndTime       string `json:"endTime"`
 	ExchangeType  int    `json:"exchangeType"`
+	NotifyURL     string `json:"notifyUrl"`
 	DeviceTypeID  string `json:"deviceTypeId"`
 	GoodsItemDtos []struct {
 		GoodsID string `json:"goodsId"`
@@ -466,6 +467,47 @@ func TestDispenserDispatchSendsTheConfiguredCampaignWindow(t *testing.T) {
 			}
 			if len(campaign.GoodsItemDtos) != 1 || campaign.GoodsItemDtos[0].GoodsID != dispatchSKU {
 				t.Fatalf("goodsItemDtos = %+v, se esperaba el SKU %q", campaign.GoodsItemDtos, dispatchSKU)
+			}
+		})
+	}
+}
+
+func TestDispenserDispatchSendsTheNotifyURLOfTheOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []batidos.DispenserOption
+		want string
+	}{
+		{
+			name: "sin la opción la campaña no lleva notifyUrl",
+		},
+		{
+			name: "con la opción la campaña lleva la URL de esa orden",
+			opts: []batidos.DispenserOption{batidos.WithNotifyURL(func(orderID string) string {
+				return "https://kiosco.example.test/callbacks/batidos/ruta-secreta/" + orderID
+			})},
+			want: "https://kiosco.example.test/callbacks/batidos/ruta-secreta/order-1",
+		},
+		{
+			name: "una función vacía conserva el comportamiento anterior",
+			opts: []batidos.DispenserOption{batidos.WithNotifyURL(nil)},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, last := newCapturingServer(t)
+			client := batidos.NewClient(srv.URL, testKey, testSecret, batidos.WithClock(func() time.Time {
+				return fixedNow
+			}))
+			d := batidos.NewDispenser(client, tc.opts...)
+
+			if _, err := d.Dispatch(context.Background(), newRequest()); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+
+			if got := last().NotifyURL; got != tc.want {
+				t.Fatalf("notifyUrl = %q, se esperaba %q", got, tc.want)
 			}
 		})
 	}

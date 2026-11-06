@@ -56,10 +56,10 @@ type snacksStub struct {
 	gotPageSize int
 }
 
-func (s *snacksStub) Devices(ctx context.Context, page, pageSize int, deviceCode string) (snacks.DevicesPage, error) {
+func (s *snacksStub) Devices(ctx context.Context, query snacks.PageQuery) (snacks.DevicesPage, error) {
 	s.pageCalls++
-	s.gotPage = page
-	s.gotPageSize = pageSize
+	s.gotPage = query.Page
+	s.gotPageSize = query.Size
 	if s.pageErr != nil {
 		return snacks.DevicesPage{}, s.pageErr
 	}

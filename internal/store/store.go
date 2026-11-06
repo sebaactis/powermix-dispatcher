@@ -50,6 +50,7 @@ type Line struct {
 	DeadlineAt     time.Time
 	ReconcileUntil time.Time
 	LastError      string
+	Version        int64
 }
 
 type Attempt struct {
@@ -73,14 +74,15 @@ type Webhook struct {
 var (
 	ErrNotFound      = errors.New("el registro no existe")
 	ErrAlreadyExists = errors.New("el registro ya existe")
+	ErrStale         = errors.New("la línea cambió desde que se leyó")
 )
 
 type Store interface {
 	CreateOrder(ctx context.Context, order Order) error
-	Order(ctx context.Context, orderID string) (Order, error)
+	LoadOrder(ctx context.Context, orderID string) (Order, error)
 	OrderByClientKey(ctx context.Context, key string) (Order, error)
 	SaveOrder(ctx context.Context, order Order) error
-	SaveLine(ctx context.Context, line Line) error
+	SaveLine(ctx context.Context, line Line) (Line, error)
 	AppendAttempt(ctx context.Context, attempt Attempt) error
 	SaveAttempt(ctx context.Context, attempt Attempt) error
 	RegisterWebhook(ctx context.Context, wh Webhook) (first bool, err error)

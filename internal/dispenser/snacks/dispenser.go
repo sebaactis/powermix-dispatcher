@@ -48,7 +48,7 @@ func NewDispenser(client *Client, opts ...DispenserOption) *Dispenser {
 }
 
 func (d *Dispenser) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
-	page, err := d.client.Devices(ctx, firstPage, devicesPageSize, machine.MID)
+	page, err := d.client.Devices(ctx, PageQuery{Page: firstPage, Size: devicesPageSize, DeviceCode: machine.MID})
 	if err != nil {
 		return dispenser.Availability{}, err
 	}
@@ -82,7 +82,7 @@ func (d *Dispenser) Check(ctx context.Context, machine dispenser.MachineRef) (di
 	return dispenser.Availability{Reason: strings.Join(reasons, "; ")}, nil
 }
 
-func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.Attempt, error) {
+func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	attempt, err := d.client.Ship(ctx, ShipmentRequest{
 		PaymentOrderID: req.OrderID,
 		MID:            req.Machine.MID,
@@ -95,19 +95,19 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 		},
 	})
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("no se pudo disparar el despacho remoto: %w", asPortRejection(err))
+		return dispenser.DispatchResult{}, fmt.Errorf("no se pudo disparar el despacho remoto: %w", asPortRejection(err))
 	}
 
-	return dispenser.Attempt{Accepted: attempt.Accepted, Ref: attempt.Ref, Detail: attempt.Detail}, nil
+	return dispenser.DispatchResult{Accepted: attempt.Accepted, ProviderRef: attempt.ProviderRef, Detail: attempt.Detail}, nil
 }
 
 func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
-	ref := req.Ref
+	ref := req.KnownRef
 	if ref == "" {
 		ref = req.OrderID
 	}
 
-	page, err := d.client.Orders(ctx, firstPage, d.ordersPageSize, "")
+	page, err := d.client.Orders(ctx, PageQuery{Page: firstPage, Size: d.ordersPageSize})
 	if err != nil {
 		return dispenser.Status{}, asPortRejection(err)
 	}
@@ -115,9 +115,9 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 	order, found := findOrder(page.Items, ref)
 	if !found {
 		return dispenser.Status{
-			State:  dispenser.LineInDoubt,
-			Ref:    ref,
-			Reason: "el proveedor no informa el pedido",
+			State:           dispenser.LineInDoubt,
+			ProviderOrderNo: ref,
+			Reason:          "el proveedor no informa el pedido",
 		}, nil
 	}
 
@@ -127,8 +127,8 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 	}
 
 	return dispenser.Status{
-		State: dispenser.LineInDoubt,
-		Ref:   order.OrderNo,
+		State:           dispenser.LineInDoubt,
+		ProviderOrderNo: order.OrderNo,
 		Reason: fmt.Sprintf(
 			"el proveedor informa el estado del pedido %d (%s), no el resultado del despacho",
 			order.OrderStatus, name,

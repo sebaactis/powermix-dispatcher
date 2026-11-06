@@ -50,6 +50,12 @@ func (m *Memory) CreateOrder(ctx context.Context, order Order) error {
 		}
 	}
 
+	order = cloneOrder(order)
+
+	for i := range order.Lines {
+		order.Lines[i].Version = 0
+	}
+
 	m.putOrderLocked(order)
 
 	if order.ClientKey != "" {
@@ -76,7 +82,7 @@ func (m *Memory) OrderByClientKey(ctx context.Context, key string) (Order, error
 	return cloneOrder(order), nil
 }
 
-func (m *Memory) Order(ctx context.Context, orderID string) (Order, error) {
+func (m *Memory) LoadOrder(ctx context.Context, orderID string) (Order, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -92,37 +98,56 @@ func (m *Memory) SaveOrder(ctx context.Context, order Order) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.orders[order.ID]; !exists {
+	stored, exists := m.orders[order.ID]
+	if !exists {
 		return ErrNotFound
 	}
 
-	m.putOrderLocked(order)
+	stored.KioskID = order.KioskID
+	stored.ComboID = order.ComboID
+	stored.ClientKey = order.ClientKey
+	stored.AmountCents = order.AmountCents
+	stored.Currency = order.Currency
+	stored.Status = order.Status
+	stored.CreatedAt = order.CreatedAt
+	stored.PaidAt = order.PaidAt
+	stored.ClosedAt = order.ClosedAt
+
+	m.orders[order.ID] = stored
 
 	return nil
 }
 
-func (m *Memory) SaveLine(ctx context.Context, line Line) error {
+func (m *Memory) SaveLine(ctx context.Context, line Line) (Line, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	orderID, exists := m.lineOrder[line.ID]
 	if !exists {
-		return ErrNotFound
+		return Line{}, ErrNotFound
 	}
 
 	order, exists := m.orders[orderID]
 	if !exists {
-		return ErrNotFound
+		return Line{}, ErrNotFound
 	}
 
 	for i := range order.Lines {
-		if order.Lines[i].ID == line.ID {
-			order.Lines[i] = line
-			return nil
+		if order.Lines[i].ID != line.ID {
+			continue
 		}
+
+		if order.Lines[i].Version != line.Version {
+			return Line{}, ErrStale
+		}
+
+		line.Version = order.Lines[i].Version + 1
+		order.Lines[i] = line
+
+		return line, nil
 	}
 
-	return ErrNotFound
+	return Line{}, ErrNotFound
 }
 
 func (m *Memory) AppendAttempt(ctx context.Context, attempt Attempt) error {

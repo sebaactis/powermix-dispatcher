@@ -41,7 +41,7 @@ func newDispenserRequest() dispenser.Request {
 
 func requestWithRef(ref string) dispenser.Request {
 	req := newDispenserRequest()
-	req.Ref = ref
+	req.KnownRef = ref
 	return req
 }
 
@@ -214,7 +214,7 @@ func TestDispenserDispatchFailsWhenTheProviderRejects(t *testing.T) {
 	if err == nil {
 		t.Fatalf("se esperaba el error de red, attempt = %+v", attempt)
 	}
-	if attempt.Accepted || attempt.Ref != "" {
+	if attempt.Accepted || attempt.ProviderRef != "" {
 		t.Fatalf("no debe inventar un intento aceptado: %+v", attempt)
 	}
 }
@@ -265,7 +265,7 @@ func TestDispenserDispatchReportsAProviderRefusalAsAPortRejection(t *testing.T) 
 		t.Fatalf("el adaptador dejó escapar el tipo propio del proveedor: %v", err)
 	}
 
-	var zero dispenser.Attempt
+	var zero dispenser.DispatchResult
 	if attempt != zero {
 		t.Fatalf("no debe inventar un intento: %+v", attempt)
 	}
@@ -311,7 +311,7 @@ func TestDispenserReconcileNeverDeclaresDeliveredForASnack(t *testing.T) {
 	if !strings.Contains(status.Reason, "pagado") {
 		t.Fatalf("Reason = %q, se esperaba que nombre el estado \"pagado\" del proveedor", status.Reason)
 	}
-	if status.Ref == "" {
+	if status.ProviderOrderNo == "" {
 		t.Fatalf("Reconcile volvió sin el orderNo del proveedor: %+v", status)
 	}
 }

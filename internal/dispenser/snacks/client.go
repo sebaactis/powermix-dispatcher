@@ -99,6 +99,16 @@ type Device struct {
 	ShortageAlarmNumber int
 }
 
+type PageQuery struct {
+	Page int
+
+	Size int
+
+	DeviceCode string
+
+	OrderNo string
+}
+
 type DevicesPage struct {
 	Page int
 
@@ -230,20 +240,20 @@ func NewClient(baseURL, accessKey, appSecret string, opts ...Option) *Client {
 	return c
 }
 
-func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Attempt, error) {
+func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.DispatchResult, error) {
 	raw, err := json.Marshal(c.body(req))
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("snacks: no se pudo serializar el pedido de despacho: %w", err)
+		return dispenser.DispatchResult{}, fmt.Errorf("snacks: no se pudo serializar el pedido de despacho: %w", err)
 	}
 
 	headers, err := SignatureHeaders(c.accessKey, c.appSecret, http.MethodPost, shipmentPath, c.now())
 	if err != nil {
-		return dispenser.Attempt{}, err
+		return dispenser.DispatchResult{}, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+shipmentPath, bytes.NewReader(raw))
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("snacks: no se pudo armar el request de despacho: %w", err)
+		return dispenser.DispatchResult{}, fmt.Errorf("snacks: no se pudo armar el request de despacho: %w", err)
 	}
 	for name, value := range headers {
 		httpReq.Header.Set(name, value)
@@ -251,13 +261,13 @@ func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Attem
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("snacks: no se pudo llamar al despacho remoto: %w", err)
+		return dispenser.DispatchResult{}, fmt.Errorf("snacks: no se pudo llamar al despacho remoto: %w", err)
 	}
 	defer resp.Body.Close()
 
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return dispenser.Attempt{}, fmt.Errorf("snacks: no se pudo leer la respuesta del despacho: %w", err)
+		return dispenser.DispatchResult{}, fmt.Errorf("snacks: no se pudo leer la respuesta del despacho: %w", err)
 	}
 
 	var env envelope
@@ -269,33 +279,33 @@ func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Attem
 		if message == "" {
 			message = strings.TrimSpace(string(payload))
 		}
-		return dispenser.Attempt{}, &APIError{
+		return dispenser.DispatchResult{}, &APIError{
 			HTTPStatus: resp.StatusCode,
 			Code:       env.Code,
 			Message:    message,
 		}
 	}
 	if decodeErr != nil {
-		return dispenser.Attempt{}, fmt.Errorf("snacks: la respuesta del despacho no es el JSON esperado: %w", decodeErr)
+		return dispenser.DispatchResult{}, fmt.Errorf("snacks: la respuesta del despacho no es el JSON esperado: %w", decodeErr)
 	}
 
-	return dispenser.Attempt{
-		Accepted: true,
-		Ref:      subOrderID(env.Result),
-		Detail:   "despacho encolado: el resultado real llega por callback",
+	return dispenser.DispatchResult{
+		Accepted:    true,
+		ProviderRef: subOrderID(env.Result),
+		Detail:      "despacho encolado: el resultado real llega por callback",
 	}, nil
 }
 
-func (c *Client) Devices(ctx context.Context, page, pageSize int, deviceCode string) (DevicesPage, error) {
-	query := url.Values{}
-	query.Set("Page", strconv.Itoa(page))
-	query.Set("PageSize", strconv.Itoa(pageSize))
-	if deviceCode != "" {
-		query.Set("DeviceCode", deviceCode)
+func (c *Client) Devices(ctx context.Context, query PageQuery) (DevicesPage, error) {
+	params := url.Values{}
+	params.Set("Page", strconv.Itoa(query.Page))
+	params.Set("PageSize", strconv.Itoa(query.Size))
+	if query.DeviceCode != "" {
+		params.Set("DeviceCode", query.DeviceCode)
 	}
 
 	var result devicesResultBody
-	if err := c.get(ctx, devicesPath, query, &result); err != nil {
+	if err := c.get(ctx, devicesPath, params, &result); err != nil {
 		return DevicesPage{}, err
 	}
 
@@ -325,16 +335,16 @@ func (c *Client) Devices(ctx context.Context, page, pageSize int, deviceCode str
 	}, nil
 }
 
-func (c *Client) Orders(ctx context.Context, page, pageSize int, orderNo string) (OrdersPage, error) {
-	query := url.Values{}
-	query.Set("Page", strconv.Itoa(page))
-	query.Set("PageSize", strconv.Itoa(pageSize))
-	if orderNo != "" {
-		query.Set("OrderNo", orderNo)
+func (c *Client) Orders(ctx context.Context, query PageQuery) (OrdersPage, error) {
+	params := url.Values{}
+	params.Set("Page", strconv.Itoa(query.Page))
+	params.Set("PageSize", strconv.Itoa(query.Size))
+	if query.OrderNo != "" {
+		params.Set("OrderNo", query.OrderNo)
 	}
 
 	var result ordersResultBody
-	if err := c.get(ctx, ordersPath, query, &result); err != nil {
+	if err := c.get(ctx, ordersPath, params, &result); err != nil {
 		return OrdersPage{}, err
 	}
 

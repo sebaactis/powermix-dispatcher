@@ -207,7 +207,7 @@ func (c *Client) CreateCampaign(ctx context.Context, req CampaignRequest) (Campa
 	}, nil
 }
 
-func (c *Client) ProduceCoffee(ctx context.Context, req ProduceRequest) (dispenser.Attempt, error) {
+func (c *Client) ProduceCoffee(ctx context.Context, req ProduceRequest) (dispenser.DispatchResult, error) {
 	body := produceWireRequest{
 		Code:     req.Code,
 		DeviceID: req.DeviceID,
@@ -217,14 +217,14 @@ func (c *Client) ProduceCoffee(ctx context.Context, req ProduceRequest) (dispens
 
 	var accepted bool
 	if err := c.do(ctx, producePath, body, &accepted); err != nil {
-		return dispenser.Attempt{}, err
+		return dispenser.DispatchResult{}, err
 	}
 	if !accepted {
-		return dispenser.Attempt{Accepted: false, Detail: "el proveedor no tomó el pedido"},
+		return dispenser.DispatchResult{Accepted: false, Detail: "el proveedor no tomó el pedido"},
 			fmt.Errorf("el proveedor no tomó el pedido (data=false)")
 	}
 
-	return dispenser.Attempt{Accepted: true, Detail: "pedido tomado por la máquina"}, nil
+	return dispenser.DispatchResult{Accepted: true, Detail: "pedido tomado por la máquina"}, nil
 }
 
 func (c *Client) OrderInfo(ctx context.Context, exchangeCode, deviceID string) (OrderInfo, error) {
