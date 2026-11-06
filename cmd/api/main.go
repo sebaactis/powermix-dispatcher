@@ -17,9 +17,12 @@ import (
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/dispenser/batidos"
 	"compras-remotas/internal/dispenser/snacks"
+	"compras-remotas/internal/gate"
+	"compras-remotas/internal/httpapi"
 	"compras-remotas/internal/logging"
 	"compras-remotas/internal/notify"
 	"compras-remotas/internal/order"
+	"compras-remotas/internal/preflight"
 	"compras-remotas/internal/store"
 	"compras-remotas/internal/sweep"
 )
@@ -44,6 +47,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.BatidosCallbackSecret == "" {
+		logger.Warn("no hay secreto configurado para el callback de batidos: ese endpoint va a rechazar todos los avisos",
+			"secret_env", "BATIDOS_CALLBACK_SECRET",
+		)
+	}
+
+	if cfg.SnacksCallbackSecret == "" {
+		logger.Warn("no hay secreto configurado para el callback de snacks: ese endpoint va a rechazar todos los avisos",
+			"secret_env", "SNACKS_CALLBACK_SECRET",
+		)
+	}
+
 	combos, err := catalog.LoadFile(combosPath)
 	if err != nil {
 		logger.Error("no se pudo cargar el catálogo de combos", "path", combosPath, "error", err)
@@ -59,16 +74,45 @@ func main() {
 	batidosClient := batidos.NewClient(cfg.BatidosBaseURL, cfg.BatidosKey, cfg.BatidosSecret)
 	snacksClient := snacks.NewClient(cfg.SnacksBaseURL, cfg.SnacksAccessKey, cfg.SnacksAppSecret)
 
+	batidosNotifyURL := func(orderID string) string {
+		return httpapi.BatidosCallbackURL(cfg.PublicBaseURL, cfg.BatidosCallbackSecret, orderID)
+	}
+
+	if cfg.PublicBaseURL == "" || cfg.BatidosCallbackSecret == "" {
+		logger.Warn("la campaña de batidos se va a crear sin notifyUrl: el callback de batidos no va a llegar",
+			"base_url_env", "PUBLIC_BASE_URL",
+			"secret_env", "BATIDOS_CALLBACK_SECRET",
+		)
+	}
+
 	machines := map[string]dispenser.Dispenser{
-		string(config.MachineBatidos): batidos.NewDispenser(batidosClient),
+		string(config.MachineBatidos): batidos.NewDispenser(batidosClient, batidos.WithNotifyURL(batidosNotifyURL)),
 		string(config.MachineSnacks):  snacks.NewDispenser(snacksClient),
 	}
 
 	memory := store.NewMemory()
-
-	engine := order.New(memory, machines, order.WithNotifier(notify.NewLog(logger)))
-
+	availability := gate.New(preflight.New(batidosClient, snacksClient))
+	engine := order.New(memory, machines, order.WithNotifier(notify.NewLog(logger)), order.WithGate(availability))
 	runner := sweep.New(engine, logger, sweep.WithInterval(sweepInterval), sweep.WithLimit(sweepLimit))
+
+	tabletAPI, err := httpapi.New(httpapi.Deps{
+		Catalog:   comboCatalog,
+		Placer:    engine,
+		Confirmer: engine,
+		Orders:    memory,
+		Kiosks:    cfg.Kiosks,
+		Env:       cfg.Env,
+	},
+		httpapi.WithLogger(logger),
+		httpapi.WithCallbacks(engine, httpapi.CallbackSecrets{
+			Batidos: cfg.BatidosCallbackSecret,
+			Snacks:  cfg.SnacksCallbackSecret,
+		}),
+	)
+	if err != nil {
+		logger.Error("no se pudo construir la API de la tablet", "error", err)
+		os.Exit(1)
+	}
 
 	logger.Info("backend construido",
 		"env", cfg.Env,
@@ -76,6 +120,11 @@ func main() {
 		"combos", len(combos),
 		"sweep_interval", sweepInterval.String(),
 		"store", "memory",
+	)
+
+	logger.Info("chequeo previo de disponibilidad activo: no se crea una orden si alguna de las dos máquinas no puede vender",
+		"gate", "preflight",
+		"machines", len(machines),
 	)
 
 	logger.Warn("el store es en memoria: el estado se pierde al reiniciar y solo puede correr una instancia")
@@ -99,6 +148,8 @@ func main() {
 			"store":  "memory",
 		})
 	})
+
+	tabletAPI.Register(mux)
 
 	server := &http.Server{
 		Addr:              envOr("HTTP_ADDR", "127.0.0.1:8080"),
