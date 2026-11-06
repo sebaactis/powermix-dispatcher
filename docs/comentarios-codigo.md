@@ -71,6 +71,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Config es la configuración ya resuelta y validada.
 
+### PublicBaseURL
+
+> Base pública de este backend, la que el proveedor de batidos va a llamar. Es opcional a propósito: sin ella la campaña se crea sin `notifyUrl` y el callback de batidos no llega, pero nada más se rompe. No figura en `validate()` porque el hosting sigue sin decidirse (S13) y el valor real todavía puede faltar.
+>
+> Se normaliza sin barra final porque la URL del callback la arma `httpapi.BatidosCallbackURL`, y esa forma se decide en un solo lugar. Llega desde `public_base_url` en la raíz del archivo o desde `PUBLIC_BASE_URL`; el entorno gana, igual que con los secretos.
+
 ### Load
 
 > Load lee el archivo de topología, aplica los reemplazos de secretos desde el
@@ -209,9 +215,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > ProduceCoffee canjea el código y le pide a la máquina que prepare el producto.
 > 
-> Aceptado NO es entregado (R5): un Attempt exitoso solo significa que el pedido
+> Aceptado NO es entregado (R5): un DispatchResult exitoso solo significa que el pedido
 > fue tomado. La entrega real la confirma el callback y se verifica con
-> OrderInfo. Attempt.Ref queda vacío a propósito porque produceCoffee no
+> OrderInfo. DispatchResult.ProviderRef queda vacío a propósito porque produceCoffee no
 > devuelve orderNo; hay que leerlo de OrderInfo.
 
 ### OrderInfo
@@ -462,12 +468,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > goodsId de Batidos o productId de Snacks
 
-### Attempt
+### DispatchResult
 
-> Attempt es la respuesta inmediata a Dispatch. "Aceptado" nunca significa
+> DispatchResult es la respuesta inmediata a Dispatch. "Aceptado" nunca significa
 > "entregado".
 
-### Attempt
+### DispatchResult.ProviderRef
 
 > orderNo de Batidos o subOrderId de Snacks
 
@@ -1101,6 +1107,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El nombre de la campaña es texto administrativo que aparece en el panel del proveedor, y lo exige no vacío. Un nombre vacío conserva el valor por defecto.
 
+### WithNotifyURL
+
+> La URL de aviso se arma por orden, porque el callback de batidos lleva el `orderId` en el path y el proveedor guarda la URL en la campaña: cada línea se crea con la suya. Una función vacía se ignora, y sin la opción la campaña viaja con `notifyUrl` vacío, exactamente como antes de T10b.
+>
+> El adaptador no conoce la forma de la URL ni el secreto: sólo llama a la función que le inyectan. Cambiar la ruta, el secreto o el hosting queda en `cmd/api`, no acá.
+
 ### Check
 
 > Chequeo a nivel máquina: fuera de línea, avería y sin insumos, en ese orden. Los tres ejes se comparan contra las constantes documentadas, nunca contra números crudos. Reason queda vacío cuando la máquina está sana y, cuando no, enumera sólo los ejes que fallaron ("avería; sin insumos"), para que el motivo sea legible sin abrir el panel del proveedor.
@@ -1113,15 +1125,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El reloj es el del cliente y no uno propio: así `WithClock` vuelve determinista la ventana y adaptador y cliente comparten una sola noción de «ahora». La ventana se construye con instantes absolutos; el cliente la formatea en UTC+8 (R3).
 >
-> `Attempt.Ref` es el código de canje, no un número de pedido: produceCoffee no devuelve orderNo, y el código es exactamente lo que `Reconcile` necesita para preguntar qué pasó.
+> `DispatchResult.ProviderRef` es el código de canje, no un número de pedido: produceCoffee no devuelve orderNo, y el código es exactamente lo que `Reconcile` necesita para preguntar qué pasó.
 >
-> Si la campaña falla no hay código, así que el Attempt queda vacío. Si la campaña se emitió y el canje falla, el Attempt conserva el código aunque `Accepted` sea falso: un `Ref` no vacío junto al error es la señal de «esto es reconciliable, no lo reintentes a ciegas» (E4). Perder ese código sería perder la única forma de saber si el batido salió.
+> Si la campaña falla no hay código, así que el DispatchResult queda vacío. Si la campaña se emitió y el canje falla, el DispatchResult conserva el código aunque `Accepted` sea falso: un `ProviderRef` no vacío junto al error es la señal de «esto es reconciliable, no lo reintentes a ciegas» (E4). Perder ese código sería perder la única forma de saber si el batido salió.
+>
+> `notifyUrl` sólo se completa cuando `cmd/api` inyecta `WithNotifyURL`; el adaptador no inventa ninguna URL ni un valor por defecto.
 
 ### Reconcile
 
 > Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `LineInDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `LineFailed` sería afirmar algo que el proveedor no dijo.
 >
-> `Status.Ref` es siempre el orderNo del proveedor, también en el caso fallido: es lo que identifica el pedido en la conciliación y en el panel.
+> `Status.ProviderOrderNo` es siempre el orderNo del proveedor, también en el caso fallido: es lo que identifica el pedido en la conciliación y en el panel.
 >
 > Si el proveedor rechaza la consulta, se devuelve el error con un Status vacío: el puerto no inventa un estado cuando no tuvo respuesta.
 
@@ -1163,7 +1177,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Una sola llamada, no dos: snacks no tiene código que canjear (a diferencia de R2 en batidos), así que el despacho remoto es todo el disparo. `PaymentOrderId` es el id de la orden y `Mid` la máquina.
 >
-> `Attempt.Ref` es lo que el proveedor haya contestado, normalmente vacío porque la documentación responde `result: {}`. No se rellena con el id de la orden: un Ref vacío dice la verdad —«el proveedor no dio un asa»— y es por eso que `Reconcile` cae al OrderID.
+> `DispatchResult.ProviderRef` es lo que el proveedor haya contestado, normalmente vacío porque la documentación responde `result: {}`. No se rellena con el id de la orden: un ProviderRef vacío dice la verdad —«el proveedor no dio un asa»— y es por eso que `Reconcile` cae al OrderID.
 
 ### centsToUnits
 
@@ -1171,7 +1185,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Reconcile
 
-> Busca el pedido por `transactionOrderNo` igual al asa que tenemos (`req.Ref`, o el id de la orden cuando el Ref quedó vacío). No se manda `OrderNo` como filtro a propósito: el filtro del proveedor es por `orderNo` y el asa que tenemos es el `transactionOrderNo` del pago; mandarlo excluiría justamente el pedido buscado. El match es local y exacto.
+> Busca el pedido por `transactionOrderNo` igual al asa que tenemos (`req.KnownRef`, o el id de la orden cuando el ProviderRef quedó vacío). No se manda `OrderNo` como filtro a propósito: el filtro del proveedor es por `orderNo` y el asa que tenemos es el `transactionOrderNo` del pago; mandarlo excluiría justamente el pedido buscado. El match es local y exacto.
 >
 > Este método no puede dar un veredicto, y es deliberado. El único estado que trae la página de pedidos es el estado del PEDIDO —ciclo de pago—, no el resultado del despacho. Declarar entregado afirmaría algo que el proveedor no dijo; declarar fallido sería peor, porque dispararía un reintento y podría sacar dos snacks. Por eso siempre responde `LineInDoubt`: «el proveedor no informa el pedido» si no aparece, o el número y el nombre crudos del estado si aparece. La verdad por producto llega por callback (T10, R5).
 >
@@ -1208,6 +1222,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `Ref` tiene dos significados según la máquina —código de canje en batidos, asa del proveedor en snacks— porque el SQL tiene dos columnas y el motor nunca necesita las dos a la vez.
 >
 > `DeadlineAt` en cero significa «sin plazo armado», no un plazo vencido en el año 1.
+>
+> `Version` lleva la cuenta de las escrituras de esa línea y **la mueve sólo el store**: una línea recién creada nace en cero y cada `SaveLine` aceptado devuelve la línea con la versión siguiente. No es un dato del dominio: existe porque el worker de reconciliación y los callbacks escriben la misma línea desde goroutines distintas, y sin número el último en escribir gana.
 
 ### Attempt
 
@@ -1217,9 +1233,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `Source` usa el vocabulario del dominio y del CHECK de `webhook_event`: «payment», «batidos» o «snacks». La pareja (Source, DedupeKey) es la identidad del evento: una repetición del proveedor tiene que ser inofensiva, no una segunda bebida.
 
+### ErrStale
+
+> El conflicto de escritura, y significa algo distinto según quién escribe: para el callback, alguien con más autoridad ya resolvió la línea; para el worker, la línea ya tiene dueño. El mensaje dice el hecho —«la línea cambió desde que se leyó»— y no una acción, porque la reacción correcta no la puede decidir el store. Se compara con `errors.Is` desde el motor y nunca se muestra a un cliente.
+
 ### Store
 
-> `CreateOrder`/`Order`/`SaveOrder` mueven la orden entera con sus líneas, porque el motor la lee y la reescribe como unidad y las líneas nacen sólo junto a su orden. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció.
+> `CreateOrder`/`LoadOrder`/`SaveOrder` mueven la orden entera con sus líneas, porque el motor la lee y la reescribe como unidad y las líneas nacen sólo junto a su orden. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció.
+>
+> `SaveLine` recibe una línea con su versión y **devuelve la línea persistida con la versión nueva**: es un guardado condicional, no un reemplazo. Si la versión recibida no es la que tiene el store, devuelve `ErrStale` y no escribe nada; si coincide, guarda con `Version+1`. Devolver la línea y no sólo un error es lo que evita que el motor tenga que releer para la escritura siguiente, y es la diferencia entre un puerto que compite por la última escritura y uno que la rechaza.
+>
+> `SaveOrder` sigue siendo un reemplazo entero y sin versión: la orden es la cabecera —estado, importes, fechas— y no compite con el worker, que sólo escribe líneas. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
 
 ## internal/store/memory.go
 
@@ -1234,12 +1258,18 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `RegisterWebhook` devuelve `first` y no un error de duplicado: un callback repetido es el caso normal de un proveedor que reintenta, no un fallo.
 >
 > `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Sólo entran `sent` y `brewing`: `in_doubt` se reconcilia por su propio camino, y volver a despacharlo sería el reintento a ciegas que E4 prohíbe.
+>
+> `SaveLine` compara la versión con el lock tomado: si no coinciden devuelve `ErrStale` sin tocar el slice, y si coinciden escribe `Version+1` y devuelve la línea guardada. La comparación y la escritura ocurren dentro del mismo lock, que es lo único que convierte el número en una garantía y no en una sugerencia. Nunca se escribe «sólo algunos campos»: la versión protege la línea entera, y por eso el llamador tiene que traer la copia completa que leyó.
+>
+> `CreateOrder` normaliza a cero la versión de cada línea antes de guardar, sobre una copia para no mutar lo que recibió. No es cosmético: sin eso un llamador podría crear una línea con versión inventada y quedar inmune a los conflictos durante toda su vida.
 
 ## internal/store/memory_test.go
 
 > Los tests viven en el paquete externo `store_test` porque prueban el contrato del puerto desde afuera, que es como lo va a usar el motor.
 >
 > Los que más importan no son los de camino feliz: uno fija que el store nunca comparte estado con quien llama —sin la copia, el motor podría cambiar una línea sin guardarla y el bug aparecería como una reconciliación fantasma—, otro fija que dos líneas con el mismo plazo salen siempre en el mismo orden, y el de concurrencia crea una orden por goroutine y después exige leerlas todas: es la única forma de que un mapa sin protección se note como corrupción de conteo y no como un test que pasa por suerte.
+>
+> Los cuatro de la versión fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
 
 ## internal/order/status.go
 
@@ -1324,12 +1354,16 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `Attempts` se incrementa en **todo** intento registrado, no sólo en los aceptados: si un rechazo no lo moviera, el reintento de T9 reusaría la clave y el store lo leería como replay, prohibiendo el reintento que S7 exige.
 >
 > La línea se guarda con `SaveLine` y nunca con `SaveOrder`: dos goroutines escribiendo la orden entera se pisarían.
+>
+> El `SaveLine` del despacho es condicional y puede responder `ErrStale`: significa que otro escritor —un callback, típicamente— tocó la línea mientras la llamada a la máquina estaba en vuelo. En ese caso se devuelve nil sin revertir nada y **sin volver a escribir**: el efecto del despacho ya ocurrió y su estado no lo puede decidir el despachador, lo resuelve la reconciliación con lo que diga el proveedor. Reintentar el guardado acá sería exactamente el «último que escribe gana» que motivó la versión, y revertir un cierre es irreversible. El cierre del intento se registra **antes** de guardar la línea, así que un conflicto no pierde la evidencia de la llamada.
+>
+> La línea que devuelve `SaveLine` se vuelve a usar dentro del bucle: es la que trae la versión nueva, y sin quedarse con ella el reintento del fallido fallaría por versión vieja contra su propio guardado anterior.
 
 ### classifyDispatch
 
 > Tres desenlaces, y la diferencia es qué sabemos del producto: aceptado es «la máquina lo tomó» (R5: todavía no es entregado, por eso la línea vence y hay que reconciliar); rechazado es «la máquina dijo que no»; cualquier otra cosa es «no sabemos», y se marca `in_doubt` y nunca `failed` (E4), porque declarar fallido habilitaría un reintento a ciegas que podría sacar dos productos.
 >
-> El `Ref` se copia a la línea aunque venga vacío: el asa del proveedor es opcional, pero perderla cuando existe sería perder la única forma de reconciliar.
+> El `ProviderRef` se copia a la línea aunque venga vacío: el asa del proveedor es opcional, pero perderla cuando existe sería perder la única forma de reconciliar.
 
 ### transitionLine
 
@@ -1420,10 +1454,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Decide el próximo instante de consulta y, cuando ya no queda margen, cierra la línea en duda. Tres casos y los tres terminan: sin ventana armada se cierra en el acto; con ventana abierta se empuja un intervalo **recortado al tope** si el intervalo se pasaría; en el tope o después se cierra, limpia los dos plazos y guarda el motivo.
 >
 > El recorte no es cosmético: garantiza que el último escaneo caiga exactamente en el tope y nunca después, y es lo que convierte «preguntar hasta tener respuesta» en «preguntar hasta tener respuesta **o** hasta que se acabe el tiempo».
+>
+> Si el guardado responde `ErrStale` devuelve `false, nil` y nada más: ni reprograma ni cierra. La línea ya tiene dueño, y el que la tiene acaba de escribir un hecho más nuevo que el que traía esta copia. Reprogramar le rearmaría un plazo a una línea que quizá ya está cerrada —y eso incluye reabrirla si la copia vieja decía `sent`—, así que el silencio es la única respuesta honesta.
 
 ### closeLine / settleOrder / notifyOrder
 
 > Cerrar es limpiar los dos plazos: una línea cerrada no vuelve a aparecer en `DueLines`, y eso es lo que impide interrogarla después de que alguien ya sabe la respuesta. Entregado limpia `LastError`; fallido conserva o reemplaza el motivo, nunca lo borra.
+>
+> `closeLine` es el llamador que **reacciona distinto** ante `ErrStale`, porque cerrar es irreversible y el que llega segundo no puede ganar por llegar segundo. Relee la orden, busca la línea por `ID` y decide: si ya está cerrada —entregada o fallida— no hace nada y devuelve nil, porque alguien con más autoridad la resolvió; si sigue abierta reintenta **una sola vez** la transición con la versión fresca. Una sola vez y no un bucle: si el segundo intento también encuentra la línea cambiada, hay un tercer escritor y volver a probar es una carrera sin final. Nunca se reabre ni se reescribe un cierre ajeno, y el `Ref` adoptado por el callback sobrevive porque la copia vieja simplemente no se escribe.
 >
 > Una línea cerrada no arregla la orden sola: si el worker no recalcula el estado, la orden se queda en `dispatching` para siempre. Se recarga, se avanza con la misma tabla de transiciones del resto del motor y se guarda sólo si cambió.
 >
@@ -1432,3 +1470,245 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## migrations/0003_line_reconcile_until.sql
 
 > Agrega `reconcile_until` a `order_line`. Aditiva a propósito: sin CHECK, sin índice y sin migración de datos. La columna es nullable y su ausencia es exactamente el «no armado» que ya conoce el código, así que las filas viejas no necesitan backfill. No lleva índice porque el worker no busca por ella: sigue buscando por `(state, deadline_at)`.
+
+## internal/httpapi/handler.go
+
+### (archivo)
+
+> Los cuatro endpoints con los que habla la tablet: el catálogo, la creación de la orden, el estado en vivo y el pago. El paquete no sabe de proveedores ni de firmas; traduce HTTP a las tres piezas que ya existen —catálogo, motor y store— y traduce lo que vuelve a JSON.
+>
+> Los contratos de entrada y salida son nuestros, así que van en inglés como el resto de los identificadores, y los mensajes de error van en español porque los lee una persona del equipo.
+
+### New
+
+> Falla cerrado por dos motivos: sin catálogo, motor, confirmador o store no hay nada que atender, y sin muebles configurados no se podría resolver a qué máquinas pertenece una orden. Un mueble repetido tampoco se acepta: dos muebles con el mismo id harían que el despacho fuera ambiguo.
+>
+> `simulated` se deriva de que el entorno sea exactamente `sandbox`. Cualquier otro valor —incluido uno inesperado— deja el pago simulado apagado: es la única forma de que un error de configuración no termine registrando pagos que nadie cobró.
+
+### Register
+
+> Las rutas se declaran con patrón de método (`GET /combos`, `POST /orders/{id}/pay`), así que un método no soportado lo rechaza el `ServeMux` con 405 antes de tocar el store.
+
+### createOrder / resolveKiosk / buildDraft
+
+> El `kiosk_id` puede venir vacío sólo cuando hay un único mueble configurado: con varios, adivinar sería elegir por el cliente. Un mueble que no está en la configuración es 404, igual que un combo inactivo o inexistente.
+>
+> Un combo cuyos ítems piden una máquina que el mueble no tiene es 409: la petición es válida, el estado del mueble no permite venderla. No se inventa la máquina que falta.
+>
+> De la configuración del mueble se arma el `dispenser.MachineRef` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
+>
+> El importe de cada línea queda en cero: el catálogo define un precio por combo, no por ítem, y repartirlo sería inventar un dato que nadie definió. El importe de la orden es el del combo.
+
+### payOrder
+
+> Primero el guardia del entorno y después el motor: en producción la petición muere antes de que nada se registre.
+>
+> Si el motor devuelve error, no se responde 500 a ciegas. Se relee la orden: si ya no está pendiente de pago, el pago quedó registrado y lo que falló fue el despacho, así que la respuesta es 200 con el estado real (y el detalle en cada línea). Si sigue pendiente, el pago no se registró y ahí sí es un 500 que el cliente puede reintentar. Un 5xx en el primer caso sería una mentira que la tablet traduciría en un pago repetido.
+
+### decodeCreateOrder / fail / newOrderResponse
+
+> El cuerpo se lee con `DisallowUnknownFields` y con un tope de tamaño, y se exige un único objeto JSON. Un cuerpo inválido no llega a crear nada.
+>
+> `fail` es el único lugar que decide el código de estado: los errores propios viajan como `apiError` con su status, `catalog.ErrNotFound` y `store.ErrNotFound` son 404, y el resto es 500 con el detalle sólo en el log, nunca en la respuesta. El `path` que va al log pasa por `redactCallbackPath`: el secreto de los callbacks viaja en la ruta y no puede quedar escrito.
+>
+> `newOrderResponse` armado a mano —y no serializando `store.Order`— porque el contrato de la tablet es una decisión nuestra: no quiero que un campo nuevo interno del store se filtre a la app, ni que las fechas en cero viajen como `0001-01-01`.
+
+## internal/order/callback.go
+
+### (archivo)
+
+> La entrada de los callbacks de las máquinas. Un callback es un hecho externo que llega tarde, repetido y sin orden: por eso el motor lo trata como una clave de deduplicación más una referencia a una línea, y nunca como una orden de cerrar algo.
+>
+> Hay dos formas y no es un capricho. En snacks el callback **es** la única fuente de verdad (su API no tiene consulta de suborden: `Reconcile` siempre devuelve duda), así que se cierra con lo que dice. En batidos el callback no viene firmado y el proveedor sí tiene `getOrderInfo`, así que la regla R6 manda confirmar antes de cerrar: el callback es sólo la señal de que hay algo nuevo que preguntar.
+
+### beginCallback / callbackLine / recordCallback / lineClosed
+
+> La línea se resuelve con tres reglas, de la más exacta a la más tolerante, y en ese orden porque el orden es la garantía: una coincidencia exacta nunca compite con una deducción.
+>
+> 1. `line.Ref == cb.Ref`, con `cb.Ref` no vacío. Es el camino de siempre.
+> 2. `line.ID == cb.ThirdOrderNo` **y** `line.MachineType == cb.MachineType`, con `cb.ThirdOrderNo` y `cb.MachineType` no vacíos. El proveedor de snacks documenta ese campo como «thirdparty suborder number» y es nuestro propio `OrderProductId`, el `LineID` que mandamos al despachar: sirve aunque el despacho no haya devuelto ningún id de suborden. El filtro de máquina no es adorno: los identificadores de línea los genera el motor, y un aviso de snacks que traiga el `ThirdOrderNo` de la línea de batidos la cerraría con el resultado de la otra máquina, que es irreversible.
+> 3. La **única** línea de la orden cuyo `MachineType == cb.MachineType`, y sólo si su `Ref` está vacío. Las candidatas son **todas** las líneas de esa máquina, con `Ref` o sin él: la referencia del callback ya falló en la regla 1, así que no puede decidir nada acá. Es la red para cuando el proveedor tampoco manda el `ThirdOrderNo`. No se adivina nunca: con más de una candidata se devuelve `ErrCallbackAmbiguous` sin mirar sus `Ref` —una línea sin referencia entre dos no es la candidata, es la mitad de una ambigüedad— y no se toca ninguna línea; con ninguna candidata, o con una sola ya referenciada, `ErrCallbackUnknownLine` como antes. Sin `MachineType` las reglas 2 y 3 no aplican en absoluto: elegir entre máquinas sería inventar el dato, así que ahí sólo queda la coincidencia exacta de la regla 1.
+>
+> El orden importa y costó una corrección: **primero el efecto, después el registro**. La primera versión registraba el callback como visto antes de aplicarlo; si el store fallaba en el medio, la clave quedaba quemada y el reintento del proveedor se descartaba, perdiendo el evento para siempre. Ahora un fallo transitorio devuelve error sin registrar nada, así que el reintento puede funcionar.
+>
+> La contracara es el caso que nunca va a poder aplicarse: una orden o una referencia que no conocemos —y también un callback ambiguo— se registra igual antes de devolver el error. Ese evento no se va a poder aplicar nunca, y sin registrarlo el proveedor lo reintentaría para siempre.
+>
+> Una línea cerrada no se toca ni se reabre: se recalcula el estado de la orden, se registra el evento y se devuelve acuse. La tabla de transiciones tampoco permite reabrir, así que una corrección del proveedor después del cierre se ignora a propósito: con dinero de por medio, preferimos una línea que no se mueve a una que se mueve sola.
+>
+> Un evento incompleto se detecta antes de tocar el store. Incompleto quiere decir sin origen, sin clave de deduplicación, sin orden o sin estado; una referencia vacía **no** lo hace incompleto, porque la tercera regla existe justamente para eso.
+
+### lineByRef / lineByThirdOrderNo / lineByMachineType
+
+> Las tres reglas, una por función, para que el orden se lea en `callbackLine` y no quede escondido dentro de un bucle. `lineByThirdOrderNo` exige que el aviso diga de qué máquina habla, porque el `ID` de una línea no dice nada del aviso que lo trae. `lineByMachineType` cuenta primero todas las líneas de esa máquina y recién después mira la referencia: devuelve la candidata sólo si es exactamente una y está sin `Ref`; dos o más es `ErrCallbackAmbiguous` sin importar sus `Ref`, y ninguna —o una sola ya referenciada— es `ErrCallbackUnknownLine`. Es la misma regla conservadora que el resto del proyecto: antes que suponer, se acusa recibo y se deja la línea quieta.
+
+### adoptRef
+
+> Cuando la línea resuelta tiene el `Ref` vacío y el callback sí trae referencia, se adopta antes de aplicar el estado, así el próximo evento de esa línea entra por la primera regla y no vuelve a depender de una deducción. No agrega ninguna escritura: el guardado lo hacen `closeLine` y `markBrewing`, que ya iban a guardar la línea. Por eso tampoco se adopta en la reconciliación: ahí el que manda es el proveedor.
+
+### CloseFromCallback / ConfirmFromCallback
+
+> `CloseFromCallback` aplica el estado que informa el proveedor: entregado, fallido con su motivo, o en elaboración. `ConfirmFromCallback` **ignora** el estado del callback para cerrar y consulta al proveedor; el único uso que le da al callback es el de "en curso", que sube la línea a elaboración porque es información cierta y visible para la tablet, sin poder cerrar nada.
+>
+> Los dos terminan recalculando el estado de la orden, y sólo después. Una línea cerrada no arregla la orden sola: sin ese paso la orden se quedaba en `dispatching` para siempre.
+
+### markBrewing
+
+> Devuelve si aplicó, y el llamador sólo toca el estado en memoria cuando aplicó. La primera versión forzaba `LineBrewing` aunque la transición fuera ilegal, y eso permitía que un callback «en curso» que llegaba tarde degradara una línea ya entregada: el reconcile posterior le escribía encima `in_doubt` o `failed`. Una transición ilegal ahora es silencio, no error: si el callback dice «en curso» cuando la línea todavía no salió, se deja como está y sigue mandando el worker.
+>
+> `ErrStale` también termina en `(false, nil)`: significa que otro escritor tocó la línea entre la lectura y el guardado, y en esa carrera «en curso» es siempre la información más débil —un cierre entregado o fallido la supera, y si el otro escritor sólo movió un plazo no hay nada que corregir—. Devolver error obligaría al handler a responder 500 y el proveedor reintentaría un aviso que ya no puede aplicar; devolver `false` deja que el flujo siga y que el que ganó mande.
+
+## internal/httpapi/callbacks.go
+
+### (archivo)
+
+> Las dos rutas que reciben a los proveedores, con los cuerpos y las respuestas que cada documentación describe: `POST /callbacks/batidos/{secret}/{orderId}` y `POST /callbacks/snacks/{secret}`.
+>
+> El `orderId` va en la ruta de batidos porque su callback no trae ningún identificador nuestro salvo el código de canje, y el `notifyUrl` se entrega por campaña: la campaña se crea por línea, así que la URL puede llevar la orden. En snacks el identificador viaja en el cuerpo (`PaymentOrderId`, que es la orden que nosotros mandamos al despachar).
+
+### WithCallbacks / CallbackSecrets
+
+> Sin receptor no se registran las rutas: un servidor al que nadie le cableó los callbacks responde 404, que es lo mismo que ve un atacante. Con receptor pero sin secreto configurado, las rutas existen y rechazan todo, también con 404. Las dos formas de fallar cerrado no se distinguen desde afuera.
+
+### BatidosCallbackURL
+
+> Única fuente de la forma de la ruta del callback de batidos. Devuelve vacío si falta cualquiera de las tres piezas: una URL a medias haría que el proveedor avise a ninguna parte, y el silencio se descubre recién cuando un cliente se queda sin batido.
+>
+> La base se normaliza sin barra final y los dos segmentos variables se escapan con `url.PathEscape`, porque el secreto y el `orderId` viajan dentro del path. Si algún día cambia la ruta, acá y en el patrón de `Register` están los únicos dos lugares que hay que acompañar: nadie más arma la URL a mano.
+
+### redactCallbackPath
+
+> El secreto del callback viaja en el path, así que escribirlo completo en el log equivale a publicarlo: cualquiera con acceso al log puede forjar cierres de línea contra la máquina. Se conserva sólo el origen —lo que hace falta para saber qué proveedor avisó— y se tapa el resto.
+>
+> Cualquier otra ruta se devuelve intacta: la redacción es una regla de los callbacks, no un filtro general de logs.
+
+### secretMatches
+
+> Comparación en tiempo constante y rechazo cuando el secreto esperado está vacío. R6 pide autenticar el callback de batidos por ruta secreta porque no viene firmado; en snacks la documentación no dice cómo se autentica, así que se aplica la misma mitigación: la URL es el secreto y sólo la conoce el proveedor.
+
+### batidosCallback
+
+> El estado se traduce con una tabla explícita (0 fallo, 1 en curso, 2 completado) y un valor fuera de la tabla se acusa recibo **sin** tocarlo: no se cierra una línea por un código que no entendemos.
+>
+> La respuesta es exactamente la que el proveedor documenta, incluido el literal `操作成功`, porque no es texto para una persona: es el contrato de respuesta.
+>
+> La clave de deduplicación combina `orderNo`, `code` y `status`: un reintento del mismo evento se descarta, y el paso de "en curso" a "completado" del mismo código sí se procesa.
+
+### snacksCallback
+
+> Un solo callback trae varias subórdenes, y cada una es su propio evento: su propia clave (`orderNo|subOrderNo|shipmentStatus`), su propio estado y su propio motivo. Se aplican todas y se responde una sola vez.
+>
+> El evento lleva `ThirdOrderNo` y `MachineType` además de la referencia. Lo primero porque el proveedor documenta ese campo como el número de suborden de terceros, que es nuestro `OrderProductId`; lo segundo porque la línea todavía puede estar sin referencia —el despacho de snacks responde `"result": {}`— y la única forma de resolverla sin adivinar es saber de qué máquina habla el aviso.
+>
+> Los errores se acumulan con `errors.Join` y no se corta en el primero: si una suborden falla de verdad, la respuesta es 500 para que el proveedor reintente, y la deduplicación protege a las que ya se cerraron.
+
+### writeCallbackResult / acknowledgeBrokenCallback / decodeCallback
+
+> El mapeo de errores a código de respuesta es una decisión sobre el proveedor, no sobre nosotros: **sólo se devuelve error cuando reintentar puede ayudar**. Nada que cerrar (`ErrCallbackUnknownLine`, orden inexistente), un callback ambiguo (`ErrCallbackAmbiguous`), un cuerpo roto y un evento incompleto se acusan recibo con 200 y quedan en el log: son casos que no se van a poder aplicar nunca y un 4xx los volvería un reintento eterno. La ambigüedad se registra con nivel de error y no de aviso: dos líneas candidatas significan que algo se descartó mal, y una persona tiene que mirarlo. Lo demás es 500, que es el único caso donde el reintento sirve, y desde la corrección de arriba ya no hay clave quemada que lo inutilice.
+>
+> Los cuerpos de los proveedores se decodifican **sin** `DisallowUnknownFields`, al revés que el cuerpo de la tablet: sus contratos pueden crecer y no quiero que un campo nuevo rompa la recepción.
+>
+> Los tres logs de este bloque usan `redactCallbackPath` en lugar del path crudo: el secreto de la ruta nunca se escribe completo.
+
+## internal/config — publicBaseURLProblems / callbackSecretProblems
+
+> `public_base_url` es opcional, pero cuando está se valida: tiene que ser una URL absoluta con host, de esquema `http` o `https`, y **en producción tiene que ser `https`**. El motivo no es estético: esa URL viaja al proveedor dentro del `notifyUrl` con la ruta secreta del callback adentro, así que en claro el secreto queda expuesto en su log y en el de cualquier proxy. En sandbox se permite `http` a propósito, para poder probar con un túnel.
+>
+> El secreto de callback se valida contra la forma de la ruta: sólo letras, números, punto, guion y guion bajo, y nunca `.` ni `..`. Un secreto con `/` parte el path en más segmentos y un `.`/`..` se colapsa en la limpieza del path: los dos casos dejan el callback inalcanzable **en silencio**, con un 404 indistinguible de un secreto equivocado. Es preferible que el arranque falle a que los avisos no lleguen nunca y nadie se entere.
+
+## internal/order/gate.go
+
+### (archivo)
+
+> El puerto por el que el motor pregunta si el combo se puede vender, sin saber quién contesta. El motor no importa `preflight` ni los drivers: conoce una interfaz de una sola función y un error de negocio, y el adaptador que traduce vive en `internal/gate`. Es la regla de dependencias del motor escrita en tipos: si mañana el chequeo cambia de proveedor, `internal/order` no se entera.
+
+### Gate
+
+> `Check` recibe el mismo `Draft` que se está por crear, no una consulta a medida, para que el adaptador pueda traducirlo sin que el motor le pase datos ya masticados. Devolver `nil` significa «se puede vender»: el contrato es de bloqueo explícito, no de permiso explícito.
+
+### WithGate
+
+> Ignora un `nil` a propósito. Con la puerta en `nil` el motor no llama a nadie, así que los tests y los llamadores que ya existían siguen comportándose igual: el chequeo previo se enciende cableándolo, no se apaga con un interruptor de configuración.
+
+### ErrNotSellable
+
+> El error de negocio, comparable con `errors.Is` desde cualquier capa. La capa HTTP lo traduce a 409 y no necesita saber nada de `preflight`: sólo pregunta si el error es esto.
+
+### NotSellableError
+
+> Lleva las razones para que el mensaje se entienda sin abrir el log, y las expone como campo para que la respuesta HTTP las pueda listar. `Unwrap` devuelve `ErrNotSellable`, así que `errors.Is` funciona y `errors.As` sigue dando acceso a las razones. Sin razones el mensaje es sólo la frase: un bloqueo que no se pudo explicar no inventa una causa.
+
+## internal/order/engine.go — Place y la puerta de disponibilidad
+
+> La consulta va exactamente en un lugar: **después** de validar el draft, **después** del lookup de idempotencia por `client_key` y **antes** de generar cualquier identificador. Las tres posiciones son decisiones, no casualidad.
+>
+> Después de validar, porque un draft inválido no merece una consulta al proveedor y su error es más útil que un «no vendible».
+>
+> Después de la idempotencia, porque un reintento que devuelve una orden existente no se vuelve a chequear: la orden ya existe y bloquear el reintento sería mentir sobre un pedido ya hecho. Si la máquina se cayó después de la compra, el problema es del despacho, no de la creación.
+>
+> Antes de generar identificadores, porque un bloqueo no debe consumir ids ni dejar rastro en el store: si no se vende, no se creó nada.
+>
+> El error de la puerta se devuelve tal cual, sin envolver: un fallo del proveedor y un combo no vendible tienen que llegar distintos a la capa HTTP, que responde 500 o 409 según cuál sea.
+
+## internal/gate/gate.go
+
+### (archivo)
+
+> El adaptador entre el motor de órdenes y `preflight`: traduce un `order.Draft` a la consulta de disponibilidad y el resultado al error del motor. Una sola responsabilidad, y por eso es un paquete aparte: es el único lugar del sistema donde se juntan los dos vocabularios.
+
+### Checker
+
+> La interfaz mínima la declara este paquete, no `preflight`: se necesita una sola función y así las pruebas no arrastran los clientes de los dos proveedores. `*preflight.Checker` la satisface sin cambios.
+
+### New
+
+> Acepta la interfaz y no el tipo concreto, por lo mismo. Con un verificador `nil` la puerta no explota: falla cerrado en `Check`.
+
+### Check
+
+> Un error del verificador se devuelve tal cual y **no** se convierte en `NotSellableError`: que un proveedor no conteste no es lo mismo que un combo agotado, y el llamador decide distinto en cada caso (reintentar sirve en uno, no en el otro). Sólo un resultado con `Sellable=false` se traduce al error de negocio, con las razones en el orden en que vinieron.
+
+### request
+
+> Traduce por tipo de máquina, no por posición ni por nombre de campo: batidos aporta `DeviceID` y snacks aporta `MID`, que es como cada proveedor identifica la máquina. El SKU es el del ítem.
+>
+> Si el draft no tiene exactamente un ítem de cada tipo, no se consulta nada y se devuelve un error que lo explica: la regla actual no sabe evaluar esa forma. **Fallar cerrado es la decisión** —no se vende algo que no se pudo chequear— pero tiene que ser un error visible y no un silencio que se lea como «todo bien». Por eso se cuentan los ítems de los dos tipos y se ignoran los de máquinas que la regla no conoce.
+
+## internal/httpapi/handler.go — fail y el combo no vendible
+
+> El mapeo nuevo vive donde ya se decidía el código de estado, y va antes del 500 genérico.
+>
+> `ErrNotSellable` es **409 Conflict**: el pedido está bien formado y el servidor lo entiende, pero el estado actual de las máquinas no permite crear la orden. Es un conflicto con el estado del recurso, no un error del cliente ni del servidor. El cuerpo lleva el mensaje en español y la lista de razones tomada del `NotSellableError` con `errors.As`, en el mismo orden en que las acumuló `preflight`. Sin razones se serializa una lista vacía y no `null`: el contrato del cuerpo dice lista.
+>
+> Un fallo del proveedor durante el chequeo **no** es 409: cae en el 500 que ya existía y sigue ahí por la misma razón, porque reintentar puede servir. Distinguirlos es lo que impide que la tablet le diga «combo agotado» a un cliente cuando en realidad el proveedor no contestaba.
+
+## cmd/fakeapi/main.go — adminHandler / decodeAdmin / requireLoopback
+
+> El tercer servidor del falso: una superficie de administración para poder preparar una prueba end-to-end sin escribir código. Existe porque los setters de `internal/fakeapi` son métodos Go: sin esto, un catálogo de batidos vacío bloqueaba cualquier venta (el chequeo previo responde `batidos_sku_not_listed`) y no había forma de sembrarlo desde afuera.
+>
+> Es una capa fina sobre los setters existentes: no cambia sus firmas ni la lógica de los handlers documentados. Los cuerpos rechazan campos desconocidos, responden `{"ok":true}` o `{"ok":false,"error":"…"}` en español, y un setter que no existe no se simula: se responde 501 con el motivo, porque un `ok` falso en una herramienta de prueba es peor que un error claro.
+>
+> `requireLoopback` es la única defensa que tiene: no hay autenticación y no la necesita, pero el servidor de administración se niega a arrancar fuera de loopback (incluidos `0.0.0.0` y cualquier IP no local). Es una herramienta de desarrollo, no una API.
+
+## internal/order — el worker y los callbacks sobre la misma línea
+
+> `ReconcileDue` corre en su propia goroutine —el barrido cada 30 s de `internal/sweep`— mientras el callback llega por HTTP en otra. Los dos escriben la misma línea, y hasta que existió `Line.Version` el último en escribir ganaba: el worker tomaba una copia de las líneas al empezar (`DueLines`), el callback cerraba la línea como entregada en el medio, y el worker guardaba su copia vieja encima. El resultado era un `delivered` revertido y el `Ref` adoptado borrado, con la orden recalculada sobre el estado revertido. No era teórico: es la primera carrera real del sistema.
+>
+> `ErrStale` significa cosas distintas según quién escribe, y por eso cada llamador reacciona distinto. No hay una política única y no debería haberla: cerrar es irreversible y reprogramar no.
+>
+> - `closeLine` — relee la orden, busca la línea por `ID` y decide: si ya está cerrada (`delivered` o `failed`) es un no-op exitoso, alguien con más autoridad la resolvió; si sigue abierta reintenta **una sola vez** la transición con la versión fresca. Nunca reabre ni reescribe un cierre ajeno, y la copia vieja —con su `Ref` vacío— no llega al store.
+> - `extendReconcile` — `(false, nil)`. La línea ya tiene dueño: no se reprograma ni se cierra, porque rearmar un plazo sobre una línea que otro acaba de cerrar es reabrirla de costado.
+> - `dispatchLine` — nil, sin revertir nada. El efecto del despacho ya ocurrió y el estado de la línea lo resuelve la reconciliación con lo que diga el proveedor; el cierre del intento ya se registró antes, así que no se pierde la evidencia.
+> - `markBrewing` — `(false, nil)`. «En curso» es la información más débil de las tres y no gana una carrera contra un cierre o contra un aplazo.
+> - `settleOrder`, `Place` y `ConfirmPayment` — sin reacción propia: escriben la orden, no la línea, y `SaveOrder` sigue siendo un reemplazo entero.
+>
+> La carrera se demuestra sin goroutines, porque una carrera reproducida por suerte no es un test. `staleDueStore` (`internal/order/callback_test.go`) guarda la copia que devolvió `DueLines` y la repite en las llamadas siguientes: es exactamente el estado en el que está el worker cuando el callback se le adelanta. El test `TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade` copia la línea abierta, la cierra por el camino real del callback —que además adopta un `Ref`— y recién ahí corre el barrido con la copia vieja, en tres variantes según lo que la máquina le conteste al worker (cierre fallido, entrega y aplazo). Las tres afirman lo mismo: la línea sigue `delivered`, el `Ref` adoptado sigue ahí, los plazos siguen en cero, no hay error en `LastError` y la orden sigue `delivered`.
+>
+> `TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight` cubre el mismo conflicto por el otro camino: el stub de la máquina dispara un `CloseFromCallback` real **dentro** de `Dispatch`, así que la línea queda cerrada entre la lectura y el guardado del despacho. La aserción es que la línea siga entregada, que el `Ref` tardío del despacho no se adopte sobre una línea cerrada, y que `ConfirmPayment` no devuelva error.
+
+## internal/store — SaveOrder
+
+> Guarda **sólo la cabecera** de la orden: estado, importes y las tres fechas. Nunca toca las líneas.
+>
+> No siempre fue así: antes reemplazaba la orden entera, líneas incluidas, y había un test que lo fijaba como intención. Ese contrato se volvió una carrera en cuanto las líneas empezaron a tener escritura propia y condicional: `settleOrder` y `ConfirmPayment` leen la orden, y si entre la lectura y el guardado un callback cierra una línea, el guardado de la orden devolvía la línea a su estado anterior — con el `Ref` adoptado borrado y la versión pisada. Ahora las líneas sólo cambian por `SaveLine`, que sí es condicional, y la orden sólo cambia por acá.
+>
+> Consecuencia para el futuro store sobre Postgres: el guardado de la orden es un `UPDATE` de las columnas de cabecera, sin tocar `order_line`.
