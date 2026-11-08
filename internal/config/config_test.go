@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compras-remotas/internal/machine"
 )
 
 const validConfig = `{
@@ -54,7 +56,7 @@ func TestLoadAppliesSandboxDefaultAndEnvSecrets(t *testing.T) {
 	if cfg.BatidosKey != "file-key" {
 		t.Fatalf("batidos key = %q, want the value from the file", cfg.BatidosKey)
 	}
-	if len(cfg.Kiosks) != 1 || cfg.Kiosks[0].Machines[1].Type != MachineSnacks {
+	if len(cfg.Kiosks) != 1 || cfg.Kiosks[0].Machines[1].Type != machine.Snacks {
 		t.Fatalf("kiosks decoded incorrectly: %+v", cfg.Kiosks)
 	}
 }

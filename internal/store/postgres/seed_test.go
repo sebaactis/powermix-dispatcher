@@ -8,6 +8,7 @@ import (
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 	"compras-remotas/internal/store/postgres"
 )
@@ -19,14 +20,14 @@ func seededTopology() ([]config.Kiosk, []catalog.Combo) {
 				Name: "Mueble docker",
 				Machines: []config.Machine{
 					{
-						Type:         config.MachineBatidos,
+						Type:         machine.Batidos,
 						Name:         "Batidos Powermix",
 						DeviceID:     "dev-docker",
 						DeviceNo:     "devno-docker",
 						DeviceTypeID: "dtype-docker",
 					},
 					{
-						Type: config.MachineSnacks,
+						Type: machine.Snacks,
 						Name: "Snacks Powermix",
 						MID:  "mid-docker",
 					},

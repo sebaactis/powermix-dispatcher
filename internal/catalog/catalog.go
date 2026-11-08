@@ -9,11 +9,13 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"compras-remotas/internal/machine"
 )
 
 type Item struct {
-	MachineType string `json:"machine_type"`
-	SKU         string `json:"sku"`
+	MachineType machine.Kind `json:"machine_type"`
+	SKU         string       `json:"sku"`
 }
 
 type Combo struct {

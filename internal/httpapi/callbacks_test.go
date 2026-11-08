@@ -8,6 +8,7 @@ import (
 
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -253,7 +254,7 @@ func TestCallbackRoutesAreAbsentWithoutAReceiver(t *testing.T) {
 }
 
 func TestSnacksCallbackClosesTheLineByThirdOrderNo(t *testing.T) {
-	fx := newLiveCallbackFixture(t, twoSnackItemsCombos(), map[string]dispenser.Dispenser{
+	fx := newLiveCallbackFixture(t, twoSnackItemsCombos(), map[machine.Kind]dispenser.Dispenser{
 		"batidos": fakeDispenser{},
 		"snacks":  silentRefDispenser{},
 	})
@@ -294,7 +295,7 @@ func TestSnacksCallbackClosesTheLineByThirdOrderNo(t *testing.T) {
 }
 
 func TestSnacksCallbackWithTwoCandidatesIsAcknowledgedWithoutClosingAnything(t *testing.T) {
-	fx := newLiveCallbackFixture(t, twoSnackItemsCombos(), map[string]dispenser.Dispenser{
+	fx := newLiveCallbackFixture(t, twoSnackItemsCombos(), map[machine.Kind]dispenser.Dispenser{
 		"batidos": fakeDispenser{},
 		"snacks":  silentRefDispenser{},
 	})
@@ -328,7 +329,7 @@ func TestSnacksCallbackWithTwoCandidatesIsAcknowledgedWithoutClosingAnything(t *
 }
 
 func TestSnacksCallbackDoesNotCloseTheBatidosLineByThirdOrderNo(t *testing.T) {
-	fx := newLiveCallbackFixture(t, testCombos(), map[string]dispenser.Dispenser{
+	fx := newLiveCallbackFixture(t, testCombos(), map[machine.Kind]dispenser.Dispenser{
 		"batidos": fakeDispenser{},
 		"snacks":  silentRefDispenser{},
 	})

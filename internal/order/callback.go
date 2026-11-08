@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
 
@@ -29,7 +30,7 @@ type Callback struct {
 	OrderID      string
 	Ref          string
 	ThirdOrderNo string
-	MachineType  string
+	MachineType  machine.Kind
 	State        CallbackState
 	Reason       string
 }
@@ -134,7 +135,7 @@ func lineByRef(lines []store.Line, ref string) (store.Line, bool) {
 	return store.Line{}, false
 }
 
-func lineByThirdOrderNo(lines []store.Line, thirdOrderNo, machineType string) (store.Line, bool) {
+func lineByThirdOrderNo(lines []store.Line, thirdOrderNo string, machineType machine.Kind) (store.Line, bool) {
 	if thirdOrderNo == "" || machineType == "" {
 		return store.Line{}, false
 	}
@@ -148,7 +149,7 @@ func lineByThirdOrderNo(lines []store.Line, thirdOrderNo, machineType string) (s
 	return store.Line{}, false
 }
 
-func lineByMachineType(lines []store.Line, machineType string) (store.Line, error) {
+func lineByMachineType(lines []store.Line, machineType machine.Kind) (store.Line, error) {
 	if machineType == "" {
 		return store.Line{}, ErrCallbackUnknownLine
 	}

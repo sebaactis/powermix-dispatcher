@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -13,20 +14,20 @@ func TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight
 	ctx := context.Background()
 	st := newRecordingStore()
 
-	machine := &closingOnDispatchMachine{
+	driver := &closingOnDispatchMachine{
 		attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-tardio"},
 	}
 
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": machine},
+		map[machine.Kind]dispenser.Dispenser{"batidos": driver},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
 
 	placed := place(t, engine, drinkOnlyDraft())
 
-	machine.onDispatch = func() {
+	driver.onDispatch = func() {
 		duplicate, err := engine.CloseFromCallback(ctx, order.Callback{
 			Source:      "batidos",
 			DedupeKey:   "batidos-1",

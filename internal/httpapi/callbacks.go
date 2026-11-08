@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"compras-remotas/internal/config"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -144,7 +144,7 @@ func (c *Callbacks) batidosCallback(w http.ResponseWriter, r *http.Request) {
 		DedupeKey:   fmt.Sprintf("%s|%s|%d", payload.OrderNo, payload.Code, payload.Status),
 		OrderID:     r.PathValue("orderId"),
 		Ref:         payload.Code,
-		MachineType: string(config.MachineBatidos),
+		MachineType: machine.Batidos,
 		State:       state,
 		Reason:      batidosFailureReason,
 	}
@@ -196,7 +196,7 @@ func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
 			OrderID:      payload.PaymentOrderID,
 			Ref:          result.SubOrderNo,
 			ThirdOrderNo: result.ThirdOrderNo,
-			MachineType:  string(config.MachineSnacks),
+			MachineType:  machine.Snacks,
 			State:        state,
 			Reason:       result.ShipmentErrorReason,
 		}

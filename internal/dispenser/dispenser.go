@@ -3,6 +3,8 @@ package dispenser
 import (
 	"context"
 	"fmt"
+
+	"compras-remotas/internal/machine"
 )
 
 type LineState string
@@ -19,7 +21,7 @@ const (
 
 type MachineRef struct {
 	KioskID      string
-	Type         string
+	Type         machine.Kind
 	Name         string
 	DeviceID     string
 	DeviceNo     string

@@ -52,12 +52,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Machine
 
-> Máquina de batidos. La API necesita los tres: deviceId y deviceNo son
-> identificadores distintos y produceCoffee pide ambos.
-
-### Machine
-
-> Máquina de snacks.
+> El tipo de la máquina es `machine.Kind`: el vocabulario de la familia se
+> declara una sola vez en `internal/machine` y ninguna capa consumidora lo
+> repite. Los identificadores que cada proveedor pide siguen siendo campos de
+> este struct: batidos necesita `deviceId` y `deviceNo` porque son distintos y
+> `produceCoffee` pide ambos; snacks sólo necesita `mid`.
 
 ### Kiosk
 
@@ -440,7 +439,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### MachineRef
 
-> "batidos" o "snacks"
+> El tipo es `machine.Kind`; sus valores son «batidos» y «snacks».
 
 ### MachineRef
 
@@ -930,6 +929,30 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### NewWithOptions
 
 > NewWithOptions no debe mutar las opciones del llamador.
+
+## internal/machine/machine.go
+
+### (archivo)
+
+> Package machine declara el único tipo de la familia de máquina del sistema.
+> No importa nada del proyecto y no tiene funciones ni métodos: es vocabulario
+> compartido, no comportamiento.
+
+### Kind
+
+> Kind es el tipo de máquina que atiende un producto del combo.
+>
+> Vive en un paquete propio porque lo nombran todas las capas —configuración,
+> catálogo, puerto del despachador, store, motor, HTTP— y hasta acá cada una lo
+> declaraba por su cuenta. El tipo no cambia ningún dato guardado: sus valores
+> son el vocabulario que ya viajaba en el archivo del catálogo y en las columnas
+> `combo_item.machine_type` y `order_line.machine_type`.
+
+### const
+
+> Batidos y Snacks, con los valores que ya están escritos en el JSON del
+> catálogo y en las columnas SQL. Cambiarlos sería un cambio de datos, no de
+> código.
 
 ## internal/notify/notify.go
 

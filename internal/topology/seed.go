@@ -62,7 +62,7 @@ func Seed(ctx context.Context, db Execer, kiosks []config.Kiosk, combos []catalo
 		}
 
 		for position, item := range combo.Items {
-			if _, err := db.ExecContext(ctx, comboItemUpsert, combo.ID, position, item.MachineType, item.SKU); err != nil {
+			if _, err := db.ExecContext(ctx, comboItemUpsert, combo.ID, position, string(item.MachineType), item.SKU); err != nil {
 				return fmt.Errorf("no se pudo sembrar el ítem %d del combo %s: %w", position+1, combo.ID, err)
 			}
 		}

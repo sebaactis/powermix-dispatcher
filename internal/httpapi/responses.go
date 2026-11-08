@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
 
@@ -23,7 +24,7 @@ type orderResponse struct {
 type lineResponse struct {
 	ID          string              `json:"id"`
 	Position    int                 `json:"position"`
-	MachineType string              `json:"machine_type"`
+	MachineType machine.Kind        `json:"machine_type"`
 	SKU         string              `json:"sku"`
 	State       dispenser.LineState `json:"state"`
 	Attempts    int                 `json:"attempts"`

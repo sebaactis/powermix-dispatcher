@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -15,7 +16,7 @@ func TestEnginePlaceCreatesOneLinePerMachine(t *testing.T) {
 	st := store.NewMemory()
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+		map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -132,7 +133,7 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 			st := newRecordingStore()
 			engine := order.New(
 				st,
-				map[string]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+				map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
 				order.WithClock(frozenClock()),
 				order.WithIDGenerator(sequentialIDs()),
 			)
@@ -161,7 +162,7 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 	cases := []struct {
 		name         string
-		machineType  string
+		machineType  machine.Kind
 		wantPosition string
 	}{
 		{name: "con el tipo de máquina vacío", machineType: "", wantPosition: "ítem 1"},
@@ -173,7 +174,7 @@ func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 			st := newRecordingStore()
 			engine := order.New(
 				st,
-				map[string]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+				map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
 				order.WithClock(frozenClock()),
 				order.WithIDGenerator(sequentialIDs()),
 			)
@@ -201,7 +202,7 @@ func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 
 func TestEnginePlaceTakesTheLineMachineTypeFromTheMachineRef(t *testing.T) {
 	st := newRecordingStore()
-	machines := map[string]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}}
+	machines := map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}}
 	engine := order.New(
 		st,
 		machines,
@@ -236,7 +237,7 @@ func TestEnginePlaceIsIdempotentByClientKey(t *testing.T) {
 	st := newRecordingStore()
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{
+		map[machine.Kind]dispenser.Dispenser{
 			"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 			"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 		},

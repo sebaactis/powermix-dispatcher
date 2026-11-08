@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/notify"
 	"compras-remotas/internal/store"
 )
@@ -31,7 +32,7 @@ type Option func(*Engine)
 
 type Engine struct {
 	store             store.Store
-	machines          map[string]dispenser.Dispenser
+	machines          map[machine.Kind]dispenser.Dispenser
 	now               func() time.Time
 	deadline          time.Duration
 	reconcileWindow   time.Duration
@@ -44,7 +45,7 @@ type Engine struct {
 	idMu sync.Mutex
 }
 
-func New(st store.Store, machines map[string]dispenser.Dispenser, opts ...Option) *Engine {
+func New(st store.Store, machines map[machine.Kind]dispenser.Dispenser, opts ...Option) *Engine {
 	engine := &Engine{
 		store:             st,
 		machines:          machines,

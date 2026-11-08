@@ -15,6 +15,7 @@ import (
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -63,14 +64,14 @@ func testKiosk(id string) config.Kiosk {
 		Name: "Mueble " + id,
 		Machines: []config.Machine{
 			{
-				Type:         config.MachineBatidos,
+				Type:         machine.Batidos,
 				Name:         "Batidos Powermix",
 				DeviceID:     "batidos-device-" + id,
 				DeviceNo:     "batidos-devno-" + id,
 				DeviceTypeID: "batidos-type-" + id,
 			},
 			{
-				Type: config.MachineSnacks,
+				Type: machine.Snacks,
 				Name: "Snacks Powermix",
 				MID:  "snacks-mid-" + id,
 			},
@@ -92,8 +93,8 @@ func (fakeDispenser) Reconcile(ctx context.Context, req dispenser.Request) (disp
 	return dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "ref-" + req.LineID}, nil
 }
 
-func testMachines() map[string]dispenser.Dispenser {
-	return map[string]dispenser.Dispenser{
+func testMachines() map[machine.Kind]dispenser.Dispenser {
+	return map[machine.Kind]dispenser.Dispenser{
 		"batidos": fakeDispenser{},
 		"snacks":  fakeDispenser{},
 	}
@@ -294,7 +295,7 @@ type liveCallbackFixture struct {
 	orders *store.Memory
 }
 
-func newLiveCallbackFixture(t *testing.T, combos []catalog.Combo, machines map[string]dispenser.Dispenser) *liveCallbackFixture {
+func newLiveCallbackFixture(t *testing.T, combos []catalog.Combo, machines map[machine.Kind]dispenser.Dispenser) *liveCallbackFixture {
 	t.Helper()
 
 	comboCatalog, err := catalog.NewMemory(combos)

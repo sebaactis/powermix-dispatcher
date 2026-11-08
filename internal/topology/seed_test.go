@@ -9,6 +9,7 @@ import (
 
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/topology"
 )
 
@@ -44,14 +45,14 @@ func kiosks() []config.Kiosk {
 			Name: "Mueble uno",
 			Machines: []config.Machine{
 				{
-					Type:         config.MachineBatidos,
+					Type:         machine.Batidos,
 					Name:         "Batidos Powermix",
 					DeviceID:     "dev-1",
 					DeviceNo:     "devno-1",
 					DeviceTypeID: "dtype-1",
 				},
 				{
-					Type: config.MachineSnacks,
+					Type: machine.Snacks,
 					Name: "Snacks Powermix",
 					MID:  "mid-1",
 				},
@@ -161,8 +162,8 @@ func TestSeedWritesEveryKioskAndCombo(t *testing.T) {
 		ID:   "kiosk-dos",
 		Name: "Mueble dos",
 		Machines: []config.Machine{
-			{Type: config.MachineBatidos, Name: "Batidos", DeviceID: "d", DeviceNo: "n", DeviceTypeID: "t"},
-			{Type: config.MachineSnacks, Name: "Snacks", MID: "m"},
+			{Type: machine.Batidos, Name: "Batidos", DeviceID: "d", DeviceNo: "n", DeviceTypeID: "t"},
+			{Type: machine.Snacks, Name: "Snacks", MID: "m"},
 		},
 	})
 

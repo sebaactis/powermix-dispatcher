@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/notify"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -274,7 +275,7 @@ func lineFor(t *testing.T, o store.Order, machineType string) store.Line {
 	t.Helper()
 
 	for _, line := range o.Lines {
-		if line.MachineType == machineType {
+		if line.MachineType == machine.Kind(machineType) {
 			return line
 		}
 	}
@@ -448,7 +449,7 @@ type reconcileFixture struct {
 	placed store.Order
 }
 
-func newReconcileFixture(t *testing.T, machine dispenser.Dispenser, opts ...order.Option) *reconcileFixture {
+func newReconcileFixture(t *testing.T, driver dispenser.Dispenser, opts ...order.Option) *reconcileFixture {
 	t.Helper()
 
 	st := store.NewMemory()
@@ -460,7 +461,7 @@ func newReconcileFixture(t *testing.T, machine dispenser.Dispenser, opts ...orde
 	}
 	engineOpts = append(engineOpts, opts...)
 
-	engine := order.New(st, map[string]dispenser.Dispenser{"batidos": machine}, engineOpts...)
+	engine := order.New(st, map[machine.Kind]dispenser.Dispenser{"batidos": driver}, engineOpts...)
 	placed := place(t, engine, drinkOnlyDraft())
 
 	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {

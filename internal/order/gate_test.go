@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -51,7 +52,7 @@ func (g *stubGate) onlyCall(t *testing.T) order.Draft {
 func gatedEngine(st store.Store, g order.Gate) *order.Engine {
 	return order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+		map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 		order.WithGate(g),
@@ -196,7 +197,7 @@ func TestEnginePlaceDoesNotConsumeIDsWhenTheGateRejects(t *testing.T) {
 	generated := 0
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+		map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(func() string {
 			generated++

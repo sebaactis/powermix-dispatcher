@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -19,7 +20,7 @@ func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -103,7 +104,7 @@ func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -147,7 +148,7 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 
 	placingEngine := order.New(
 		st,
-		map[string]dispenser.Dispenser{
+		map[machine.Kind]dispenser.Dispenser{
 			"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 			"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 		},
@@ -161,7 +162,7 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	afterRestart := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -211,7 +212,7 @@ func TestEngineConfirmPaymentKeepsAnUncertainLineInDoubt(t *testing.T) {
 			snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 			engine := order.New(
 				st,
-				map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+				map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 				order.WithClock(frozenClock()),
 				order.WithIDGenerator(sequentialIDs()),
 			)
@@ -253,7 +254,7 @@ func TestEngineConfirmPaymentFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 	snack := &stubMachine{err: &dispenser.Rejection{Provider: "snacks", HTTPStatus: 401, Code: 40004, Message: "firma inválida"}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -281,7 +282,7 @@ func TestEngineConfirmPaymentIsIdempotent(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -319,7 +320,7 @@ func TestEngineConfirmPaymentDoesNotDispatchTwiceAfterARestart(t *testing.T) {
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -372,7 +373,7 @@ func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
 			st := newRecordingStore()
 			engine := order.New(
 				st,
-				map[string]dispenser.Dispenser{
+				map[machine.Kind]dispenser.Dispenser{
 					"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 					"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
 				},
@@ -405,7 +406,7 @@ func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -475,7 +476,7 @@ func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 		order.WithMaxAttempts(2),
@@ -513,7 +514,7 @@ func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)
@@ -544,7 +545,7 @@ func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 		order.WithMaxAttempts(1),
@@ -575,7 +576,7 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
 		st,
-		map[string]dispenser.Dispenser{"batidos": batido},
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
 	)

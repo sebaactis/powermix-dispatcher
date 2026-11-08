@@ -6,13 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
-)
 
-type MachineType string
-
-const (
-	MachineBatidos MachineType = "batidos"
-	MachineSnacks  MachineType = "snacks"
+	"compras-remotas/internal/machine"
 )
 
 const (
@@ -27,8 +22,8 @@ const (
 )
 
 type Machine struct {
-	Type MachineType `json:"type"`
-	Name string      `json:"name"`
+	Type machine.Kind `json:"type"`
+	Name string       `json:"name"`
 
 	DeviceID     string `json:"device_id"`
 	DeviceNo     string `json:"device_no"`
@@ -43,7 +38,7 @@ type Kiosk struct {
 	Machines []Machine `json:"machines"`
 }
 
-func (k Kiosk) Machine(t MachineType) (Machine, bool) {
+func (k Kiosk) Machine(t machine.Kind) (Machine, bool) {
 	for _, m := range k.Machines {
 		if m.Type == t {
 			return m, true

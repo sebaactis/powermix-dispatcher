@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -84,7 +85,7 @@ func dispatchedWith(t *testing.T, draft order.Draft, batidosRef, snacksRef strin
 	batidosReconcile := &reconcileStub{}
 	snacksReconcile := &reconcileStub{}
 
-	engine := order.New(orders, map[string]dispenser.Dispenser{
+	engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{
 		"batidos": reconcilingMachine{dispatch: batidos, reconcile: batidosReconcile},
 		"snacks":  reconcilingMachine{dispatch: snacks, reconcile: snacksReconcile},
 	}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
@@ -526,12 +527,12 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 			orders := newStaleDueStore()
 			clock := manualClockAt(engineNow)
 
-			machine := &reconcileMachine{attempt: dispenser.DispatchResult{Accepted: true}}
-			machine.status = tc.status
+			driver := &reconcileMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+			driver.status = tc.status
 
 			engine := order.New(
 				orders,
-				map[string]dispenser.Dispenser{"batidos": machine},
+				map[machine.Kind]dispenser.Dispenser{"batidos": driver},
 				order.WithClock(clock.clock()),
 				order.WithIDGenerator(sequentialIDs()),
 			)
@@ -572,8 +573,8 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 				t.Fatalf("el barrido con una copia vieja no debe devolver error: %v", err)
 			}
 
-			if machine.reconcileCount() != 1 {
-				t.Fatalf("el worker debía consultar al proveedor una vez y consultó %d", machine.reconcileCount())
+			if driver.reconcileCount() != 1 {
+				t.Fatalf("el worker debía consultar al proveedor una vez y consultó %d", driver.reconcileCount())
 			}
 
 			stored := mustOrder(t, orders, placed.ID)
@@ -683,7 +684,7 @@ func TestCloseFromCallbackRetriesOnceWhenAnotherWriterTookTheLine(t *testing.T) 
 			batidos := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-batidos"}}
 			snacks := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "sub-snacks"}}
 
-			engine := order.New(orders, map[string]dispenser.Dispenser{
+			engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{
 				"batidos": reconcilingMachine{dispatch: batidos, reconcile: &reconcileStub{}},
 				"snacks":  reconcilingMachine{dispatch: snacks, reconcile: &reconcileStub{}},
 			}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
@@ -756,7 +757,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 	batidos := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-batidos"}}
 	snacks := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "sub-snacks"}}
 
-	engine := order.New(failing, map[string]dispenser.Dispenser{
+	engine := order.New(failing, map[machine.Kind]dispenser.Dispenser{
 		"batidos": reconcilingMachine{dispatch: batidos, reconcile: &reconcileStub{}},
 		"snacks":  reconcilingMachine{dispatch: snacks, reconcile: &reconcileStub{}},
 	}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
@@ -1034,7 +1035,7 @@ func TestCloseFromCallbackWithoutAnyReferenceIsAnUnknownLine(t *testing.T) {
 				Source:      "snacks",
 				DedupeKey:   "snacks-" + machineType,
 				OrderID:     fx.orderID,
-				MachineType: machineType,
+				MachineType: machine.Kind(machineType),
 				State:       order.CallbackDelivered,
 			})
 

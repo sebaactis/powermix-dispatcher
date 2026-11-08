@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"compras-remotas/internal/machine"
 )
 
 func (c *Config) validateEnv() error {
@@ -85,7 +87,7 @@ func (c *Config) validate() error {
 func kioskProblems(kiosk Kiosk) []string {
 	var problems []string
 
-	for _, required := range []MachineType{MachineBatidos, MachineSnacks} {
+	for _, required := range []machine.Kind{machine.Batidos, machine.Snacks} {
 		count := 0
 		for _, m := range kiosk.Machines {
 			if m.Type == required {
@@ -103,11 +105,11 @@ func kioskProblems(kiosk Kiosk) []string {
 
 	for _, m := range kiosk.Machines {
 		switch m.Type {
-		case MachineBatidos:
+		case machine.Batidos:
 			if m.DeviceID == "" || m.DeviceNo == "" || m.DeviceTypeID == "" {
 				problems = append(problems, fmt.Sprintf("mueble %s: la máquina de batidos necesita device_id, device_no y device_type_id", kiosk.ID))
 			}
-		case MachineSnacks:
+		case machine.Snacks:
 			if m.MID == "" {
 				problems = append(problems, fmt.Sprintf("mueble %s: la máquina de snacks necesita mid", kiosk.ID))
 			}

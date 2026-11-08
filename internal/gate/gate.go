@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"compras-remotas/internal/config"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/preflight"
 )
@@ -60,12 +60,12 @@ func (g *Gate) request(draft order.Draft) (preflight.Request, error) {
 
 	for _, item := range draft.Items {
 		switch item.Machine.Type {
-		case string(config.MachineBatidos):
+		case machine.Batidos:
 			batidos++
 
 			request.BatidosDeviceID = item.Machine.DeviceID
 			request.BatidosSKU = item.SKU
-		case string(config.MachineSnacks):
+		case machine.Snacks:
 			snacks++
 
 			request.SnacksDeviceCode = item.Machine.MID

@@ -20,6 +20,7 @@ import (
 	"compras-remotas/internal/gate"
 	"compras-remotas/internal/httpapi"
 	"compras-remotas/internal/logging"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/notify"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/preflight"
@@ -87,9 +88,9 @@ func main() {
 		)
 	}
 
-	machines := map[string]dispenser.Dispenser{
-		string(config.MachineBatidos): batidos.NewDispenser(batidosClient, batidos.WithNotifyURL(batidosNotifyURL)),
-		string(config.MachineSnacks):  snacks.NewDispenser(snacksClient),
+	machines := map[machine.Kind]dispenser.Dispenser{
+		machine.Batidos: batidos.NewDispenser(batidosClient, batidos.WithNotifyURL(batidosNotifyURL)),
+		machine.Snacks:  snacks.NewDispenser(snacksClient),
 	}
 
 	orders, closeStore, err := openStore(cfg, combos, logger)

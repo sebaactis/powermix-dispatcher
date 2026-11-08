@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"compras-remotas/internal/catalog"
+	"compras-remotas/internal/machine"
 )
 
 const (
@@ -329,7 +330,7 @@ func TestExampleFileLoads(t *testing.T) {
 	}
 
 	for _, combo := range got {
-		machineTypes := make(map[string]bool, len(combo.Items))
+		machineTypes := make(map[machine.Kind]bool, len(combo.Items))
 		for _, item := range combo.Items {
 			machineTypes[item.MachineType] = true
 		}

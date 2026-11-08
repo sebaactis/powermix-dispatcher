@@ -74,7 +74,7 @@ func (h *Handler) buildDraft(kiosk config.Kiosk, combo catalog.Combo, clientKey 
 	}
 
 	for _, item := range combo.Items {
-		machine, found := kiosk.Machine(config.MachineType(item.MachineType))
+		machine, found := kiosk.Machine(item.MachineType)
 		if !found {
 			return order.Draft{}, apiError{
 				status: http.StatusConflict,
@@ -89,7 +89,7 @@ func (h *Handler) buildDraft(kiosk config.Kiosk, combo catalog.Combo, clientKey 
 			SKU: item.SKU,
 			Machine: dispenser.MachineRef{
 				KioskID:      kiosk.ID,
-				Type:         string(machine.Type),
+				Type:         machine.Type,
 				Name:         machine.Name,
 				DeviceID:     machine.DeviceID,
 				DeviceNo:     machine.DeviceNo,
