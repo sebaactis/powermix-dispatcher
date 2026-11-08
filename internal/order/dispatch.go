@@ -12,16 +12,9 @@ import (
 
 const defaultMaxAttempts = 2
 
-const (
-	outcomeAmbiguous = "ambiguous"
-	outcomeAccepted  = "accepted"
-	outcomeRejected  = "rejected"
-	outcomeError     = "error"
-)
-
 type dispatchVerdict struct {
 	state   dispenser.LineState
-	outcome string
+	outcome store.AttemptOutcome
 	detail  string
 }
 
@@ -34,7 +27,7 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			LineID:         line.ID,
 			Number:         number,
 			IdempotencyKey: idempotencyKey(orderID, line.ID, number),
-			Outcome:        outcomeAmbiguous,
+			Outcome:        store.OutcomeAmbiguous,
 			StartedAt:      e.now(),
 		}
 
@@ -72,7 +65,7 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 		line.State = state
 		line.Attempts = number
 
-		if verdict.outcome == outcomeAccepted {
+		if verdict.outcome == store.OutcomeAccepted {
 			acceptedAt := e.now()
 
 			line.Ref = result.ProviderRef
@@ -82,7 +75,7 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 		} else {
 			line.LastError = verdict.detail
 
-			if verdict.outcome == outcomeError {
+			if verdict.outcome == store.OutcomeError {
 				doubtfulAt := e.now()
 				line.DeadlineAt = doubtfulAt.Add(e.reconcileInterval)
 				line.ReconcileUntil = doubtfulAt.Add(e.reconcileWindow)
@@ -97,7 +90,7 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			line = saved
 		}
 
-		if verdict.outcome != outcomeRejected {
+		if verdict.outcome != store.OutcomeRejected {
 			return errors.Join(attemptErr, stateErr, lineErr)
 		}
 
@@ -131,25 +124,25 @@ func classifyDispatch(result dispenser.DispatchResult, dispatchErr error) dispat
 	case dispatchErr != nil && isProviderRejection(dispatchErr):
 		return dispatchVerdict{
 			state:   dispenser.LineFailed,
-			outcome: outcomeRejected,
+			outcome: store.OutcomeRejected,
 			detail:  dispatchErr.Error(),
 		}
 	case dispatchErr != nil:
 		return dispatchVerdict{
 			state:   dispenser.LineInDoubt,
-			outcome: outcomeError,
+			outcome: store.OutcomeError,
 			detail:  dispatchErr.Error(),
 		}
 	case result.Accepted:
 		return dispatchVerdict{
 			state:   dispenser.LineSent,
-			outcome: outcomeAccepted,
+			outcome: store.OutcomeAccepted,
 			detail:  result.Detail,
 		}
 	default:
 		return dispatchVerdict{
 			state:   dispenser.LineInDoubt,
-			outcome: outcomeError,
+			outcome: store.OutcomeError,
 			detail:  "la máquina no confirmó la aceptación del despacho",
 		}
 	}

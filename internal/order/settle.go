@@ -8,11 +8,6 @@ import (
 	"compras-remotas/internal/store"
 )
 
-const (
-	kindOrderInDoubt = "order_in_doubt"
-	kindOrderFailed  = "order_failed"
-)
-
 const reasonReconcileExpired = "se agotó el plazo de reconciliación sin confirmar la entrega"
 
 func (e *Engine) settleOrder(ctx context.Context, orderID string) error {
@@ -46,10 +41,10 @@ func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 
 	switch loaded.Status {
 	case store.OrderInDoubt:
-		event.Kind = kindOrderInDoubt
+		event.Kind = notify.KindOrderInDoubt
 		event.Detail = "el pedido quedó en duda: no se pudo confirmar la entrega y hace falta una persona"
 	case store.OrderFailed:
-		event.Kind = kindOrderFailed
+		event.Kind = notify.KindOrderFailed
 		event.Detail = "el pedido quedó fallido: el proveedor informó que no hubo entrega"
 	default:
 		return nil

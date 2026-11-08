@@ -5,8 +5,15 @@ import (
 	"log/slog"
 )
 
+type Kind string
+
+const (
+	KindOrderInDoubt Kind = "order_in_doubt"
+	KindOrderFailed  Kind = "order_failed"
+)
+
 type Event struct {
-	Kind    string
+	Kind    Kind
 	OrderID string
 	LineID  string
 	Detail  string

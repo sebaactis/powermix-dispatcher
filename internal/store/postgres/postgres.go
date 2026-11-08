@@ -173,7 +173,7 @@ func (s *Store) AppendAttempt(ctx context.Context, attempt store.Attempt) error 
 	_, err := s.db.ExecContext(ctx, `INSERT INTO dispatch_attempt
 		(id, line_id, attempt_no, idempotency_key, request_payload, outcome, error_detail, started_at, finished_at)
 		VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, COALESCE($7, now()), $8)`,
-		attempt.ID, attempt.LineID, attempt.Number, attempt.IdempotencyKey, attempt.Outcome,
+		attempt.ID, attempt.LineID, attempt.Number, attempt.IdempotencyKey, string(attempt.Outcome),
 		nullableText(attempt.Detail), nullableTime(attempt.StartedAt), nullableTime(attempt.FinishedAt))
 	if err != nil {
 		return mapWriteError(err, "el intento", attempt.ID)
@@ -188,7 +188,7 @@ func (s *Store) SaveAttempt(ctx context.Context, attempt store.Attempt) error {
 		error_detail = $3,
 		finished_at = $4
 		WHERE idempotency_key = $1`,
-		attempt.IdempotencyKey, attempt.Outcome, nullableText(attempt.Detail),
+		attempt.IdempotencyKey, string(attempt.Outcome), nullableText(attempt.Detail),
 		nullableTime(attempt.FinishedAt))
 	if err != nil {
 		return mapWriteError(err, "el intento", attempt.IdempotencyKey)

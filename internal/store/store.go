@@ -53,12 +53,21 @@ type Line struct {
 	Version        int64
 }
 
+type AttemptOutcome string
+
+const (
+	OutcomeAmbiguous AttemptOutcome = "ambiguous"
+	OutcomeAccepted  AttemptOutcome = "accepted"
+	OutcomeRejected  AttemptOutcome = "rejected"
+	OutcomeError     AttemptOutcome = "error"
+)
+
 type Attempt struct {
 	ID             string
 	LineID         string
 	Number         int
 	IdempotencyKey string
-	Outcome        string
+	Outcome        AttemptOutcome
 	Detail         string
 	StartedAt      time.Time
 	FinishedAt     time.Time
