@@ -580,7 +580,7 @@ func TestRegisterWebhookOnlyAcceptsTheFirstEvent(t *testing.T) {
 	st, _ := newStore(t)
 	ctx := context.Background()
 
-	first, err := st.RegisterWebhook(ctx, store.Webhook{
+	duplicate, err := st.RegisterWebhook(ctx, store.Webhook{
 		ID:         "webhook-1",
 		Source:     "snacks",
 		DedupeKey:  "orderNo|subOrderNo|1",
@@ -589,8 +589,8 @@ func TestRegisterWebhookOnlyAcceptsTheFirstEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no se pudo registrar el webhook: %v", err)
 	}
-	if !first {
-		t.Fatal("el primer evento tenía que devolver first=true")
+	if duplicate {
+		t.Fatal("el primer evento no puede ser un duplicado")
 	}
 
 	repeated, err := st.RegisterWebhook(ctx, store.Webhook{
@@ -602,8 +602,8 @@ func TestRegisterWebhookOnlyAcceptsTheFirstEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("el evento repetido no puede devolver error: %v", err)
 	}
-	if repeated {
-		t.Fatal("el evento repetido tenía que devolver first=false")
+	if !repeated {
+		t.Fatal("el evento repetido tenía que devolver duplicate=true")
 	}
 
 	otherSource, err := st.RegisterWebhook(ctx, store.Webhook{
@@ -614,7 +614,7 @@ func TestRegisterWebhookOnlyAcceptsTheFirstEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no se pudo registrar el webhook de la otra máquina: %v", err)
 	}
-	if !otherSource {
+	if otherSource {
 		t.Fatal("la misma clave en otra máquina es un evento nuevo")
 	}
 }

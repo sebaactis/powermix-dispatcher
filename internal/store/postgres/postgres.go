@@ -219,7 +219,7 @@ func (s *Store) RegisterWebhook(ctx context.Context, wh store.Webhook) (bool, er
 		return false, fmt.Errorf("no se pudo saber si se registró el webhook %s: %w", wh.DedupeKey, err)
 	}
 
-	return affected == 1, nil
+	return affected == 0, nil
 }
 
 func (s *Store) DueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {

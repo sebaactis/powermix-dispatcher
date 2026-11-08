@@ -550,45 +550,45 @@ func TestMemoryRegisterWebhookDeduplicatesBySourceAndKey(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		name      string
-		webhook   store.Webhook
-		wantFirst bool
+		name          string
+		webhook       store.Webhook
+		wantDuplicate bool
 	}{
 		{
-			name:      "la primera vez el evento es nuevo",
-			webhook:   store.Webhook{ID: "wh-1", Source: "payment", DedupeKey: "evt-1", ReceivedAt: baseTime},
-			wantFirst: true,
+			name:          "la primera vez el evento es nuevo",
+			webhook:       store.Webhook{ID: "wh-1", Source: "payment", DedupeKey: "evt-1", ReceivedAt: baseTime},
+			wantDuplicate: false,
 		},
 		{
-			name:      "la repetición no es nueva",
-			webhook:   store.Webhook{ID: "wh-2", Source: "payment", DedupeKey: "evt-1", ReceivedAt: baseTime.Add(time.Minute)},
-			wantFirst: false,
+			name:          "la repetición no es nueva",
+			webhook:       store.Webhook{ID: "wh-2", Source: "payment", DedupeKey: "evt-1", ReceivedAt: baseTime.Add(time.Minute)},
+			wantDuplicate: true,
 		},
 		{
-			name:      "otra clave es nueva",
-			webhook:   store.Webhook{ID: "wh-3", Source: "payment", DedupeKey: "evt-2", ReceivedAt: baseTime},
-			wantFirst: true,
+			name:          "otra clave es nueva",
+			webhook:       store.Webhook{ID: "wh-3", Source: "payment", DedupeKey: "evt-2", ReceivedAt: baseTime},
+			wantDuplicate: false,
 		},
 		{
-			name:      "la misma clave en otra fuente es nueva",
-			webhook:   store.Webhook{ID: "wh-4", Source: "batidos", DedupeKey: "evt-1", ReceivedAt: baseTime},
-			wantFirst: true,
+			name:          "la misma clave en otra fuente es nueva",
+			webhook:       store.Webhook{ID: "wh-4", Source: "batidos", DedupeKey: "evt-1", ReceivedAt: baseTime},
+			wantDuplicate: false,
 		},
 		{
-			name:      "la repetición en la otra fuente tampoco es nueva",
-			webhook:   store.Webhook{ID: "wh-5", Source: "batidos", DedupeKey: "evt-1", ReceivedAt: baseTime},
-			wantFirst: false,
+			name:          "la repetición en la otra fuente tampoco es nueva",
+			webhook:       store.Webhook{ID: "wh-5", Source: "batidos", DedupeKey: "evt-1", ReceivedAt: baseTime},
+			wantDuplicate: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			first, err := m.RegisterWebhook(ctx, tc.webhook)
+			duplicate, err := m.RegisterWebhook(ctx, tc.webhook)
 			if err != nil {
 				t.Fatalf("RegisterWebhook: %v", err)
 			}
-			if first != tc.wantFirst {
-				t.Fatalf("first=%v, se esperaba %v", first, tc.wantFirst)
+			if duplicate != tc.wantDuplicate {
+				t.Fatalf("duplicate=%v, se esperaba %v", duplicate, tc.wantDuplicate)
 			}
 		})
 	}
@@ -824,11 +824,11 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 				DedupeKey:  "dedupe-" + lineID,
 				ReceivedAt: baseTime,
 			}
-			first, err := m.RegisterWebhook(ctx, webhook)
+			duplicate, err := m.RegisterWebhook(ctx, webhook)
 			if err != nil {
 				t.Errorf("RegisterWebhook(%q): %v", webhook.ID, err)
-			} else if !first {
-				t.Errorf("RegisterWebhook(%q) devolvió first=false", webhook.ID)
+			} else if duplicate {
+				t.Errorf("RegisterWebhook(%q) devolvió duplicate=true", webhook.ID)
 			}
 
 			if _, err := m.DueLines(ctx, now, 10); err != nil {

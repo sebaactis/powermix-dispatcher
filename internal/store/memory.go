@@ -180,12 +180,12 @@ func (m *Memory) RegisterWebhook(ctx context.Context, wh Webhook) (bool, error) 
 
 	key := webhookKey{source: wh.Source, dedupeKey: wh.DedupeKey}
 	if _, exists := m.webhooks[key]; exists {
-		return false, nil
+		return true, nil
 	}
 
 	m.webhooks[key] = struct{}{}
 
-	return true, nil
+	return false, nil
 }
 
 func (m *Memory) DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error) {

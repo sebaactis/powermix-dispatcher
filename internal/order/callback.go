@@ -184,7 +184,7 @@ func adoptRef(line store.Line, cb Callback) store.Line {
 }
 
 func (e *Engine) recordCallback(ctx context.Context, cb Callback, cause error) (bool, error) {
-	first, err := e.store.RegisterWebhook(ctx, store.Webhook{
+	duplicate, err := e.store.RegisterWebhook(ctx, store.Webhook{
 		ID:         e.nextID(),
 		Source:     cb.Source,
 		DedupeKey:  cb.DedupeKey,
@@ -194,7 +194,7 @@ func (e *Engine) recordCallback(ctx context.Context, cb Callback, cause error) (
 		return false, errors.Join(cause, err)
 	}
 
-	return !first, cause
+	return duplicate, cause
 }
 
 func lineClosed(line store.Line) bool {
