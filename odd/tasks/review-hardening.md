@@ -16,8 +16,8 @@ Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando e
 
 | ID | Specs | Ruta | Commit |
 | --- | --- | --- | --- |
-| T1 | S1 | inline | pendiente |
-| T2 | S2 | inline | pendiente |
+| T1 | S1 | inline | `415fdb1` hecho |
+| T2 | S2 | inline | ver commit `docs(snacks)` hecho |
 | T3 | S3 | pendiente | pendiente |
 | T4 | S4 | pendiente | pendiente |
 | T5 | S5 | pendiente | pendiente |

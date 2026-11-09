@@ -166,6 +166,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | `machineIdentified` acepta cualquier identificador | una línea con `Kind: snacks` y `device_id` de batidos sigue siendo expresable |
 | Avisos repetidos | `settleOrder` avisa cada vez que la orden está en duda; no hay dedupe por `(orden, tipo)` |
 | Store en memoria más permisivo que Postgres | acepta una línea sin familia; el `CHECK` de SQL es la última red |
+| Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |
 | `migrate` del compose sin tabla de versiones | repetir el esquema exige `docker compose down -v` |
 
 ## Convenciones

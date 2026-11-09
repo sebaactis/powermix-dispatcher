@@ -762,9 +762,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### VerifySignature
 
-> VerifySignature revisa presencia de headers, ventana de reloj y firma. Lo usa
-> el servidor falso local y también nuestros handlers de callback cuando el
-> proveedor nos manda algo.
+> VerifySignature revisa presencia de headers, ventana de reloj y firma. Sólo lo
+> usa el servidor falso local. Nuestro callback de snacks **no** lo usa: la
+> documentación del aviso de despacho (`ys-vending.txt:2023-2075`) describe
+> sólo el cuerpo y ningún header de firma, y exigir una firma que el proveedor
+> no manda rechazaría todos sus avisos. El callback se autentica sólo con el
+> secreto de la ruta.
 
 ## internal/dispenser/snacks/sign_test.go
 
