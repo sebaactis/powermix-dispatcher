@@ -99,6 +99,65 @@ func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 	}
 }
 
+func TestEngineConfirmPaymentDoesNotDispatchWhenAnotherWriterPaidTheOrder(t *testing.T) {
+	ctx := context.Background()
+	orders := &competingOrderStore{Memory: store.NewMemory()}
+
+	stub := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	engine := order.New(
+		orders,
+		map[machine.Kind]dispenser.Dispenser{"batidos": stub, "snacks": stub},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, comboDraft())
+
+	orders.arm(1)
+
+	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("un segundo /pay pierde la carrera y no es un error: %v", err)
+	}
+
+	if calls := stub.callCount(); calls != 0 {
+		t.Fatalf("el /pay que perdió la carrera despachó %d líneas, se esperaba ninguna", calls)
+	}
+
+	stored := mustOrder(t, orders, placed.ID)
+	if stored.Version != 1 {
+		t.Fatalf("la orden quedó en versión %d, se esperaba la que dejó el otro escritor (1)", stored.Version)
+	}
+	if stored.Status != store.OrderPendingPayment || !stored.PaidAt.IsZero() {
+		t.Fatalf("el guardado con versión vieja se aplicó igual: %+v", stored)
+	}
+}
+
+func TestEngineConfirmPaymentDoesNotDispatchWhenTheDispatchingSaveIsStale(t *testing.T) {
+	ctx := context.Background()
+	orders := &competingOrderStore{Memory: store.NewMemory()}
+
+	stub := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	engine := order.New(
+		orders,
+		map[machine.Kind]dispenser.Dispenser{"batidos": stub, "snacks": stub},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, comboDraft())
+
+	orders.armFrom(2, 1)
+
+	err := engine.ConfirmPayment(ctx, placed.ID, engineNow)
+	if !errors.Is(err, store.ErrStale) {
+		t.Fatalf("un conflicto al pasar la orden a despacho tenía que devolver %v y devolvió: %v", store.ErrStale, err)
+	}
+
+	if calls := stub.callCount(); calls != 0 {
+		t.Fatalf("sin el estado de despacho no se despacha y se despacharon %d líneas", calls)
+	}
+}
+
 func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "nonce repetido"}}

@@ -361,7 +361,7 @@ func TestSaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	got.Lines[0].Ref = "no-se-guarda"
 	got.Lines = nil
 
-	if err := st.SaveOrder(ctx, got); err != nil {
+	if _, err := st.SaveOrder(ctx, got); err != nil {
 		t.Fatalf("no se pudo guardar la orden: %v", err)
 	}
 
@@ -390,8 +390,84 @@ func TestSaveOrderOnlyPersistsTheHeader(t *testing.T) {
 		t.Fatalf("la versión de la línea no la mueve SaveOrder y quedó en %d", batidos.Version)
 	}
 
-	if err := st.SaveOrder(ctx, sampleOrder("order-que-no-existe", "")); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.SaveOrder(ctx, sampleOrder("order-que-no-existe", "")); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("guardar una orden inexistente tenía que devolver ErrNotFound y devolvió: %v", err)
+	}
+}
+
+func TestSaveOrderBumpsTheVersion(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOrder(t, st, sampleOrder("order-1", "clave-1"))
+	loaded := mustLoadOrder(t, st, "order-1")
+
+	if loaded.Version != 0 {
+		t.Fatalf("la orden nació en versión %d, se esperaba 0", loaded.Version)
+	}
+
+	loaded.Status = store.OrderDispatching
+	loaded.PaidAt = moment().Add(time.Minute)
+	loaded.ClosedAt = moment().Add(3 * time.Minute)
+
+	saved, err := st.SaveOrder(ctx, loaded)
+	if err != nil {
+		t.Fatalf("no se pudo guardar la orden: %v", err)
+	}
+
+	if saved.Version != loaded.Version+1 {
+		t.Fatalf("la orden guardada tenía que volver en versión %d y volvió en %d", loaded.Version+1, saved.Version)
+	}
+	if saved.Status != store.OrderDispatching {
+		t.Fatalf("la orden devuelta no trae lo guardado: %q", saved.Status)
+	}
+
+	reloaded := mustLoadOrder(t, st, "order-1")
+	if reloaded.Version != saved.Version {
+		t.Fatalf("la orden persistida quedó en versión %d, se esperaba %d", reloaded.Version, saved.Version)
+	}
+	if reloaded.Status != store.OrderDispatching || !reloaded.PaidAt.Equal(moment().Add(time.Minute)) {
+		t.Fatalf("la cabecera no se persistió: %+v", reloaded)
+	}
+}
+
+func TestSaveOrderRejectsAStaleVersion(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOrder(t, st, sampleOrder("order-1", "clave-1"))
+	stale := mustLoadOrder(t, st, "order-1")
+
+	first := stale
+	first.Status = store.OrderDispatching
+	first.PaidAt = moment().Add(time.Minute)
+	first.ClosedAt = moment().Add(3 * time.Minute)
+
+	saved, err := st.SaveOrder(ctx, first)
+	if err != nil {
+		t.Fatalf("el primer guardado tenía que aceptarse: %v", err)
+	}
+
+	stale.Status = store.OrderFailed
+	stale.PaidAt = moment().Add(9 * time.Minute)
+	stale.ClosedAt = moment().Add(9 * time.Minute)
+
+	if _, err := st.SaveOrder(ctx, stale); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("una versión vieja tenía que devolver ErrStale y devolvió: %v", err)
+	}
+
+	reloaded := mustLoadOrder(t, st, "order-1")
+	if reloaded.Version != saved.Version {
+		t.Fatalf("la orden rechazada no puede haber movido la versión: está en %d", reloaded.Version)
+	}
+	if reloaded.Status != store.OrderDispatching {
+		t.Fatalf("la orden rechazada pisó el estado: %q", reloaded.Status)
+	}
+	if !reloaded.PaidAt.Equal(moment().Add(time.Minute)) {
+		t.Fatalf("la orden rechazada pisó paid_at: %s", reloaded.PaidAt)
+	}
+	if !reloaded.ClosedAt.Equal(moment().Add(3 * time.Minute)) {
+		t.Fatalf("la orden rechazada pisó closed_at: %s", reloaded.ClosedAt)
 	}
 }
 

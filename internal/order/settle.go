@@ -2,6 +2,7 @@ package order
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"compras-remotas/internal/notify"
@@ -11,25 +12,41 @@ import (
 const reasonReconcileExpired = "se agotó el plazo de reconciliación sin confirmar la entrega"
 
 func (e *Engine) settleOrder(ctx context.Context, orderID string) error {
-	loaded, err := e.store.LoadOrder(ctx, orderID)
+	settled, err := e.refreshOrderStatus(ctx, orderID)
 	if err != nil {
 		return err
 	}
 
-	next, err := AdvanceOrder(loaded.Status, loaded.Lines)
-	if err != nil {
-		return fmt.Errorf("orden %s: %w", orderID, err)
-	}
+	return e.notifyOrder(ctx, settled)
+}
 
-	if next != loaded.Status {
+func (e *Engine) refreshOrderStatus(ctx context.Context, orderID string) (store.Order, error) {
+	for attempt := 0; ; attempt++ {
+		loaded, err := e.store.LoadOrder(ctx, orderID)
+		if err != nil {
+			return store.Order{}, err
+		}
+
+		next, err := AdvanceOrder(loaded.Status, loaded.Lines)
+		if err != nil {
+			return store.Order{}, fmt.Errorf("orden %s: %w", orderID, err)
+		}
+
+		if next == loaded.Status {
+			return loaded, nil
+		}
+
 		loaded.Status = next
 
-		if err := e.store.SaveOrder(ctx, loaded); err != nil {
-			return err
+		saved, err := e.store.SaveOrder(ctx, loaded)
+		if err == nil {
+			return saved, nil
+		}
+
+		if !errors.Is(err, store.ErrStale) || attempt > 0 {
+			return store.Order{}, err
 		}
 	}
-
-	return e.notifyOrder(ctx, loaded)
 }
 
 func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {

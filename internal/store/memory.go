@@ -94,13 +94,17 @@ func (m *Memory) LoadOrder(ctx context.Context, orderID string) (Order, error) {
 	return cloneOrder(order), nil
 }
 
-func (m *Memory) SaveOrder(ctx context.Context, order Order) error {
+func (m *Memory) SaveOrder(ctx context.Context, order Order) (Order, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	stored, exists := m.orders[order.ID]
 	if !exists {
-		return ErrNotFound
+		return Order{}, ErrNotFound
+	}
+
+	if stored.Version != order.Version {
+		return Order{}, ErrStale
 	}
 
 	stored.KioskID = order.KioskID
@@ -112,10 +116,13 @@ func (m *Memory) SaveOrder(ctx context.Context, order Order) error {
 	stored.CreatedAt = order.CreatedAt
 	stored.PaidAt = order.PaidAt
 	stored.ClosedAt = order.ClosedAt
+	stored.Version = order.Version + 1
 
 	m.orders[order.ID] = stored
 
-	return nil
+	order.Version = stored.Version
+
+	return cloneOrder(order), nil
 }
 
 func (m *Memory) SaveLine(ctx context.Context, line Line) (Line, error) {

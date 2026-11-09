@@ -11,7 +11,7 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 315 funciones de test, 16 paquetes
+go test ./...                          # 322 funciones de test, 16 paquetes
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -105,7 +105,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 3. **La línea lleva una sola familia de máquina** (`line.Machine.Kind`). `Line.MachineType` ya no existe.
 4. **El estado de la orden se deriva de las líneas** (`DeriveOrderStatus`), nunca se inventa; `settleOrder` lo recalcula después de cada cambio de línea.
 5. **Una línea cerrada no se reabre** (`delivered`/`failed` son terminales).
-6. **Una línea se escribe con versión** (`SaveLine` condicional, `ErrStale` si la copia es vieja). El worker y los callbacks no se pisan.
+6. **La línea y la orden se escriben con versión** (`SaveLine` y `SaveOrder`, ambos condicionales, `ErrStale` si la copia es vieja). El worker, los callbacks y los dos `/pay` no se pisan.
 7. **El dedupe se registra después del efecto durable.** Un fallo transitorio no quema la clave. Excepción: lo que nunca va a poder aplicarse se registra antes, para no generar reintentos eternos.
 8. **Reintento sólo ante rechazo explícito.** Un timeout o una respuesta ilegible van a «en duda» y se reconcilian, nunca se reintentan a ciegas.
 9. **El callback de batidos no cierra nada por sí solo**: confirma con el proveedor (R6).
@@ -151,7 +151,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 
 ## Qué NO está verificado
 
-- **Nada del store de Postgres se ejecutó contra una base real.** La migración `0004` y los 13 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
+- **Nada del store de Postgres se ejecutó contra una base real.** Las migraciones `0004` y `0005` y los 14 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
 - **`go test -race` no corre** en esta máquina: la concurrencia se demuestra de forma determinista (copias viejas inyectadas), no con goroutines reales.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
 - Los webhooks de callback **no** se verificaron contra los proveedores reales: no hay credenciales ni sandbox.

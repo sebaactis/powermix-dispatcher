@@ -723,6 +723,139 @@ func TestCloseFromCallbackRetriesOnceWhenAnotherWriterTookTheLine(t *testing.T) 
 	}
 }
 
+type competingOrderStore struct {
+	*store.Memory
+
+	mu        sync.Mutex
+	from      int
+	remaining int
+	calls     int
+}
+
+func (s *competingOrderStore) SaveOrder(ctx context.Context, o store.Order) (store.Order, error) {
+	s.mu.Lock()
+	s.calls++
+	compete := s.calls >= s.from && s.remaining > 0
+	if compete {
+		s.remaining--
+	}
+	s.mu.Unlock()
+
+	if compete {
+		loaded, err := s.Memory.LoadOrder(ctx, o.ID)
+		if err != nil {
+			return store.Order{}, err
+		}
+
+		if _, err := s.Memory.SaveOrder(ctx, loaded); err != nil {
+			return store.Order{}, err
+		}
+	}
+
+	return s.Memory.SaveOrder(ctx, o)
+}
+
+func (s *competingOrderStore) arm(times int) {
+	s.armFrom(1, times)
+}
+
+func (s *competingOrderStore) armFrom(call, times int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.from = call
+	s.remaining = times
+	s.calls = 0
+}
+
+func (s *competingOrderStore) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.calls
+}
+
+func TestCloseFromCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *testing.T) {
+	cases := []struct {
+		name      string
+		competing int
+		wantError bool
+		wantState store.OrderStatus
+	}{
+		{
+			name:      "un solo escritor adelantado: se reintenta una vez y la orden se deriva igual",
+			competing: 1,
+			wantState: store.OrderPartial,
+		},
+		{
+			name:      "dos escritores adelantados: no se reintenta dos veces y el conflicto se devuelve",
+			competing: 2,
+			wantError: true,
+			wantState: store.OrderDispatching,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			orders := &competingOrderStore{Memory: store.NewMemory()}
+
+			batidos := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-batidos"}}
+			snacks := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "sub-snacks"}}
+
+			engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{
+				"batidos": reconcilingMachine{dispatch: batidos, reconcile: &reconcileStub{}},
+				"snacks":  reconcilingMachine{dispatch: snacks, reconcile: &reconcileStub{}},
+			}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
+
+			placed := place(t, engine, comboDraft())
+			if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+				t.Fatalf("ConfirmPayment: %v", err)
+			}
+
+			if _, err := engine.CloseFromCallback(ctx, order.Callback{
+				Source:      "snacks",
+				DedupeKey:   "snacks-1",
+				OrderID:     placed.ID,
+				Ref:         "sub-snacks",
+				MachineType: "snacks",
+				State:       order.CallbackDelivered,
+			}); err != nil {
+				t.Fatalf("el primer callback no debía fallar: %v", err)
+			}
+
+			orders.arm(tc.competing)
+
+			_, err := engine.CloseFromCallback(ctx, order.Callback{
+				Source:      "batidos",
+				DedupeKey:   "batidos-1",
+				OrderID:     placed.ID,
+				Ref:         "code-batidos",
+				MachineType: "batidos",
+				State:       order.CallbackFailed,
+				Reason:      "el proveedor informó que no hubo entrega",
+			})
+
+			if tc.wantError {
+				if !errors.Is(err, store.ErrStale) {
+					t.Fatalf("un segundo escritor adelantado tenía que devolver %v y devolvió: %v", store.ErrStale, err)
+				}
+			} else if err != nil {
+				t.Fatalf("un conflicto de escritura de la orden se resuelve solo: %v", err)
+			}
+
+			if calls := orders.callCount(); calls != 2 {
+				t.Fatalf("el settle intentó guardar la orden %d veces, se esperaban 2", calls)
+			}
+
+			stored := mustOrder(t, orders, placed.ID)
+			if stored.Status != tc.wantState {
+				t.Fatalf("el estado derivado es %q, se esperaba %q", stored.Status, tc.wantState)
+			}
+		})
+	}
+}
+
 type failingSaveLineStore struct {
 	*store.Memory
 

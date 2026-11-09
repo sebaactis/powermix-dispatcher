@@ -19,21 +19,27 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 		return nil
 	}
 
-	loaded.Status = store.OrderPaid
-	loaded.PaidAt = at
+	paid := loaded
+	paid.Status = store.OrderPaid
+	paid.PaidAt = at
 
-	if err := e.store.SaveOrder(ctx, loaded); err != nil {
+	paid, err = e.store.SaveOrder(ctx, paid)
+	if err != nil {
+		if errors.Is(err, store.ErrStale) {
+			return nil
+		}
+
 		return err
 	}
 
-	dispatching, err := AdvanceOrder(loaded.Status, loaded.Lines)
+	dispatching, err := AdvanceOrder(paid.Status, loaded.Lines)
 	if err != nil {
 		return err
 	}
 
-	loaded.Status = dispatching
+	paid.Status = dispatching
 
-	if err := e.store.SaveOrder(ctx, loaded); err != nil {
+	if _, err := e.store.SaveOrder(ctx, paid); err != nil {
 		return err
 	}
 
@@ -55,19 +61,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 
 	joined := errors.Join(failures...)
 
-	reloaded, err := e.store.LoadOrder(ctx, orderID)
-	if err != nil {
-		return errors.Join(joined, err)
-	}
-
-	next, err := AdvanceOrder(reloaded.Status, reloaded.Lines)
-	if err != nil {
-		return errors.Join(joined, err)
-	}
-
-	reloaded.Status = next
-
-	if err := e.store.SaveOrder(ctx, reloaded); err != nil {
+	if _, err := e.refreshOrderStatus(ctx, orderID); err != nil {
 		return errors.Join(joined, err)
 	}
 

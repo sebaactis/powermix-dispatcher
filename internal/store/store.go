@@ -33,6 +33,7 @@ type Order struct {
 	CreatedAt   time.Time
 	PaidAt      time.Time
 	ClosedAt    time.Time
+	Version     int64
 	Lines       []Line
 }
 
@@ -82,14 +83,14 @@ type Webhook struct {
 var (
 	ErrNotFound      = errors.New("el registro no existe")
 	ErrAlreadyExists = errors.New("el registro ya existe")
-	ErrStale         = errors.New("la línea cambió desde que se leyó")
+	ErrStale         = errors.New("el registro cambió desde que se leyó")
 )
 
 type Store interface {
 	CreateOrder(ctx context.Context, order Order) error
 	LoadOrder(ctx context.Context, orderID string) (Order, error)
 	OrderByClientKey(ctx context.Context, key string) (Order, error)
-	SaveOrder(ctx context.Context, order Order) error
+	SaveOrder(ctx context.Context, order Order) (Order, error)
 	SaveLine(ctx context.Context, line Line) (Line, error)
 	AppendAttempt(ctx context.Context, attempt Attempt) error
 	SaveAttempt(ctx context.Context, attempt Attempt) error

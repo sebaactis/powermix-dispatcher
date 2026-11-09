@@ -167,7 +167,7 @@ func TestMemoryOrderReturnsNotFoundForUnknownOrder(t *testing.T) {
 func TestMemorySaveOrderReturnsNotFoundForUnknownOrder(t *testing.T) {
 	m := store.NewMemory()
 
-	err := m.SaveOrder(context.Background(), fixtureOrder())
+	_, err := m.SaveOrder(context.Background(), fixtureOrder())
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrNotFound)
 	}
@@ -202,7 +202,7 @@ func TestMemorySaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	stale.Lines[0].State = dispenser.LineDelivered
 	stale.Lines[0].Ref = "ref-vieja"
 
-	if err := m.SaveOrder(context.Background(), stale); err != nil {
+	if _, err := m.SaveOrder(context.Background(), stale); err != nil {
 		t.Fatalf("SaveOrder: %v", err)
 	}
 
@@ -222,6 +222,79 @@ func TestMemorySaveOrderOnlyPersistsTheHeader(t *testing.T) {
 
 	if got.Lines[0].Version != saved.Version {
 		t.Fatalf("SaveOrder no debe revertir la versión de la línea: %d y %d", got.Lines[0].Version, saved.Version)
+	}
+}
+
+func TestMemorySaveOrderReturnsTheNextVersion(t *testing.T) {
+	m := store.NewMemory()
+	mustCreate(t, m, fixtureOrder())
+
+	loaded := mustOrder(t, m, "order-1")
+
+	if loaded.Version != 0 {
+		t.Fatalf("la orden nació con Version=%d, se esperaba 0", loaded.Version)
+	}
+
+	loaded.Status = store.OrderDispatching
+	loaded.ClosedAt = baseTime.Add(2 * time.Minute)
+
+	saved, err := m.SaveOrder(context.Background(), loaded)
+	if err != nil {
+		t.Fatalf("SaveOrder: %v", err)
+	}
+
+	if saved.Version != loaded.Version+1 {
+		t.Fatalf("SaveOrder devolvió Version=%d, se esperaba %d", saved.Version, loaded.Version+1)
+	}
+	if saved.Status != store.OrderDispatching || !saved.ClosedAt.Equal(baseTime.Add(2*time.Minute)) {
+		t.Fatalf("SaveOrder devolvió %+v, se esperaba lo que se guardó", saved)
+	}
+
+	stored := mustOrder(t, m, "order-1")
+	if stored.Version != saved.Version {
+		t.Fatalf("la orden guardada quedó en Version=%d, se esperaba %d", stored.Version, saved.Version)
+	}
+	if stored.Status != store.OrderDispatching || !stored.ClosedAt.Equal(baseTime.Add(2*time.Minute)) {
+		t.Fatalf("la orden guardada no coincide con lo devuelto: %+v", stored)
+	}
+}
+
+func TestMemorySaveOrderRejectsAStaleVersionAndKeepsTheStoredOrder(t *testing.T) {
+	m := store.NewMemory()
+	mustCreate(t, m, fixtureOrder())
+
+	stale := mustOrder(t, m, "order-1")
+
+	fresh := stale
+	fresh.Status = store.OrderDispatching
+	fresh.PaidAt = baseTime.Add(2 * time.Minute)
+	fresh.ClosedAt = baseTime.Add(3 * time.Minute)
+
+	saved, err := m.SaveOrder(context.Background(), fresh)
+	if err != nil {
+		t.Fatalf("el primer guardado tenía que aceptarse: %v", err)
+	}
+
+	stale.Status = store.OrderFailed
+	stale.PaidAt = baseTime.Add(9 * time.Minute)
+	stale.ClosedAt = baseTime.Add(9 * time.Minute)
+
+	if _, err := m.SaveOrder(context.Background(), stale); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("SaveOrder con una versión vieja devolvió %v, se esperaba %v", err, store.ErrStale)
+	}
+
+	stored := mustOrder(t, m, "order-1")
+	if stored.Version != saved.Version {
+		t.Fatalf("un guardado con versión vieja movió la versión: %d, se esperaba %d", stored.Version, saved.Version)
+	}
+	if stored.Status != store.OrderDispatching {
+		t.Fatalf("un guardado con versión vieja pisó el estado: %q, se esperaba %q", stored.Status, store.OrderDispatching)
+	}
+	if !stored.PaidAt.Equal(fresh.PaidAt) {
+		t.Fatalf("un guardado con versión vieja pisó paid_at: %v, se esperaba %v", stored.PaidAt, fresh.PaidAt)
+	}
+	if !stored.ClosedAt.Equal(fresh.ClosedAt) {
+		t.Fatalf("un guardado con versión vieja pisó closed_at: %v, se esperaba %v", stored.ClosedAt, fresh.ClosedAt)
 	}
 }
 

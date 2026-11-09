@@ -19,7 +19,7 @@ Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando e
 | --- | --- | --- | --- |
 | T1 | S1 | inline | `415fdb1` hecho |
 | T2 | S2 | inline | ver commit `docs(snacks)` hecho |
-| T3a | S3a | inline + verify | pendiente |
+| T3a | S3a | inline + verify | `646320a` hecho, falta verify |
 | T3b | S3b | inline + verify | pendiente |
 | T4 | S4 | pendiente | pendiente |
 | T5 | S5 | pendiente | pendiente |
@@ -31,3 +31,9 @@ Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando e
 - **L2**: la documentación del proveedor muestra dos formas de respuesta: con `success` (endpoints concretos) y sin él (sección general). El callback no lleva firma documentada. Dos hallazgos «alta» de la revisión bajan: `success` a media, la firma del callback pasa a corrección de documentación.
 - **L3**: «Ok. Implementa la opcion A.»
 - **L4**: «Listo. Vamos con ambas opciones recomendadas tuyas.» (A con `pending` y B1)
+- **L5** (diseño de T3b, decidido por el orquestador dentro de B1):
+  1. Contrato: `SaveOrder(ctx, order) (Order, error)`, igual que `SaveLine`. Devuelve la orden recibida con `Version` incrementada; las líneas no se tocan ni se releen (sigue siendo «solo cabecera»). `ErrStale` si la versión guardada no coincide; `ErrNotFound` si la orden no existe. El mensaje de `ErrStale` pasa a «el registro cambió desde que se leyó».
+  2. Postgres: `UPDATE ... SET ..., version = version + 1 WHERE id = $1 AND version = $11 RETURNING version`; sin filas, distinguir con un `orderExists` análogo a `lineExists`. `scanOrder` y `orderColumns` incluyen `version`. Migración `migrations/0005_order_version.sql`: `ALTER TABLE orders ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 0;` dentro de `BEGIN/COMMIT`.
+  3. Memoria: compara `Version`, incrementa, guarda; `CreateOrder` conserva la versión recibida (0).
+  4. Dominio: se extrae `refreshOrderStatus(ctx, orderID) (store.Order, error)` en `internal/order/settle.go`: carga, `AdvanceOrder`, guarda sólo si cambió; ante `ErrStale` recarga y reintenta **una** vez; un segundo `ErrStale` se devuelve como error. `settleOrder` = `refreshOrderStatus` + `notifyOrder`. La cola de `ConfirmPayment` (`payment.go:58-73`) usa `refreshOrderStatus` (sin aviso, como hoy).
+  5. `ConfirmPayment`: el guardado a `paid` usa la versión cargada; `ErrStale` ahí devuelve `nil` sin despachar (otro `/pay` ganó). El guardado a `dispatching` parte de la orden devuelta por el primero; un `ErrStale` ahí es error y no se despacha.

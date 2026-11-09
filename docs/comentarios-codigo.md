@@ -1262,6 +1262,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Espeja el CHECK de la tabla `orders`. «partial» e «in_doubt» existen porque las dos máquinas fallan de forma independiente: un pedido no puede decir «delivered» cuando salió un solo producto.
 
+### Order
+
+> La cabecera de la compra: estado, importes, fechas e identidad del mueble y del combo. `Lines` viaja con ella porque una orden sin líneas no existe en el sistema, pero escribirlas no es tarea de la orden: `SaveOrder` guarda sólo la cabecera.
+>
+> `Version` lleva la cuenta de las escrituras de la cabecera y **la mueve sólo el store**: una orden nace en cero y cada `SaveOrder` aceptado la devuelve con la versión siguiente. No es un dato del dominio; existe porque la cabecera también tiene más de un escritor —dos `/pay` concurrentes, el `settle` de los callbacks y el del barrido— y sin número el último en escribir gana, exactamente el problema que `Line.Version` resolvió para las líneas.
+
 ### Line
 
 > La unidad de ejecución. La familia de la máquina vive en un solo lugar: `Machine.Kind`. Antes la línea la guardaba dos veces —`MachineType` por un lado y la `MachineRef` por otro— y nada obligaba a que coincidieran: una línea podía decir «snacks» y llevar los identificadores del batido, y el motor elegía el driver de una máquina y le mandaba la identidad de la otra. Con un solo campo la incoherencia no se puede escribir: no compila.
@@ -1284,7 +1290,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### ErrStale
 
-> El conflicto de escritura, y significa algo distinto según quién escribe: para el callback, alguien con más autoridad ya resolvió la línea; para el worker, la línea ya tiene dueño. El mensaje dice el hecho —«la línea cambió desde que se leyó»— y no una acción, porque la reacción correcta no la puede decidir el store. Se compara con `errors.Is` desde el motor y nunca se muestra a un cliente.
+> El conflicto de escritura, y el mismo error sirve para la línea y para la orden: alguien escribió después de que esta copia se leyera. Significa algo distinto según quién escribe —para el callback, alguien con más autoridad ya resolvió la línea; para el worker, la línea ya tiene dueño; para el segundo `/pay`, el cobro ya está registrado—, y por eso la reacción la decide el dominio y no el store. El mensaje dice el hecho —«el registro cambió desde que se leyó»— y no una acción, porque la reacción correcta no la puede decidir el store. Se compara con `errors.Is` desde el motor y nunca se muestra a un cliente.
 
 ### Store
 
@@ -1292,7 +1298,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `SaveLine` recibe una línea con su versión y **devuelve la línea persistida con la versión nueva**: es un guardado condicional, no un reemplazo. Si la versión recibida no es la que tiene el store, devuelve `ErrStale` y no escribe nada; si coincide, guarda con `Version+1`. Devolver la línea y no sólo un error es lo que evita que el motor tenga que releer para la escritura siguiente, y es la diferencia entre un puerto que compite por la última escritura y uno que la rechaza.
 >
-> `SaveOrder` guarda sólo la cabecera y no lleva versión: la orden es la cabecera —estado, importes, fechas— y no compite con el worker, que sólo escribe líneas. Las líneas quedan fuera a propósito, porque escribirlas también convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
+> `SaveOrder` guarda sólo la cabecera y **lleva versión**, igual que `SaveLine`: recibe la orden con la versión que se leyó y devuelve la orden persistida con la versión siguiente, o `ErrStale` si alguien escribió antes. Las líneas quedan fuera a propósito, y siguen fuera con versión: escribirlas convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. Devolver la orden y no sólo un error es lo que permite encadenar el guardado siguiente —`ConfirmPayment` guarda dos veces— sin releer la cabecera. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
 
 ## internal/store/memory.go
 
@@ -1310,7 +1316,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `SaveLine` compara la versión con el lock tomado: si no coinciden devuelve `ErrStale` sin tocar el slice, y si coinciden escribe `Version+1` y devuelve la línea guardada. La comparación y la escritura ocurren dentro del mismo lock, que es lo único que convierte el número en una garantía y no en una sugerencia. Nunca se escribe «sólo algunos campos»: la versión protege la línea entera, y por eso el llamador tiene que traer la copia completa que leyó.
 >
-> `CreateOrder` normaliza a cero la versión de cada línea antes de guardar, sobre una copia para no mutar lo que recibió. No es cosmético: sin eso un llamador podría crear una línea con versión inventada y quedar inmune a los conflictos durante toda su vida.
+> `SaveOrder` aplica la misma comparación a la cabecera dentro del mismo lock: si la versión no coincide devuelve `ErrStale` sin tocar la copia guardada, así que un guardado viejo no puede revertir ni el estado ni las tres fechas; si coincide guarda con `Version+1` y devuelve la orden recibida con ese número, que es el que encadena el llamador.
+>
+> `CreateOrder` normaliza a cero la versión de cada línea antes de guardar, sobre una copia para no mutar lo que recibió. No es cosmético: sin eso un llamador podría crear una línea con versión inventada y quedar inmune a los conflictos durante toda su vida. La versión de la cabecera, en cambio, se guarda tal como llega: una orden nueva llega en cero y corregirla acá escondería un error de quien llama en vez de evitarlo.
 
 ## internal/store/memory_test.go
 
@@ -1318,7 +1326,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Los que más importan no son los de camino feliz: uno fija que el store nunca comparte estado con quien llama —sin la copia, el motor podría cambiar una línea sin guardarla y el bug aparecería como una reconciliación fantasma—, otro fija que dos líneas con el mismo plazo salen siempre en el mismo orden, y el de concurrencia crea una orden por goroutine y después exige leerlas todas: es la única forma de que un mapa sin protección se note como corrupción de conteo y no como un test que pasa por suerte.
 >
-> Los cuatro de la versión fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
+> Los dos de la versión de la orden trasladan ese mismo contrato a la cabecera: el guardado aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` dejando intactos el estado, `paid_at`, `closed_at` y la versión.
+>
+> Los cuatro de la versión de la línea fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
 
 ## internal/order/status.go
 
@@ -1398,9 +1408,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Es el único disparador del despacho y tiene que ser inofensivo si el proveedor de pagos repite el webhook: si la orden ya no está `pending_payment`, responde nil sin tocar nada.
 >
-> La orden se escribe tres veces. Primero `paid` con `PaidAt`, que es la evidencia del cobro. Después `dispatching`: una línea sólo sale de `pending` por `sent`, así que sin ese estado intermedio una orden cuyas dos líneas fallan no tendría arista legal hasta `failed`. Recién entonces se lanza una goroutine por línea, cada una escribiendo su propio slot del slice de errores — sin lock compartido.
+> La orden se escribe dos veces. Primero `paid` con `PaidAt`, que es la evidencia del cobro, sobre la versión que se acaba de leer. Después `dispatching`, partiendo de la orden que devolvió el primer guardado —con su versión nueva—: una línea sólo sale de `pending` por `sent`, así que sin ese estado intermedio una orden cuyas dos líneas fallan no tendría arista legal hasta `failed`. Recién entonces se lanza una goroutine por línea, cada una escribiendo su propio slot del slice de errores — sin lock compartido.
 >
-> Al final se **recarga** la orden y se deriva el estado con `AdvanceOrder` sobre las líneas leídas. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
+> Esa versión es lo que separa dos `/pay` concurrentes. Si el choque llega en el guardado a `paid`, la respuesta es nil y nada más: el otro `/pay` ya registró el cobro y va a despachar, así que reintentar sería cobrar dos veces o despachar dos veces. Si llega en el guardado a `dispatching`, en cambio, el error se devuelve y no se despacha: sin ese estado no hay arista legal hacia la entrega.
+>
+> Al final se **recarga** la orden con `refreshOrderStatus`, que deriva el estado con `AdvanceOrder` sobre las líneas leídas. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
 >
 > Sólo los errores de store vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
 
@@ -1530,13 +1542,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Si el guardado responde `ErrStale` devuelve `false, nil` y nada más: ni reprograma ni cierra. La línea ya tiene dueño, y el que la tiene acaba de escribir un hecho más nuevo que el que traía esta copia. Reprogramar le rearmaría un plazo a una línea que quizá ya está cerrada —y eso incluye reabrirla si la copia vieja decía `sent`—, así que el silencio es la única respuesta honesta.
 
-### closeLine / settleOrder / notifyOrder
+### closeLine / settleOrder / refreshOrderStatus / notifyOrder
 
 > Cerrar es limpiar los dos plazos: una línea cerrada no vuelve a aparecer en `DueLines`, y eso es lo que impide interrogarla después de que alguien ya sabe la respuesta. Entregado limpia `LastError`; fallido conserva o reemplaza el motivo, nunca lo borra.
 >
 > `closeLine` es el llamador que **reacciona distinto** ante `ErrStale`, porque cerrar es irreversible y el que llega segundo no puede ganar por llegar segundo. Relee la orden, busca la línea por `ID` y decide: si ya está cerrada —entregada o fallida— no hace nada y devuelve nil, porque alguien con más autoridad la resolvió; si sigue abierta reintenta **una sola vez** la transición con la versión fresca. Una sola vez y no un bucle: si el segundo intento también encuentra la línea cambiada, hay un tercer escritor y volver a probar es una carrera sin final. Nunca se reabre ni se reescribe un cierre ajeno, y el `Ref` adoptado por el callback sobrevive porque la copia vieja simplemente no se escribe.
 >
-> Una línea cerrada no arregla la orden sola: si el worker no recalcula el estado, la orden se queda en `dispatching` para siempre. Se recarga, se avanza con la misma tabla de transiciones del resto del motor y se guarda sólo si cambió.
+> Una línea cerrada no arregla la orden sola: si el worker no recalcula el estado, la orden se queda en `dispatching` para siempre. `refreshOrderStatus` es ese recálculo y ahora es compartido: recarga, avanza con la misma tabla de transiciones del resto del motor y guarda sólo si cambió.
+>
+> La cabecera también compite —el callback de snacks, `ConfirmPayment` y el barrido escriben la misma orden—, así que el guardado lleva versión y `refreshOrderStatus` reintenta **una sola vez** ante `ErrStale`: recarga y vuelve a derivar. Un segundo `ErrStale` se devuelve como error, porque un tercer escritor significa que reintentar es una carrera sin final. El reintento es seguro acá, a diferencia de la línea: el estado no se inventa, se vuelve a derivar de las líneas frescas.
+>
+> `settleOrder` es `refreshOrderStatus` más el aviso; la cola de `ConfirmPayment` usa `refreshOrderStatus` a secas porque no avisa. Mismo cálculo, dos políticas.
 >
 > Un aviso por orden afectada, y sólo cuando el estado final es duda o fallo: es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
 
@@ -1794,6 +1810,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight` cubre el mismo conflicto por el otro camino: el stub de la máquina dispara un `CloseFromCallback` real **dentro** de `Dispatch`, así que la línea queda cerrada entre la lectura y el guardado del despacho. La aserción es que la línea siga entregada, que el `Ref` tardío del despacho no se adopte sobre una línea cerrada, y que `ConfirmPayment` no devuelva error.
 
+## internal/order — el versionado de la orden en el dominio (S3b)
+
+> `competingOrderStore` (`internal/order/callback_test.go`) envuelve `store.Memory` y, antes de delegar un `SaveOrder`, guarda la orden que acaba de leer el store: escribe la cabecera con la versión siguiente sin cambiar ningún campo. Es la forma determinista de representar al otro escritor —un segundo `/pay`, otro callback, el barrido— sin goroutines ni suerte, igual que `competingWriteStore` hace con la línea. `arm` y `armFrom` eligen a partir de qué llamada compite.
+>
+> `TestEngineConfirmPaymentDoesNotDispatchWhenAnotherWriterPaidTheOrder` fija la decisión del segundo `/pay`: el guardado a `paid` choca, `ConfirmPayment` devuelve nil y las máquinas no reciben ni un despacho. `TestEngineConfirmPaymentDoesNotDispatchWhenTheDispatchingSaveIsStale` fija la otra mitad: si el choque llega en el guardado a `dispatching`, el error se devuelve y tampoco se despacha, porque sin ese estado no hay arista legal hacia la entrega.
+>
+> `TestCloseFromCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt` fija el reintento de `refreshOrderStatus` con dos casos y el mismo escenario: tras el pago se entrega por callback la línea de snacks y después falla la de batidos, así que el estado derivado pasa de `dispatching` a `partial` y hay que escribir la cabecera. Con un escritor adelantado se reintenta una sola vez y la orden termina en `partial`; con dos, el error devuelve `store.ErrStale` y la cabecera no se toca. Los dos casos cuentan las llamadas a `SaveOrder` para probar que el reintento es exactamente uno.
+
 ## internal/store — SaveOrder
 
 > Guarda **sólo la cabecera** de la orden: estado, importes y las tres fechas. Nunca toca las líneas.
@@ -1801,6 +1825,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > No siempre fue así: antes reemplazaba la orden entera, líneas incluidas, y había un test que lo fijaba como intención. Ese contrato se volvió una carrera en cuanto las líneas empezaron a tener escritura propia y condicional: `settleOrder` y `ConfirmPayment` leen la orden, y si entre la lectura y el guardado un callback cierra una línea, el guardado de la orden devolvía la línea a su estado anterior — con el `Ref` adoptado borrado y la versión pisada. Ahora las líneas sólo cambian por `SaveLine`, que sí es condicional, y la orden sólo cambia por acá.
 >
 > El store sobre Postgres (`internal/store/postgres`) cumple ese contrato al pie de la letra: el guardado de la orden es un `UPDATE` de las columnas de cabecera, sin tocar `order_line`.
+>
+> Después de S3b la cabecera también se escribe con versión: `SaveOrder` recibe la orden con la versión leída y devuelve la guardada con `Version+1`, o `ErrStale` si otro escritor se adelantó. La razón es la misma que motivó la versión de la línea, un escalón más arriba: `ConfirmPayment` y `settleOrder` recalculan y guardan el estado de la orden desde caminos distintos, y sin número el último en escribir gana. Las líneas siguen afuera porque la versión protege la fila de `orders`, no la de `order_line`, que tiene la suya.
 
 ## internal/store/postgres
 
@@ -1824,14 +1850,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 > - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Kind` no tiene columna propia: se escribe y se lee de `order_line.machine_type`. La columna sobrevive al campo Go que se borró, y la razón es que no eran lo mismo: la columna es el dato persistido —existe desde `0001_init.sql`, la escriben las migraciones y el seed, y tiene un `CHECK` con las dos familias— y `Line.MachineType` era la duplicación en memoria de algo que ya viajaba dentro de la `MachineRef`. Por eso no hay migración: `SaveLine` escribe `line.Machine.Kind` en `machine_type` y `scanLine` construye `dispenser.MachineRef{Kind: machine.Kind(<columna>)}` directamente. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
 > - `Line.Version` → `order_line.version`, `bigint NOT NULL DEFAULT 0`.
 > - `Order.ClientKey` → `orders.client_key`, con índice único parcial (`WHERE client_key IS NOT NULL`) para que dos órdenes sin clave no choquen entre sí.
+> - `Order.Version` → `orders.version`, `bigint NOT NULL DEFAULT 0`. Misma columna y mismo significado que `order_line.version`, con el `DEFAULT` que deja las órdenes viejas en cero sin backfill.
 > - `Attempt.Outcome`/`Detail` → `outcome`/`error_detail`. `request_payload` es `NOT NULL` en el esquema y se inserta `'{}'::jsonb`; `response_payload` y `http_status` quedan `NULL` porque hoy el motor no los recibe. No se inventa el cuerpo: un `NULL` dice «no hay dato» y un cuerpo vacío diría «el cuerpo estaba vacío».
 > - `Webhook.Payload` no existe en el tipo, así que se inserta `'{}'::jsonb`. La deduplicación necesita la identidad `(source, dedupe_key)`, no el cuerpo.
 
 ### CreateOrder / SaveOrder
 
-> `CreateOrder` va en una transacción: orden y líneas entran juntas o no entra ninguna, y cada línea se inserta con `version = 0` sin importar lo que traiga el llamador. Una línea que naciera con versión inventada quedaría inmune a los conflictos durante toda su vida. Si el `INSERT` de la orden choca con la clave primaria o con `client_key`, la transacción se revierte y el error es `ErrAlreadyExists`: no puede quedar media orden escrita.
+> `CreateOrder` va en una transacción: orden y líneas entran juntas o no entra ninguna, y cada línea se inserta con `version = 0` sin importar lo que traiga el llamador. Una línea que naciera con versión inventada quedaría inmune a los conflictos durante toda su vida. La cabecera se inserta con la versión que traiga la orden —cero en la práctica—, igual que en memoria. Si el `INSERT` de la orden choca con la clave primaria o con `client_key`, la transacción se revierte y el error es `ErrAlreadyExists`: no puede quedar media orden escrita.
 >
-> `SaveOrder` es un `UPDATE` de las nueve columnas de cabecera —`kiosk_id`, `combo_id`, `client_key`, `amount_cents`, `currency`, `status`, `created_at`, `paid_at`, `closed_at`— y **nunca toca `order_line`**. Es la contraparte en SQL de la decisión del puerto: al escribir, la orden no es dueña de sus líneas. Si las escribiera, `settleOrder` o `ConfirmPayment` podrían revertir un `delivered` que un callback acaba de guardar —con su `Ref` adoptado y todo— aunque la línea tenga versión, porque un reemplazo total escribe todas las columnas y no compara ninguna. Cero filas afectadas es `ErrNotFound`.
+> `SaveOrder` es un `UPDATE` de las nueve columnas de cabecera —`kiosk_id`, `combo_id`, `client_key`, `amount_cents`, `currency`, `status`, `created_at`, `paid_at`, `closed_at`— más `version = version + 1`, condicionado a `id = $1 AND version = $11` y con `RETURNING version`, y **nunca toca `order_line`**. Es la contraparte en SQL de la decisión del puerto: al escribir, la orden no es dueña de sus líneas. Si las escribiera, `settleOrder` o `ConfirmPayment` podrían revertir un `delivered` que un callback acaba de guardar —con su `Ref` adoptado y todo— aunque la línea tenga versión, porque un reemplazo total escribe todas las columnas y no compara ninguna.
+>
+> Con cero filas el `UPDATE` confunde dos causas y se separan como en `SaveLine`, con un `EXISTS` posterior y sólo en ese camino: la orden existe con otra versión (`ErrStale`) o no existe (`ErrNotFound`). La versión devuelta sale del `RETURNING` y no de la copia del llamador, que es la única forma de que el siguiente guardado parta del número real.
 
 ### SaveLine
 
@@ -1857,6 +1886,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > La versión de `pgx` se eligió entre las que no obligan a subir el lenguaje declarado en `go.mod`: agregar la primera dependencia externa no debe cambiar la versión mínima de Go del proyecto. Actualizarla es una decisión aparte, con su propio diff.
 
+## internal/store/postgres/postgres_test.go
+
+> Los dos tests nuevos son el contrato del guardado condicional de la cabecera, espejo de los de `SaveLine`: el aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` sin mover ni el estado ni las fechas ni la versión.
+>
+> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete: la migración `0005` y este contrato quedan escritos y sin ejecutar contra una base real.
+
 ## migrations/0004_store_postgres.sql
 
 > Lo que el esquema inicial no tenía y el store sobre Postgres necesita para cumplir el puerto. Todo es aditivo y cada sentencia lleva `IF NOT EXISTS`, así que aplicarla dos veces no rompe nada. No se edita `0001_init.sql` a propósito: una migración ya aplicada no se reescribe, se corrige con otra.
@@ -1865,6 +1900,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 > - `order_line.version` (`bigint NOT NULL DEFAULT 0`): el `DEFAULT` es lo que hace que las filas viejas queden en la versión correcta sin backfill, y el `NOT NULL` es lo que impide que una línea quede fuera del guardado condicional.
 > - Las seis columnas `machine_*`: la `MachineRef` que antes sólo vivía en un mapa de RAM. Son nullable porque el esquema no puede exigir «las de batidos o la de snacks» sin repetir en SQL una regla que ya vive en el motor, y un `CHECK` duplicado sería una segunda fuente que se desincroniza.
 > - `dispatch_attempt_key_idx` y `webhook_event_source_dedupe_idx` son índices únicos que ya existían con otro nombre en `0001_init.sql` (`dispatch_attempt_idempotency_idx` y `webhook_event_dedupe_idx`). El `IF NOT EXISTS` compara el nombre y no la definición, así que la base queda con dos índices únicos equivalentes por tabla. Es inocuo —la unicidad ya se cumplía y el costo es un índice de más al escribir— y se deja tal cual porque quitarlo es una migración aparte; conviene saberlo antes de mirar el esquema y creer que falta un índice o que sobra una regla.
+
+## migrations/0005_order_version.sql
+
+> Agrega `orders.version` (`bigint NOT NULL DEFAULT 0`). Aditiva y sin backfill por el mismo motivo que `order_line.version` en `0004`: el `DEFAULT` deja las órdenes existentes en la versión correcta y el `NOT NULL` impide que una orden quede fuera del guardado condicional. No lleva índice porque la versión viaja en el `WHERE` junto con la clave primaria, que ya está indexada.
 
 ## internal/config — Store / DatabaseURL: config.go y validate.go
 

@@ -123,7 +123,7 @@ func (f *fakeConfirmer) ConfirmPayment(ctx context.Context, orderID string, at t
 		loaded.Status = store.OrderPaid
 		loaded.PaidAt = at
 
-		if err := f.orders.SaveOrder(ctx, loaded); err != nil {
+		if _, err := f.orders.SaveOrder(ctx, loaded); err != nil {
 			return err
 		}
 	}

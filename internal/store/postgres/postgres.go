@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	orderColumns = `id, kiosk_id, combo_id, client_key, amount_cents, currency, status, created_at, paid_at, closed_at`
+	orderColumns = `id, kiosk_id, combo_id, client_key, amount_cents, currency, status, created_at, paid_at, closed_at, version`
 
 	lineColumns = `id, order_id, position, machine_type, sku, amount_cents, state, external_ref, attempts,
 		deadline_at, reconcile_until, last_error, version, machine_kiosk_id, machine_name,
@@ -62,10 +62,10 @@ func (s *Store) CreateOrder(ctx context.Context, order store.Order) error {
 	defer tx.Rollback()
 
 	_, err = tx.ExecContext(ctx, `INSERT INTO orders (`+orderColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10, $11)`,
 		order.ID, order.KioskID, order.ComboID, nullableText(order.ClientKey), order.AmountCents,
 		order.Currency, string(order.Status), nullableTime(order.CreatedAt), nullableTime(order.PaidAt),
-		nullableTime(order.ClosedAt))
+		nullableTime(order.ClosedAt), order.Version)
 	if err != nil {
 		return mapWriteError(err, "la orden", order.ID)
 	}
@@ -93,8 +93,10 @@ func (s *Store) OrderByClientKey(ctx context.Context, key string) (store.Order, 
 	return s.orderBy(ctx, "client_key", key)
 }
 
-func (s *Store) SaveOrder(ctx context.Context, order store.Order) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE orders SET
+func (s *Store) SaveOrder(ctx context.Context, order store.Order) (store.Order, error) {
+	var version int64
+
+	err := s.db.QueryRowContext(ctx, `UPDATE orders SET
 		kiosk_id = $2,
 		combo_id = $3,
 		client_key = $4,
@@ -103,24 +105,31 @@ func (s *Store) SaveOrder(ctx context.Context, order store.Order) error {
 		status = $7,
 		created_at = COALESCE($8, now()),
 		paid_at = $9,
-		closed_at = $10
-		WHERE id = $1`,
+		closed_at = $10,
+		version = version + 1
+		WHERE id = $1 AND version = $11
+		RETURNING version`,
 		order.ID, order.KioskID, order.ComboID, nullableText(order.ClientKey), order.AmountCents,
 		order.Currency, string(order.Status), nullableTime(order.CreatedAt), nullableTime(order.PaidAt),
-		nullableTime(order.ClosedAt))
-	if err != nil {
-		return mapWriteError(err, "la orden", order.ID)
+		nullableTime(order.ClosedAt), order.Version).Scan(&version)
+	if err == nil {
+		order.Version = version
+
+		return order, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return store.Order{}, mapWriteError(err, "la orden", order.ID)
 	}
 
-	affected, err := result.RowsAffected()
+	exists, err := s.orderExists(ctx, order.ID)
 	if err != nil {
-		return fmt.Errorf("no se pudo saber si se guardó la orden %s: %w", order.ID, err)
+		return store.Order{}, err
 	}
-	if affected == 0 {
-		return store.ErrNotFound
+	if exists {
+		return store.Order{}, store.ErrStale
 	}
 
-	return nil
+	return store.Order{}, store.ErrNotFound
 }
 
 func (s *Store) SaveLine(ctx context.Context, line store.Line) (store.Line, error) {
@@ -301,6 +310,17 @@ func (s *Store) loadLines(ctx context.Context, orderID string) ([]store.Line, er
 	return lines, nil
 }
 
+func (s *Store) orderExists(ctx context.Context, orderID string) (bool, error) {
+	var exists bool
+
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM orders WHERE id = $1)`, orderID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("no se pudo buscar la orden %s: %w", orderID, err)
+	}
+
+	return exists, nil
+}
+
 func (s *Store) lineExists(ctx context.Context, lineID string) (bool, error) {
 	var exists bool
 
@@ -322,7 +342,7 @@ func scanOrder(row rowScanner) (store.Order, error) {
 	)
 
 	err := row.Scan(&order.ID, &order.KioskID, &order.ComboID, &clientKey, &order.AmountCents,
-		&order.Currency, &status, &order.CreatedAt, &paidAt, &closedAt)
+		&order.Currency, &status, &order.CreatedAt, &paidAt, &closedAt, &order.Version)
 	if err != nil {
 		return store.Order{}, err
 	}
