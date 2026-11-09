@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -397,6 +398,31 @@ func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed(t *testing.T) {
+	st := newRecordingStore()
+	batido := &flakyMachine{rejections: 1, attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, comboDraft())
+	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("ConfirmPayment: %v", err)
+	}
+
+	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
+
+	got := st.lineStatesFor(line.ID)
+	want := []dispenser.LineState{dispenser.LinePending, dispenser.LineSent}
+	if !slices.Equal(got, want) {
+		t.Fatalf("la línea reintentada se guardó con los estados %v, se esperaba %v: un rechazo con intentos pendientes no pasa por failed", got, want)
 	}
 }
 

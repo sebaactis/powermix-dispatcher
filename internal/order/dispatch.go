@@ -60,9 +60,13 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 
 		attemptErr := e.store.SaveAttempt(ctx, attempt)
 
-		state, stateErr := transitionLine(line.State, verdict.state)
+		retrying := verdict.outcome == store.OutcomeRejected && number < e.maxAttempts
 
-		line.State = state
+		var stateErr error
+		if !retrying {
+			line.State, stateErr = transitionLine(line.State, verdict.state)
+		}
+
 		line.Attempts = number
 
 		if verdict.outcome == store.OutcomeAccepted {
@@ -86,34 +90,11 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 		if errors.Is(lineErr, store.ErrStale) {
 			return nil
 		}
-		if lineErr == nil {
-			line = saved
-		}
-
-		if verdict.outcome != store.OutcomeRejected {
+		if lineErr != nil || !retrying {
 			return errors.Join(attemptErr, stateErr, lineErr)
 		}
 
-		if line.Attempts >= e.maxAttempts {
-			return errors.Join(attemptErr, stateErr, lineErr)
-		}
-
-		retry, retryErr := AdvanceLine(line.State, dispenser.LineSent)
-		if retryErr != nil {
-			return errors.Join(attemptErr, stateErr, lineErr, retryErr)
-		}
-
-		line.State = retry
-
-		savedRetry, saveErr := e.store.SaveLine(ctx, line)
-		if errors.Is(saveErr, store.ErrStale) {
-			return nil
-		}
-		if saveErr != nil {
-			return errors.Join(attemptErr, stateErr, lineErr, saveErr)
-		}
-
-		line = savedRetry
+		line = saved
 	}
 
 	return nil

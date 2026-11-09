@@ -11,7 +11,7 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 314 funciones de test, 16 paquetes
+go test ./...                          # 315 funciones de test, 16 paquetes
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 

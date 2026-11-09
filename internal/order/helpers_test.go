@@ -115,10 +115,11 @@ func (s *flakyMachine) callCount() int {
 type recordingStore struct {
 	*store.Memory
 
-	mu       sync.Mutex
-	created  []string
-	appended []store.Attempt
-	saved    []store.Attempt
+	mu         sync.Mutex
+	created    []string
+	appended   []store.Attempt
+	saved      []store.Attempt
+	savedLines []store.Line
 }
 
 func newRecordingStore() *recordingStore {
@@ -159,6 +160,32 @@ func (r *recordingStore) SaveAttempt(ctx context.Context, attempt store.Attempt)
 	r.mu.Unlock()
 
 	return nil
+}
+
+func (r *recordingStore) SaveLine(ctx context.Context, line store.Line) (store.Line, error) {
+	saved, err := r.Memory.SaveLine(ctx, line)
+	if err != nil {
+		return saved, err
+	}
+
+	r.mu.Lock()
+	r.savedLines = append(r.savedLines, saved)
+	r.mu.Unlock()
+
+	return saved, nil
+}
+
+func (r *recordingStore) lineStatesFor(lineID string) []dispenser.LineState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var states []dispenser.LineState
+	for _, line := range r.savedLines {
+		if line.ID == lineID {
+			states = append(states, line.State)
+		}
+	}
+	return states
 }
 
 func (r *recordingStore) createdIDs() []string {

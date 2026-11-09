@@ -1474,9 +1474,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/order/dispatch.go — el reintento del fallido (T9a): `defaultMaxAttempts` y `dispatchLine`
 
-### CanLineTransition: `failed -> sent`
+### TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed
 
-> `failed` deja de ser terminal a propósito: un rechazo explícito del proveedor (E2) significa «no salió», así que la línea puede volver a `sent` para un intento nuevo. La garantía anti-duplicado no es el estado, es la **clave de idempotencia**: un reintento es un intento nuevo con clave nueva, no un replay del anterior.
+> Registra cada `SaveLine` (con `recordingStore.lineStatesFor`) y exige la secuencia `[pending, sent]` para una línea rechazada una vez y aceptada después. Mira las escrituras y no sólo el estado final porque el defecto era justamente un estado intermedio visible para otros escritores.
+
+### CanLineTransition: `failed` es terminal
+
+> `failed` no tiene salida: es el resultado del último rechazo, cuando ya no quedan intentos. Antes existía la arista `failed -> sent` para reintentar, y eso dejaba guardado un `failed` pasajero: un `settleOrder` concurrente (callback o barrido) podía verlo, marcar la orden `failed` y avisar `order_failed`, y la orden quedaba trabada porque `failed` sólo admite `refunded`. Un rechazo con intentos pendientes deja la línea en `pending`, que es exactamente lo que es: la máquina todavía no aceptó nada. La garantía anti-duplicado no es el estado, es la **clave de idempotencia**: un reintento es un intento nuevo con clave nueva, no un replay del anterior.
 >
 > `delivered` sigue siendo terminal (el producto ya salió) e `in_doubt` no puede volver a `sent` (E4: no se sabe si salió, y reintentar a ciegas puede entregar dos veces). Esa línea se reconcilia, no se reintenta.
 
@@ -1490,7 +1494,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Se detiene cuando: la línea ya gastó sus intentos; la clave ya existe (intento repetido tras un reinicio); fue aceptada; quedó en duda; o fue rechazada sin intentos restantes.
 >
-> Sólo vuelve a iterar ante un rechazo explícito y con intentos disponibles: mueve la línea `failed -> sent` (la arista habilitada para esto) y empieza con número y clave nuevos. En Batidos eso es un código de canje nuevo, porque el anterior probablemente quedó consumido (R2).
+> Sólo vuelve a iterar ante un rechazo explícito y con intentos disponibles (`retrying`): la línea conserva su estado `pending`, se guarda **una sola vez** con el intento contado y el motivo en `LastError`, y la vuelta siguiente empieza con número y clave nuevos. Nunca se guarda `failed` antes de un reintento. En Batidos eso es un código de canje nuevo, porque el anterior probablemente quedó consumido (R2).
 >
 > E4 no entra nunca acá: sin respuesta no se sabe si el producto salió, y el reintento a ciegas puede producir dos entregas.
 
