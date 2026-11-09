@@ -243,6 +243,65 @@ func TestShipTreatsHTTP200WithErrorCodeAsRejection(t *testing.T) {
 	}
 }
 
+func TestShipTreatsExplicitSuccessFalseAsRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"success":false,"code":0,"message":"device busy","result":{}}`)
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+
+	result, err := client.Ship(context.Background(), shipmentRequest("po_1"))
+	var apiErr *snacks.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("errors.As(*snacks.APIError) = false para el error %v (%T)", err, err)
+	}
+	if result.Accepted {
+		t.Fatalf("DispatchResult.Accepted = true, want false con success=false")
+	}
+	if apiErr.HTTPStatus != http.StatusOK || apiErr.Code != 0 || apiErr.Message != "device busy" {
+		t.Fatalf("APIError = %+v, want HTTPStatus=200 Code=0 Message=%q", apiErr, "device busy")
+	}
+}
+
+func TestShipAcceptsAnEnvelopeWithoutSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"message":"success","result":{}}`)
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+
+	result, err := client.Ship(context.Background(), shipmentRequest("po_1"))
+	if err != nil {
+		t.Fatalf("Ship sin campo success: %v, want nil", err)
+	}
+	if !result.Accepted {
+		t.Fatalf("DispatchResult.Accepted = false, want true sin campo success y code=0")
+	}
+}
+
+func TestDevicesTreatsExplicitSuccessFalseAsRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"success":false,"code":0,"message":"query failed","result":{"items":[]}}`)
+	}))
+	defer srv.Close()
+
+	client := snacks.NewClient(srv.URL, testAccessKey, testAppSecret)
+
+	_, err := client.Devices(context.Background(), snacks.PageQuery{Page: 1, Size: 10})
+	var apiErr *snacks.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("errors.As(*snacks.APIError) = false para el error %v (%T)", err, err)
+	}
+	if apiErr.HTTPStatus != http.StatusOK || apiErr.Code != 0 || apiErr.Message != "query failed" {
+		t.Fatalf("APIError = %+v, want HTTPStatus=200 Code=0 Message=%q", apiErr, "query failed")
+	}
+}
+
 func TestShipRespectsCancelledContext(t *testing.T) {
 	_, baseURL := newFake(t)
 

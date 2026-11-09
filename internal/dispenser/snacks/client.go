@@ -273,8 +273,7 @@ func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Dispa
 	var env envelope
 	decodeErr := json.Unmarshal(payload, &env)
 
-	rejected := resp.StatusCode < 200 || resp.StatusCode >= 300 || (env.Code != 0 && env.Code != 200)
-	if rejected {
+	if isRejected(resp.StatusCode, env) {
 		message := env.Message
 		if message == "" {
 			message = strings.TrimSpace(string(payload))
@@ -434,8 +433,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	var env envelope
 	decodeErr := json.Unmarshal(payload, &env)
 
-	rejected := resp.StatusCode < 200 || resp.StatusCode >= 300 || (env.Code != 0 && env.Code != 200)
-	if rejected {
+	if isRejected(resp.StatusCode, env) {
 		message := env.Message
 		if message == "" {
 			message = strings.TrimSpace(string(payload))
@@ -456,6 +454,16 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 		return fmt.Errorf("snacks: la respuesta de %s no se pudo interpretar: %w", path, err)
 	}
 	return nil
+}
+
+func isRejected(httpStatus int, env envelope) bool {
+	if httpStatus < 200 || httpStatus >= 300 {
+		return true
+	}
+	if env.Code != 0 && env.Code != 200 {
+		return true
+	}
+	return env.Success != nil && !*env.Success
 }
 
 func (c *Client) body(req ShipmentRequest) shipmentBody {

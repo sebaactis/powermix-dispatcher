@@ -603,7 +603,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > La API puede rechazar con HTTP 200 y code distinto de 200, y también con un
 > status HTTP de error. Los dos casos son rechazos del proveedor. Un code 0
-> significa que la respuesta no trajo código, no un error.
+> significa que la respuesta no trajo código, no un error. La regla completa
+> vive en isRejected y la comparte con get.
 
 ### body
 
@@ -642,6 +643,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### APIError
 
 > El mensaje dice «la API rechazó la llamada» y no «el despacho», porque el tipo lo comparten el despacho y las dos lecturas del chequeo previo.
+
+### isRejected
+
+> Decide si una respuesta es un rechazo del proveedor: status HTTP fuera de 2xx, `code` distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`ys-vending.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir.
 
 ## internal/dispenser/snacks/client_test.go
 
@@ -698,6 +703,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 > documenta con HTTP 200 y `code` distinto de 200: es un rechazo del proveedor,
 > no un error de red. Este caso no lo produce el servidor falso, así que se
 > arma con un handler mínimo.
+
+### TestShipTreatsExplicitSuccessFalseAsRejection / TestDevicesTreatsExplicitSuccessFalseAsRejection
+
+> Un `success: false` explícito con `code: 0` es un rechazo, tanto en el despacho como en las lecturas que pasan por get. Se cubren los dos caminos porque los dos llaman a isRejected desde sitios distintos.
+
+### TestShipAcceptsAnEnvelopeWithoutSuccess
+
+> Fija el comportamiento previo: una respuesta sin `success` y con `code: 0`, como la de la sección general de la documentación, sigue siendo un despacho aceptado. Si alguien endurece la regla a «exigir `success: true`», este test lo frena.
 
 ### TestShipRespectsCancelledContext
 
@@ -788,6 +801,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > envelope es la respuesta del proveedor. El ejemplo de error del PDF devuelve
 > `code` y `message`; el de éxito repite `code: 200` con `result` vacío.
+> `Success` es un puntero porque el campo a veces no viene: `nil` significa
+> «no vino» y es distinto de `false`, que es un rechazo explícito.
 
 ### devicesResultBody / deviceItemBody / slotItemBody
 
