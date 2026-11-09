@@ -77,6 +77,10 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			line.ReconcileUntil = acceptedAt.Add(e.deadline + e.reconcileWindow)
 			line.LastError = ""
 		} else {
+			if result.ProviderRef != "" {
+				line.Ref = result.ProviderRef
+			}
+
 			line.LastError = verdict.detail
 
 			if verdict.outcome == store.OutcomeError {

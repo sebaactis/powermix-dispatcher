@@ -1,7 +1,7 @@
 # Endurecimiento tras la revisión
 
 Correcciones surgidas de la revisión de buenas prácticas, en el orden recomendado, un paso por vez.
-Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando es estructural.
+Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-lines` (paso 3). Cada paso espera la decisión del usuario cuando es estructural.
 
 ## Specs
 
@@ -9,7 +9,8 @@ Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando e
 - **S2** (paso 1b): el callback de snacks no se firma según la documentación (`ys-vending.txt:2023-2075`); corregir `docs/comentarios-codigo.md`, que afirma que nuestros callbacks usan `VerifySignature`, y anotar el riesgo.
 - **S3a** (paso 2, problema A): «un rechazo con intentos pendientes deja la línea en `pending` y se guarda una sola vez. Solo el último rechazo la pasa a `failed`. Además se borra `failed → sent` de `CanLineTransition`, y `failed` queda terminal, como dice la invariante 5.»
 - **S3b** (paso 2, opción B1): «`store.Order` gana `Version int64` y una migración nueva `0005` agrega `orders.version`. `SaveOrder` escribe `WHERE id = $1 AND version = $2` y devuelve `ErrStale` si alguien escribió antes. `settleOrder` recarga y reintenta una vez ante `ErrStale`.» `ConfirmPayment` escribe con versión: el segundo `/pay` concurrente recibe `ErrStale` y termina sin despachar.
-- **S4** (paso 3): recuperar líneas `pending` con intento ya registrado. Pendiente de decisión. Incluye dos casos que dejó a la vista la verificación del paso 2: una línea reintentada que queda `pending` con `Attempts=1` si el proceso cae, y una orden que queda `paid` con líneas `pending` si el guardado a `dispatching` sale `ErrStale`.
+- **S4** (paso 3, opción R1 aceptada): recuperar las líneas `pending` trabadas. Casos: **C1** el proceso cayó entre registrar el intento y guardar su resultado («no: el pedido pudo llegar a la máquina (invariante 8)»); **C2** rechazo con intentos pendientes y caída antes del siguiente («sí: el último intento fue rechazado de forma explícita»); **C3** el guardado a `dispatching` chocó con otro escritor («sí: nadie llamó a la máquina»). Regla del usuario aceptada: «Antes de `AppendAttempt`, `dispatchLine` guarda la línea con `DeadlineAt` (plazo de 2 min). Una línea `pending` con plazo significa «alguien la llamó y no sabemos cómo terminó».» Con plazo vencido «el barrido no la despacha de nuevo. La **reconcilia**»; sin plazo, de una orden pagada hace más de 2 minutos, «el barrido llama a `dispatchLine` con el número de intento siguiente»; «una orden que quedó `paid` pasa a `dispatching` cuando el barrido la toma (C3)».
+- **S4r** (paso 3, agregado aceptado): «Si lo guardamos siempre que venga, C1 en batidos puede llegar a resolverse como entregado o fallido»: `dispatchLine` guarda `result.ProviderRef` en `line.Ref` aunque el intento no se haya aceptado, cuando viene no vacío.
 - **S5** (paso 4): timeouts del servidor, despacho con `context.WithoutCancel`, chequeo previo en paralelo. Pendiente de decisión.
 - **S6** (paso 5): versionado de migraciones y tests de Postgres y `-race`. Pendiente de decisión.
 
@@ -21,7 +22,8 @@ Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando e
 | T2 | S2 | inline | ver commit `docs(snacks)` hecho |
 | T3a | S3a | inline + verify | `646320a` hecho, verify PASS |
 | T3b | S3b | worker + verify | `7a1f963` hecho, verify PASS (Postgres sin ejecutar) |
-| T4 | S4 | pendiente | pendiente |
+| T4a | S4r | worker | ver commit `fix(order): conserva el código` |
+| T4b | S4 | worker + verify | pendiente |
 | T5 | S5 | pendiente | pendiente |
 | T6 | S6 | pendiente | pendiente |
 
@@ -41,3 +43,10 @@ Rama: `fix/review-hardening`. Cada paso espera la decisión del usuario cuando e
   3. Memoria: compara `Version`, incrementa, guarda; `CreateOrder` conserva la versión recibida (0).
   4. Dominio: se extrae `refreshOrderStatus(ctx, orderID) (store.Order, error)` en `internal/order/settle.go`: carga, `AdvanceOrder`, guarda sólo si cambió; ante `ErrStale` recarga y reintenta **una** vez; un segundo `ErrStale` se devuelve como error. `settleOrder` = `refreshOrderStatus` + `notifyOrder`. La cola de `ConfirmPayment` (`payment.go:58-73`) usa `refreshOrderStatus` (sin aviso, como hoy).
   5. `ConfirmPayment`: el guardado a `paid` usa la versión cargada; `ErrStale` ahí devuelve `nil` sin despachar (otro `/pay` ganó). El guardado a `dispatching` parte de la orden devuelta por el primero; un `ErrStale` ahí es error y no se despacha.
+- **L6**: «Si Dale.» (paso 3: R1 + agregado de batidos). R2 (recuperar sólo al arrancar) y R3 (outbox) descartadas.
+- **L7** (diseño de T4a/T4b, decidido por el orquestador dentro de R1):
+  1. T4a: en `dispatchLine`, `line.Ref = result.ProviderRef` cuando `result.ProviderRef != ""`, cualquiera sea el resultado; un intento aceptado sigue limpiando `LastError`.
+  2. Reclamo: en cada vuelta de `dispatchLine`, **antes** de `AppendAttempt`, se guarda la línea (`SaveLine`, con versión) con `DeadlineAt = now + deadline` y `ReconcileUntil = now + deadline + reconcileWindow`; estado sigue `pending`. `ErrStale` ahí → `return nil` (otro escritor la tomó). Si después `AppendAttempt` da `ErrAlreadyExists` → `return nil` como hoy (la línea ya quedó reclamada, así que si ese otro escritor muere, el barrido la reconcilia).
+  3. Después del despacho: aceptado y en duda fijan sus plazos como hoy; un rechazo con intentos pendientes guarda la línea `pending`, `Attempts=number`, con `DeadlineAt` y `ReconcileUntil` en cero (sin reclamo); el rechazo final (`failed`) deja los dos plazos en cero.
+  4. Store: `DueLines` incluye `pending` además de `sent|brewing|in_doubt` (misma condición de plazo vencido). Método nuevo en el puerto `StalledLines(ctx, paidBefore time.Time, limit int) ([]Line, error)`: líneas `pending` sin `DeadlineAt` cuya orden está `paid` o `dispatching` y tiene `paid_at <= paidBefore`, ordenadas por `paid_at`, id. Postgres con `JOIN orders`. Memoria con la misma regla.
+  5. Barrido (`ReconcileDue`): las líneas vencidas se reconcilian como hoy, también las `pending` (nunca se vuelven a despachar). Después pide `StalledLines(now - deadline, limit)` y por cada una: `refreshOrderStatus` de su orden (saca a `paid` hacia `dispatching`), luego `dispatchLine` con la línea recargada. Las órdenes tocadas se asientan con `settleOrder` al final, como hoy.

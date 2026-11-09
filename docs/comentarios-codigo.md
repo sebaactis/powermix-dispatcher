@@ -1438,7 +1438,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Tres desenlaces, y la diferencia es qué sabemos del producto: aceptado es «la máquina lo tomó» (R5: todavía no es entregado, por eso la línea vence y hay que reconciliar); rechazado es «la máquina dijo que no»; cualquier otra cosa es «no sabemos», y se marca `in_doubt` y nunca `failed` (E4), porque declarar fallido habilitaría un reintento a ciegas que podría sacar dos productos.
 >
-> El `ProviderRef` se copia a la línea aunque venga vacío: el asa del proveedor es opcional, pero perderla cuando existe sería perder la única forma de reconciliar.
+> El `ProviderRef` se copia a la línea en un intento aceptado siempre (aunque venga vacío), y en uno no aceptado sólo cuando viene no vacío (S4r): el asa del proveedor es opcional, pero perderla cuando existe sería perder la única forma de reconciliar, y conservarla cuando la máquina aceptó otra campaña sería reconciliar contra el pedido equivocado. El caso que obligó a copiarla fuera de la rama aceptada está en `dispatchLine`.
 
 ## internal/order/reconcile.go
 
@@ -1521,6 +1521,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### dispatchLine — la duda también arma plazos
 
 > Cuando el despacho queda en duda (E4) la línea arma sus plazos igual que cuando fue aceptada: **no hay nada que esperar** porque ya sabemos que no hubo respuesta, así que la primera consulta va al intervalo (30 s) y el tope a la ventana (2 min). Antes de esto la línea quedaba en duda **sin plazo**, y como `DueLines` sólo miraba `sent` y `brewing`, ese caso —el más común de todos— no lo reconciliaba nadie nunca.
+
+### dispatchLine — el código del proveedor se guarda aunque el intento no se acepte (S4r)
+
+> `line.Ref` se escribe siempre que `result.ProviderRef` venga no vacío **cuando el intento no fue aceptado**. Antes sólo se copiaba en la rama `accepted`, y eso dejaba sin asa el único caso donde el asa es imprescindible: el adaptador de Batidos devuelve el código de canje **junto con el error** cuando la campaña se emitió pero el disparo del batido falló (`internal/dispenser/batidos/dispenser.go`). Ese intento cierra en duda, y `reconcileLine` pregunta con `KnownRef: line.Ref`; con el `Ref` vacío, `getOrderInfo` no tiene con qué identificar el pedido y una línea que el proveedor sí conocía se cierra en duda al agotarse la ventana en vez de resolverse como entregada o fallida.
+>
+> Un intento aceptado sigue asignando `line.Ref` **aunque venga vacío**: es la política anterior y se conserva a propósito, porque el asa tiene que describir el intento que la máquina aceptó y no uno anterior. Sin eso, una línea rechazada con código (campaña emitida, canje rechazado) y reintentada con éxito quedaría con el código de la campaña vieja, y la reconciliación preguntaría por un pedido que no es el que la máquina aceptó. La copia condicionada a no vacío vale sólo para los desenlaces que no son `accepted`; ahí un rechazo no inventa una referencia y la línea conserva la que tuviera. El resto del bucle no cambia: un aceptado limpia `LastError` y fija los dos plazos.
+>
+> `TestEngineDispatchKeepsTheProviderRefOfAnAttemptThatEndsInDoubt` fija un lado de punta a punta: la máquina devuelve `ProviderRef` junto con un error de transporte, la línea queda en duda con el `Ref` guardado, y el `ReconcileDue` siguiente le pasa ese mismo `KnownRef` a la máquina. Sin ese cambio, el `Ref` queda vacío y no hay reconciliación posible. `TestEngineDispatchDoesNotKeepTheProviderRefOfAnEarlierRejectedAttempt` fija el otro: un primer despacho rechazado que trae `code-A` y un reintento aceptado sin código dejan `Ref` vacío y la línea `sent`, así que el asa de la campaña rechazada no sobrevive. `TestEngineConfirmPaymentDispatchesBothMachines` sigue cubriendo que un aceptado con código lo guarde y deje `LastError` vacío.
 
 ### lineDue
 
