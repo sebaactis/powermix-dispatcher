@@ -1294,11 +1294,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Store
 
-> `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció.
+> `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció. `StalledLines` responde la otra: qué quedó `pending` sin que nadie sepa si se llegó a llamar.
 >
 > `SaveLine` recibe una línea con su versión y **devuelve la línea persistida con la versión nueva**: es un guardado condicional, no un reemplazo. Si la versión recibida no es la que tiene el store, devuelve `ErrStale` y no escribe nada; si coincide, guarda con `Version+1`. Devolver la línea y no sólo un error es lo que evita que el motor tenga que releer para la escritura siguiente, y es la diferencia entre un puerto que compite por la última escritura y uno que la rechaza.
 >
 > `SaveOrder` guarda sólo la cabecera y **lleva versión**, igual que `SaveLine`: recibe la orden con la versión que se leyó y devuelve la orden persistida con la versión siguiente, o `ErrStale` si alguien escribió antes. Las líneas quedan fuera a propósito, y siguen fuera con versión: escribirlas convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. Devolver la orden y no sólo un error es lo que permite encadenar el guardado siguiente —`ConfirmPayment` guarda dos veces— sin releer la cabecera. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
+>
+> `DueLines` y `StalledLines` son dos preguntas distintas sobre líneas `pending`, y confundirlas cuesta un producto. Una `pending` **con** plazo es una línea que alguien reclamó antes de llamar a la máquina y nunca dejó el resultado: puede haberse despachado, así que se reconcilia. Una `pending` **sin** plazo es una línea que nadie llegó a reclamar: no hubo llamada, así que se despacha. El plazo es el único dato que separa «no sé si salió» de «no salió», y por eso la condición de `StalledLines` incluye el `DeadlineAt` en cero y la de `DueLines` lo exige vencido.
 
 ## internal/store/memory.go
 
@@ -1312,7 +1314,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `RegisterWebhook` devuelve `first` y no un error de duplicado: un callback repetido es el caso normal de un proveedor que reintenta, no un fallo.
 >
-> `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Sólo entran `sent` y `brewing`: `in_doubt` se reconcilia por su propio camino, y volver a despacharlo sería el reintento a ciegas que E4 prohíbe.
+> `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Entran `pending`, `sent`, `brewing` e `in_doubt`: las cuatro tienen un plazo que venció y las cuatro se reconcilian, nunca se redespachan. `pending` es la novedad —una línea reclamada antes del intento y abandonada— y comparte la regla del resto: mientras el plazo no venza, no se toca.
+>
+> `StalledLines` es la otra cara: recorre las órdenes `paid` y `dispatching` cuya `PaidAt` ya pasó el corte, y devuelve sus líneas `pending` **sin** plazo. El filtro por estado de la orden no es un detalle de eficiencia: una orden `pending_payment` también tiene líneas `pending` sin plazo —es lo normal— y despacharlas sería entregar sin cobrar. El `PaidAt` en cero se descarta igual que el `NULL` de SQL: una orden sin pago no tiene antigüedad que medir. Ordena por `paid_at` y después por ID, por el mismo motivo que `DueLines`: el recorrido del mapa no es determinista.
 >
 > `SaveLine` compara la versión con el lock tomado: si no coinciden devuelve `ErrStale` sin tocar el slice, y si coinciden escribe `Version+1` y devuelve la línea guardada. La comparación y la escritura ocurren dentro del mismo lock, que es lo único que convierte el número en una garantía y no en una sugerencia. Nunca se escribe «sólo algunos campos»: la versión protege la línea entera, y por eso el llamador tiene que traer la copia completa que leyó.
 >
@@ -1327,6 +1331,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los que más importan no son los de camino feliz: uno fija que el store nunca comparte estado con quien llama —sin la copia, el motor podría cambiar una línea sin guardarla y el bug aparecería como una reconciliación fantasma—, otro fija que dos líneas con el mismo plazo salen siempre en el mismo orden, y el de concurrencia crea una orden por goroutine y después exige leerlas todas: es la única forma de que un mapa sin protección se note como corrupción de conteo y no como un test que pasa por suerte.
 >
 > Los dos de la versión de la orden trasladan ese mismo contrato a la cabecera: el guardado aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` dejando intactos el estado, `paid_at`, `closed_at` y la versión.
+>
+> `TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` fijan las dos preguntas nuevas y su diferencia: el plazo es lo que decide a cuál pertenece una línea `pending`. El segundo arma seis órdenes —`paid` vieja, `dispatching` vieja, `paid` reciente, `pending_payment`, `delivered` y una con la línea ya reclamada— y exige que sólo salgan las dos primeras, en orden de `paid_at` y de ID, con y sin tope. Las tres exclusiones son las que importan: sin el filtro de estado se despacharía una orden sin pagar, sin el corte de `paid_at` se despacharía un cobro recién registrado, y sin el plazo en cero se volvería a despachar una línea que quizá ya salió.
 >
 > Los cuatro de la versión de la línea fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
 
@@ -1424,9 +1430,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El orden de las llamadas es la garantía contra la doble entrega: primero se registra el intento como `ambiguous`, después se llama a la máquina, y al final se cierra el intento y se guarda la línea. Si el proceso muere en el medio, queda un intento `ambiguous` —la evidencia de que hubo una llamada— y la línea sigue `pending`.
 >
+> Antes de ese orden hay un paso más: **cada vuelta empieza reclamando la línea**, con un `SaveLine` que deja `DeadlineAt = ahora + plazo` y `ReconcileUntil = ahora + plazo + ventana`, sin mover el estado. El reclamo es lo que convierte «murió en el medio» en un hecho observable: una línea `pending` **con plazo** significa «alguien la llamó y no sabemos cómo terminó», y el barrido la encuentra por `DueLines` para reconciliarla. Sin el reclamo ese caso era invisible: la línea quedaba `pending` sin plazo, `DueLines` no la miraba —sólo buscaba `sent`, `brewing` e `in_doubt`— y ni el worker ni nadie la volvía a tocar.
+>
+> El reclamo va **antes** de `AppendAttempt` y no después: la clave de idempotencia ya impide que dos escritores registren el mismo intento, así que el segundo pierde en `AppendAttempt` y devuelve nil. Si el reclamo fuera posterior, ese segundo escritor podría morir antes de reclamar y la línea quedaría sin dueño ni plazo. Reclamar primero deja la línea marcada incluso cuando el que llega segundo se va con las manos vacías. Un `ErrStale` en el reclamo es exactamente eso —otro escritor la tomó— y se responde nil, igual que en el guardado del resultado.
+>
+> Un `ErrAlreadyExists` en `AppendAttempt` sigue devolviendo nil, pero ahora con la línea ya reclamada: si el otro escritor muere, el plazo vence y el barrido la reconcilia.
+>
 > La clave es `orden:línea:número de intento`, con el número sacado de `Attempts+1`. Si `AppendAttempt` dice que ya existe, ese intento ocurrió en una vida anterior del proceso: no se despacha, no se toca la línea, se devuelve nil. Es la razón por la que un reinicio no puede sacar dos productos.
 >
 > `Attempts` se incrementa en **todo** intento registrado, no sólo en los aceptados: si un rechazo no lo moviera, el reintento de T9 reusaría la clave y el store lo leería como replay, prohibiendo el reintento que S7 exige.
+>
+> Los dos plazos del reclamo se limpian en cuanto hay un desenlace que no los necesita: un rechazo —con o sin intentos restantes— deja `DeadlineAt` y `ReconcileUntil` en cero. En el rechazo con intentos pendientes la línea vuelve a `pending`, con `Attempts` contado, y **sin** plazo: si conservara el del reclamo, el barrido la vería como «quizá despachada» y la reconciliaría cuando lo que corresponde es el reintento. En el rechazo final la línea queda `failed`, que no tiene plazo porque nadie la va a volver a mirar. Los dos plazos se pisan en el mismo bloque porque son la misma decisión: un desenlace sin nada que esperar no arma reloj.
 >
 > La línea se guarda con `SaveLine` y nunca con `SaveOrder`: dos goroutines escribiendo la orden entera se pisarían.
 >
@@ -1488,7 +1502,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed
 
-> Registra cada `SaveLine` (con `recordingStore.lineStatesFor`) y exige la secuencia `[pending, sent]` para una línea rechazada una vez y aceptada después. Mira las escrituras y no sólo el estado final porque el defecto era justamente un estado intermedio visible para otros escritores.
+> Registra cada `SaveLine` (con `recordingStore.lineStatesFor`) y exige la secuencia `[pending, pending, pending, sent]` para una línea rechazada una vez y aceptada después: el reclamo de la primera vuelta, el rechazo con intentos pendientes, el reclamo de la segunda vuelta y el resultado aceptado. Mira las escrituras y no sólo el estado final porque el defecto era justamente un estado intermedio visible para otros escritores. Además comprueba, sobre la instantánea del rechazo, que conserva `Attempts=1` y deja los dos plazos en cero: con el plazo del reclamo vivo, el barrido la habría tratado como «quizá despachada» en vez de reintentarla.
+>
+> La prueba del rechazo final es la otra mitad (`TestEngineDispatchClearsTheClaimDeadlinesOnAFinalRejection`, con un solo intento permitido): la línea queda `failed` y los dos plazos vuelven a cero. Sin esa limpieza la línea fallida arrastraría el plazo del reclamo para siempre, aunque `failed` no lo mire nadie.
 
 ### CanLineTransition: `failed` es terminal
 
@@ -1533,6 +1549,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### lineDue
 
 > También devuelve líneas `in_doubt` cuando tienen un plazo armado. Una línea cerrada en duda al agotarse el tope tiene los dos plazos en cero, así que deja de aparecer sola: el «en duda» que se sigue consultando es el que todavía tiene presupuesto, no el que ya se rindió.
+>
+> Y devuelve `pending` cuando el plazo venció, que es el caso C1 del paso 3: el proceso cayó entre el reclamo y el resultado. Entra por la misma puerta que el resto porque su desenlace también se decide preguntándole a la máquina, no adivinando; lo que **no** hace es despacharse de nuevo, porque el intento ya pudo haber llegado.
 
 ### ReconcileDue / reconcileLine
 
@@ -1541,6 +1559,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los errores no cortan el lote: se acumulan y se devuelven juntos, para que una línea que falló no deje sin reconciliar a las demás. Un error de consulta no pierde la línea: se trata como «sigue en duda» y se agenda el próximo intento.
 >
 > `reconcileLine` busca el driver con `line.Machine.Kind`, igual que el despacho, y por eso una línea que se reconcilia después de un reinicio elige exactamente el mismo driver que la despachó.
+>
+> Después del lote vencido viene el otro: `StalledLines(ahora - plazo, limit)` trae las líneas que nunca se reclamaron, y por cada una se llama a `resumeStalledLine`. Esa función hace tres cosas en este orden y el orden importa. Primero `refreshOrderStatus`: una orden que quedó en `paid` porque el guardado a `dispatching` chocó con otro escritor (C3) no puede despachar sus líneas desde `paid` sin que el estado lo refleje, y `AdvanceOrder` es el único lugar donde se deriva. Después **recarga la línea** con `LoadOrder`: entre el `StalledLines` y este punto otro escritor pudo reclamarla o cerrarla, y despachar la copia vieja sería despachar dos veces; el `DeadlineAt` en cero es la condición que decide, no el estado de la copia. Sólo entonces `dispatchLine`, que vuelve a reclamar con `SaveLine` y por eso mismo es seguro: si otro ganó ese guardado, devuelve nil sin llamar a la máquina.
+>
+> Las órdenes tocadas se asientan al final con `settleOrder`, igual que las que cerraron una línea, y el `seen` compartido evita asentarlas dos veces cuando la misma orden aparece por los dos caminos. Los errores se acumulan con los del primer lote: una línea que falló no deja sin recuperar a las demás.
+>
+> Los cuatro tests de la recuperación están separados por caso porque son cuatro hechos distintos. `TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching` arma el caso C1 a mano —línea `pending` con plazo vencido e intento registrado— y exige que la máquina reciba **una consulta y ningún despacho**, con dos finales: entregado por el proveedor y en duda con la ventana agotada. `TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt` es C2: línea sin plazo de una orden pagada hace tres minutos, y comprueba en el store de grabación que el intento es el número 2 —clave terminada en `:2`— y no un replay del primero. `TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLines` es C3, con las dos máquinas. `TestEngineReconcileDueLeavesThePendingLinesThatWereNeverAbandoned` es el guardián: una línea reclamada con el plazo abierto, una sin plazo de una orden pagada hace un minuto y una de una orden `pending_payment` no se tocan, ni siquiera se leen — el test compara la línea entera antes y después.
 
 ### extendReconcile
 
@@ -1888,7 +1912,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `RegisterWebhook` es un `INSERT … ON CONFLICT (source, dedupe_key) DO NOTHING` y devuelve `first` según las filas afectadas: un webhook repetido es el caso normal de un proveedor que reintenta, no un error. Un `INSERT` ciego más un `ErrAlreadyExists` obligaría al llamador a tratar un duplicado como excepción.
 >
-> `DueLines` filtra `deadline_at IS NOT NULL AND deadline_at <= $1` y ordena por `deadline_at` con `id` como desempate, para que dos plazos iguales salgan siempre en el mismo orden y un worker con tope no se comporte distinto entre corridas. El `LIMIT` sólo se agrega cuando el tope es mayor que cero: el puerto define que cero significa «sin tope», y un `LIMIT 0` de SQL devolvería nada, que es lo contrario.
+> `DueLines` filtra `deadline_at IS NOT NULL AND deadline_at <= $1` y ordena por `deadline_at` con `id` como desempate, para que dos plazos iguales salgan siempre en el mismo orden y un worker con tope no se comporte distinto entre corridas. El `LIMIT` sólo se agrega cuando el tope es mayor que cero: el puerto define que cero significa «sin tope», y un `LIMIT 0` de SQL devolvería nada, que es lo contrario. Los estados son `pending`, `sent`, `brewing` e `in_doubt`: la misma condición de plazo para las cuatro, y `pending` incluida porque una línea reclamada sin resultado también hay que reconciliarla.
+
+### StalledLines
+
+> `JOIN orders` es la forma de pedir dos condiciones de dos tablas sin una subconsulta: la línea `pending` sin plazo y su orden `paid`/`dispatching` pagada antes del corte. El `orders.paid_at IS NOT NULL` no es defensivo: sin él un `NULL <= $1` daría `NULL`, que en un `WHERE` no es verdadero, y la diferencia entre «no lo escribí» y «lo escribí mal» es todo lo que se vería al depurar.
+>
+> `stalledLineColumns` es `lineColumns` prefijado con `order_line.`: en un `JOIN`, `id` y `amount_cents` existen en las dos tablas y la consulta no compila —o peor, compila contra la tabla equivocada— sin prefijo. Se deriva en vez de duplicarse porque la lista tiene 19 columnas y `scanLine` las espera en ese orden; una copia que se desincronice es un `Scan` roto que sólo aparece frente a una base real.
+>
+> No hay migración para esto. El índice `order_line (state, deadline_at)` de `0001_init.sql` ya sirve: `state = 'pending'` es su primera columna y `deadline_at IS NULL` se resuelve dentro del mismo índice. Ordenar por `orders.paid_at` cuesta un sort sobre el puñado de líneas que devuelve ese filtro, no un recorrido de la tabla de órdenes.
 
 ### Open / Close — la dependencia
 
@@ -1897,6 +1929,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## internal/store/postgres/postgres_test.go
 
 > Los dos tests nuevos son el contrato del guardado condicional de la cabecera, espejo de los de `SaveLine`: el aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` sin mover ni el estado ni las fechas ni la versión.
+>
+> `TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` son el espejo en SQL de los de la memoria, y por eso cubren las mismas exclusiones: estado de la orden, corte de `paid_at` y plazo en cero. En SQL además prueban que el `JOIN` y las columnas prefijadas devuelven una línea completa —`scanLine` recibe las 19 columnas en orden—, que es lo que un test de memoria no puede ver.
 >
 > Se saltean sin `TEST_DATABASE_URL`, como todo el paquete: la migración `0005` y este contrato quedan escritos y sin ejecutar contra una base real.
 

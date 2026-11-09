@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,6 +25,8 @@ const (
 
 	lineColumnCount = 19
 )
+
+var stalledLineColumns = tableColumns(lineColumns, "order_line")
 
 type Store struct {
 	db *sql.DB
@@ -235,7 +238,7 @@ func (s *Store) RegisterWebhook(ctx context.Context, wh store.Webhook) (bool, er
 func (s *Store) DueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {
 	query := `SELECT ` + lineColumns + ` FROM order_line
 		WHERE deadline_at IS NOT NULL AND deadline_at <= $1
-			AND state IN ('sent', 'brewing', 'in_doubt')
+			AND state IN ('pending', 'sent', 'brewing', 'in_doubt')
 		ORDER BY deadline_at, id`
 	args := []any{now}
 
@@ -265,6 +268,52 @@ func (s *Store) DueLines(ctx context.Context, now time.Time, limit int) ([]store
 	}
 
 	return lines, nil
+}
+
+func (s *Store) StalledLines(ctx context.Context, paidBefore time.Time, limit int) ([]store.Line, error) {
+	query := `SELECT ` + stalledLineColumns + ` FROM order_line
+		JOIN orders ON orders.id = order_line.order_id
+		WHERE order_line.state = 'pending' AND order_line.deadline_at IS NULL
+			AND orders.status IN ('paid', 'dispatching')
+			AND orders.paid_at IS NOT NULL AND orders.paid_at <= $1
+		ORDER BY orders.paid_at, order_line.id`
+	args := []any{paidBefore}
+
+	if limit > 0 {
+		query += ` LIMIT $2`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("no se pudieron leer las líneas trabadas: %w", err)
+	}
+	defer rows.Close()
+
+	lines := make([]store.Line, 0)
+	for rows.Next() {
+		line, err := scanLine(rows)
+		if err != nil {
+			return nil, fmt.Errorf("no se pudo leer una línea trabada: %w", err)
+		}
+
+		lines = append(lines, line)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("no se pudieron leer las líneas trabadas: %w", err)
+	}
+
+	return lines, nil
+}
+
+func tableColumns(columns, table string) string {
+	parts := strings.Split(columns, ",")
+	for i, part := range parts {
+		parts[i] = table + "." + strings.TrimSpace(part)
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 func (s *Store) orderBy(ctx context.Context, column string, value any) (store.Order, error) {

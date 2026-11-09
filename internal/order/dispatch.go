@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/store"
@@ -21,6 +22,21 @@ type dispatchVerdict struct {
 func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Line) error {
 	for line.Attempts < e.maxAttempts {
 		number := line.Attempts + 1
+
+		claimedAt := e.now()
+
+		line.DeadlineAt = claimedAt.Add(e.deadline)
+		line.ReconcileUntil = claimedAt.Add(e.deadline + e.reconcileWindow)
+
+		claimed, claimErr := e.store.SaveLine(ctx, line)
+		if errors.Is(claimErr, store.ErrStale) {
+			return nil
+		}
+		if claimErr != nil {
+			return claimErr
+		}
+
+		line = claimed
 
 		attempt := store.Attempt{
 			ID:             e.nextID(),
@@ -82,6 +98,8 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			}
 
 			line.LastError = verdict.detail
+			line.DeadlineAt = time.Time{}
+			line.ReconcileUntil = time.Time{}
 
 			if verdict.outcome == store.OutcomeError {
 				doubtfulAt := e.now()

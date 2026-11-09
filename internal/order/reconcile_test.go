@@ -1,6 +1,7 @@
 package order_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -309,5 +311,253 @@ func TestEngineReconcileDueIgnoresALineThatIsNotDue(t *testing.T) {
 	after := setup.line(t)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("la línea cambió sin estar vencida: %+v, se esperaba %+v", after, before)
+	}
+}
+
+func storedOrder(orderID string, status store.OrderStatus, paidAt time.Time, lines ...store.Line) store.Order {
+	return store.Order{
+		ID:          orderID,
+		KioskID:     "kiosk-1",
+		ComboID:     "combo-1",
+		AmountCents: 2500,
+		Currency:    "ARS",
+		Status:      status,
+		CreatedAt:   engineNow,
+		PaidAt:      paidAt,
+		Lines:       lines,
+	}
+}
+
+func pendingLine(lineID, orderID string, position int, kind string, amountCents int64, sku string) store.Line {
+	return store.Line{
+		ID:          lineID,
+		OrderID:     orderID,
+		Position:    position,
+		Machine:     dispenser.MachineRef{KioskID: "kiosk-1", Kind: machine.Kind(kind), Name: kind + " Powermix", DeviceID: "device-1", DeviceNo: "1", DeviceTypeID: "2"},
+		SKU:         sku,
+		AmountCents: amountCents,
+		State:       dispenser.LinePending,
+	}
+}
+
+func newEngineFor(t *testing.T, st store.Store, drivers map[machine.Kind]dispenser.Dispenser, opts ...order.Option) *order.Engine {
+	t.Helper()
+
+	engineOpts := []order.Option{order.WithClock(manualClockAt(engineNow).clock()), order.WithIDGenerator(sequentialIDs())}
+	engineOpts = append(engineOpts, opts...)
+
+	return order.New(st, drivers, engineOpts...)
+}
+
+func mustCreateStored(t *testing.T, st store.Store, stored store.Order) {
+	t.Helper()
+
+	if err := st.CreateOrder(context.Background(), stored); err != nil {
+		t.Fatalf("CreateOrder(%q): %v", stored.ID, err)
+	}
+}
+
+func TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching(t *testing.T) {
+	cases := []struct {
+		name      string
+		until     time.Time
+		status    dispenser.Status
+		wantState dispenser.LineState
+		wantOrder store.OrderStatus
+	}{
+		{
+			name:      "el proveedor informa la entrega",
+			until:     engineNow.Add(time.Minute),
+			status:    dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "order-no-1"},
+			wantState: dispenser.LineDelivered,
+			wantOrder: store.OrderDelivered,
+		},
+		{
+			name:      "sin dato y con la ventana agotada",
+			until:     engineNow.Add(-time.Second),
+			status:    dispenser.Status{State: dispenser.LineInDoubt, Reason: "el proveedor no informa el pedido"},
+			wantState: dispenser.LineInDoubt,
+			wantOrder: store.OrderInDoubt,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := acceptedDrinkMachine()
+			driver.status = tc.status
+
+			line := pendingLine("line-batido", "order-1", 1, "batidos", 1500, "sku-batido")
+			line.Attempts = 1
+			line.DeadlineAt = engineNow.Add(-time.Minute)
+			line.ReconcileUntil = tc.until
+
+			st := store.NewMemory()
+			mustCreateStored(t, st, storedOrder("order-1", store.OrderDispatching, engineNow.Add(-3*time.Minute), line))
+
+			engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
+
+			if err := engine.ReconcileDue(context.Background(), 10); err != nil {
+				t.Fatalf("ReconcileDue: %v", err)
+			}
+
+			if driver.reconcileCount() != 1 {
+				t.Fatalf("la máquina recibió %d consultas de reconciliación, se esperaba 1: una línea reclamada se reconcilia", driver.reconcileCount())
+			}
+			if driver.dispatchCount() != 0 {
+				t.Fatalf("una línea reclamada se volvió a despachar: %d despachos, se esperaban 0", driver.dispatchCount())
+			}
+
+			got := mustOrder(t, st, "order-1")
+			if got.Lines[0].State != tc.wantState {
+				t.Fatalf("la línea quedó en %q, se esperaba %q", got.Lines[0].State, tc.wantState)
+			}
+			if !got.Lines[0].DeadlineAt.IsZero() || !got.Lines[0].ReconcileUntil.IsZero() {
+				t.Fatalf("la línea cerrada conserva plazos: deadline=%v until=%v", got.Lines[0].DeadlineAt, got.Lines[0].ReconcileUntil)
+			}
+			if got.Status != tc.wantOrder {
+				t.Fatalf("Status=%q, se esperaba %q", got.Status, tc.wantOrder)
+			}
+		})
+	}
+}
+
+func TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt(t *testing.T) {
+	ctx := context.Background()
+	st := newRecordingStore()
+
+	driver := acceptedDrinkMachine()
+
+	line := pendingLine("line-batido", "order-1", 1, "batidos", 1500, "sku-batido")
+	line.Attempts = 1
+
+	mustCreateStored(t, st, storedOrder("order-1", store.OrderDispatching, engineNow.Add(-3*time.Minute), line))
+
+	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
+
+	if err := engine.ReconcileDue(ctx, 10); err != nil {
+		t.Fatalf("ReconcileDue: %v", err)
+	}
+
+	if driver.dispatchCount() != 1 {
+		t.Fatalf("la línea trabada se despachó %d veces, se esperaba exactamente 1", driver.dispatchCount())
+	}
+	if driver.reconcileCount() != 0 {
+		t.Fatalf("una línea sin plazo se reconcilió %d veces en vez de despacharse", driver.reconcileCount())
+	}
+
+	attempts := st.attemptsFor(t, line.ID)
+	if len(attempts) != 1 {
+		t.Fatalf("se registraron %d intentos, se esperaba 1", len(attempts))
+	}
+	if attempts[0].Number != 2 {
+		t.Fatalf("el intento quedó con el número %d, se esperaba 2: el primero se registró antes de la caída", attempts[0].Number)
+	}
+	if !strings.HasSuffix(attempts[0].IdempotencyKey, ":2") {
+		t.Fatalf("la clave del intento es %q, se esperaba la del intento 2", attempts[0].IdempotencyKey)
+	}
+
+	got := mustOrder(t, st, "order-1")
+	if got.Lines[0].State != dispenser.LineSent {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", got.Lines[0].State, dispenser.LineSent)
+	}
+	if got.Lines[0].Attempts != 2 {
+		t.Fatalf("la línea acumuló %d intentos, se esperaban 2", got.Lines[0].Attempts)
+	}
+}
+
+func TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLines(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory()
+
+	batido := acceptedDrinkMachine()
+	snack := acceptedDrinkMachine()
+
+	drink := pendingLine("line-batido", "order-1", 1, "batidos", 1500, "sku-batido")
+	snacksLine := pendingLine("line-snack", "order-1", 2, "snacks", 1000, "sku-snack")
+
+	mustCreateStored(t, st, storedOrder("order-1", store.OrderPaid, engineNow.Add(-3*time.Minute), drink, snacksLine))
+
+	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack})
+
+	if err := engine.ReconcileDue(ctx, 10); err != nil {
+		t.Fatalf("ReconcileDue: %v", err)
+	}
+
+	if batido.dispatchCount() != 1 || snack.dispatchCount() != 1 {
+		t.Fatalf("despachos: batidos=%d snacks=%d, se esperaba uno de cada uno", batido.dispatchCount(), snack.dispatchCount())
+	}
+
+	got := mustOrder(t, st, "order-1")
+	if got.Status != store.OrderDispatching {
+		t.Fatalf("Status=%q, se esperaba %q: el barrido toma la orden paga que quedó trabada", got.Status, store.OrderDispatching)
+	}
+	for _, line := range got.Lines {
+		if line.State != dispenser.LineSent {
+			t.Fatalf("la línea %q quedó en %q, se esperaba %q", line.ID, line.State, dispenser.LineSent)
+		}
+		if line.Attempts != 1 {
+			t.Fatalf("la línea %q acumuló %d intentos, se esperaba 1", line.ID, line.Attempts)
+		}
+	}
+}
+
+func TestEngineReconcileDueLeavesThePendingLinesThatWereNeverAbandoned(t *testing.T) {
+	cases := []struct {
+		name   string
+		status store.OrderStatus
+		paidAt time.Time
+		tweak  func(line *store.Line)
+	}{
+		{
+			name:   "reclamada con el plazo todavía abierto",
+			status: store.OrderDispatching,
+			paidAt: engineNow.Add(-time.Hour),
+			tweak:  func(line *store.Line) { line.DeadlineAt = engineNow.Add(time.Minute) },
+		},
+		{
+			name:   "sin plazo de una orden pagada hace menos del plazo",
+			status: store.OrderPaid,
+			paidAt: engineNow.Add(-time.Minute),
+		},
+		{
+			name:   "sin plazo de una orden que todavía no se pagó",
+			status: store.OrderPendingPayment,
+			paidAt: engineNow.Add(-time.Hour),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := acceptedDrinkMachine()
+
+			line := pendingLine("line-batido", "order-1", 1, "batidos", 1500, "sku-batido")
+			line.Attempts = 1
+			if tc.tweak != nil {
+				tc.tweak(&line)
+			}
+
+			st := store.NewMemory()
+			mustCreateStored(t, st, storedOrder("order-1", tc.status, tc.paidAt, line))
+
+			engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
+
+			before := mustOrder(t, st, "order-1").Lines[0]
+
+			if err := engine.ReconcileDue(context.Background(), 10); err != nil {
+				t.Fatalf("ReconcileDue: %v", err)
+			}
+
+			if driver.dispatchCount() != 0 || driver.reconcileCount() != 0 {
+				t.Fatalf("la línea se tocó: despachos=%d consultas=%d, se esperaban 0 y 0", driver.dispatchCount(), driver.reconcileCount())
+			}
+
+			after := mustOrder(t, st, "order-1")
+			if !reflect.DeepEqual(after.Lines[0], before) {
+				t.Fatalf("la línea cambió sin estar abandonada: %+v, se esperaba %+v", after.Lines[0], before)
+			}
+			if after.Status != tc.status {
+				t.Fatalf("Status=%q, se esperaba %q sin tocar", after.Status, tc.status)
+			}
+		})
 	}
 }

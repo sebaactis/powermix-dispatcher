@@ -11,7 +11,7 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 324 funciones de test, 16 paquetes
+go test ./...                          # 334 funciones de test, 16 paquetes
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -35,7 +35,7 @@ docker compose up -d --build           # db + migrate + api + fakeapi
 | `internal/dispenser` | **el puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `MachineRef`, `Request`, `DispatchResult`, `Status`, `Rejection`, `LineState` |
 | `internal/dispenser/batidos` | adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
-| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale` |
+| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `DueLines`, `StalledLines` |
 | `internal/store/postgres` | implementación sobre Postgres | `Open`, `Store`, `Seed` |
 | `internal/topology` | upsert de muebles/máquinas/combos al arrancar (Postgres tiene FK) | `Seed` |
 | `internal/order` | **el dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
@@ -84,6 +84,11 @@ Quién cierra una línea:
 - **snacks**: sólo el callback (`CloseFromCallback`) o el barrido, que para snacks siempre concluye duda. `CloseFromCallback` aplica lo que dice el proveedor.
 - **batidos**: `ConfirmFromCallback` **no se fía** del aviso (no viene firmado): consulta `getOrderInfo` con el mismo `reconcileLine` que usa el barrido.
 
+Quién mueve una línea `pending`:
+
+- **`ConfirmPayment`**: es el camino normal, una vuelta de `dispatchLine` por intento.
+- **el barrido**, con dos reglas distintas: una `pending` **con plazo vencido** quedó reclamada por un despacho que no dejó resultado, y se **reconcilia** (nunca se vuelve a despachar); una `pending` **sin plazo** de una orden `paid`/`dispatching` pagada hace más de 2 minutos nunca se reclamó, y se **despacha** con el intento siguiente.
+
 Endpoints del backend:
 
 ```
@@ -129,6 +134,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | Busco | Voy a |
 | --- | --- |
 | por qué una línea no se reintenta | `internal/order/dispatch.go`, `classifyDispatch` |
+| por qué una línea `pending` se recuperó | `internal/order/reconcile.go` (`ReconcileDue`, `resumeStalledLine`) y `StalledLines` en `internal/store` |
 | cuándo se declara una duda | `internal/order/reconcile.go`, `extendReconcile` |
 | cómo se elige el driver de una máquina | `internal/order/engine.go` (`machines`) y `dispatch.go` |
 | por qué un callback no encontró su línea | `internal/order/callback.go`, `callbackLine` (tres reglas) |
@@ -165,6 +171,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | `store` importa `dispenser` por `LineState`/`MachineRef` | deuda anotada, próximo cambio de la revisión de código |
 | `machineIdentified` acepta cualquier identificador | una línea con `Kind: snacks` y `device_id` de batidos sigue siendo expresable |
 | Avisos repetidos | `settleOrder` avisa cada vez que la orden está en duda; no hay dedupe por `(orden, tipo)` |
+| El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |
 | Store en memoria más permisivo que Postgres | acepta una línea sin familia; el `CHECK` de SQL es la última red |
 | Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |
 | `migrate` del compose sin tabla de versiones | repetir el esquema exige `docker compose down -v` |

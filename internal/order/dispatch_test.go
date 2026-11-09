@@ -146,6 +146,87 @@ func TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight
 	}
 }
 
+func TestEngineDispatchClaimsTheLineBeforeCallingTheMachine(t *testing.T) {
+	ctx := context.Background()
+	st := newRecordingStore()
+
+	driver := &closingOnDispatchMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	driver.onDispatch = func() { st.record("dispatch") }
+
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": driver},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, drinkOnlyDraft())
+
+	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("ConfirmPayment: %v", err)
+	}
+
+	events := st.recordedEvents()
+	if len(events) != 4 {
+		t.Fatalf("el despacho dejó %d eventos, se esperaban 4 (reclamo, intento, despacho, resultado): %+v", len(events), events)
+	}
+
+	claim := events[0]
+	if claim.Kind != "saveLine" {
+		t.Fatalf("el primer evento fue %q, se esperaba el reclamo de la línea antes de registrar el intento", claim.Kind)
+	}
+	if claim.State != dispenser.LinePending {
+		t.Fatalf("el reclamo guardó la línea en %q, se esperaba %q: el despacho todavía no ocurrió", claim.State, dispenser.LinePending)
+	}
+	if want := engineNow.Add(2 * time.Minute); !claim.Deadline.Equal(want) {
+		t.Fatalf("el reclamo guardó DeadlineAt=%v, se esperaba %v", claim.Deadline, want)
+	}
+	if want := engineNow.Add(4 * time.Minute); !claim.Until.Equal(want) {
+		t.Fatalf("el reclamo guardó ReconcileUntil=%v, se esperaba %v", claim.Until, want)
+	}
+
+	if events[1].Kind != "appendAttempt" {
+		t.Fatalf("el segundo evento fue %q, se esperaba el intento registrado después del reclamo", events[1].Kind)
+	}
+	if events[2].Kind != "dispatch" {
+		t.Fatalf("el tercer evento fue %q, se esperaba la llamada a la máquina después del intento", events[2].Kind)
+	}
+	if events[3].Kind != "saveLine" || events[3].State != dispenser.LineSent {
+		t.Fatalf("el último evento fue %q en el estado %q, se esperaba el resultado %q", events[3].Kind, events[3].State, dispenser.LineSent)
+	}
+}
+
+func TestEngineDispatchClearsTheClaimDeadlinesOnAFinalRejection(t *testing.T) {
+	ctx := context.Background()
+	st := newRecordingStore()
+
+	driver := &scriptedMachine{steps: []machineStep{
+		{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}},
+	}}
+
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": driver},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+		order.WithMaxAttempts(1),
+	)
+
+	placed := place(t, engine, drinkOnlyDraft())
+
+	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("ConfirmPayment: %v", err)
+	}
+
+	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
+	if line.State != dispenser.LineFailed {
+		t.Fatalf("la línea quedó en %q, se esperaba %q: sin intentos restantes el rechazo es final", line.State, dispenser.LineFailed)
+	}
+	if !line.DeadlineAt.IsZero() || !line.ReconcileUntil.IsZero() {
+		t.Fatalf("el rechazo final conservó los plazos del reclamo: deadline=%v until=%v, se esperaban los dos en cero", line.DeadlineAt, line.ReconcileUntil)
+	}
+}
+
 type machineStep struct {
 	result dispenser.DispatchResult
 	err    error

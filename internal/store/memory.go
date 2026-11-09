@@ -241,7 +241,9 @@ func cloneOrder(order Order) Order {
 }
 
 func lineDue(line Line, now time.Time) bool {
-	if line.State != dispenser.LineSent && line.State != dispenser.LineBrewing && line.State != dispenser.LineInDoubt {
+	switch line.State {
+	case dispenser.LinePending, dispenser.LineSent, dispenser.LineBrewing, dispenser.LineInDoubt:
+	default:
 		return false
 	}
 
@@ -250,4 +252,49 @@ func lineDue(line Line, now time.Time) bool {
 	}
 
 	return !line.DeadlineAt.After(now)
+}
+
+func (m *Memory) StalledLines(ctx context.Context, paidBefore time.Time, limit int) ([]Line, error) {
+	type stalledLine struct {
+		paidAt time.Time
+		line   Line
+	}
+
+	m.mu.Lock()
+	found := make([]stalledLine, 0)
+	for _, order := range m.orders {
+		if order.Status != OrderPaid && order.Status != OrderDispatching {
+			continue
+		}
+		if order.PaidAt.IsZero() || order.PaidAt.After(paidBefore) {
+			continue
+		}
+
+		for _, line := range order.Lines {
+			if line.State != dispenser.LinePending || !line.DeadlineAt.IsZero() {
+				continue
+			}
+
+			found = append(found, stalledLine{paidAt: order.PaidAt, line: line})
+		}
+	}
+	m.mu.Unlock()
+
+	sort.Slice(found, func(i, j int) bool {
+		if !found[i].paidAt.Equal(found[j].paidAt) {
+			return found[i].paidAt.Before(found[j].paidAt)
+		}
+		return found[i].line.ID < found[j].line.ID
+	})
+
+	lines := make([]Line, 0, len(found))
+	for _, item := range found {
+		lines = append(lines, item.line)
+	}
+
+	if limit > 0 && len(lines) > limit {
+		lines = lines[:limit]
+	}
+
+	return lines, nil
 }

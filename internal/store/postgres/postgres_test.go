@@ -732,3 +732,95 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 		t.Fatalf("no hay líneas vencidas antes del primer plazo y volvieron %d", len(none))
 	}
 }
+
+func storedLine(lineID string, position int, state dispenser.LineState, deadline time.Time) store.Line {
+	return store.Line{
+		ID:         lineID,
+		Position:   position,
+		Machine:    dispenser.MachineRef{Kind: "snacks", MID: "mid-1"},
+		SKU:        "snack-mixto",
+		State:      state,
+		DeadlineAt: deadline,
+	}
+}
+
+func orderWithLine(orderID string, status store.OrderStatus, paidAt time.Time, line store.Line) store.Order {
+	line.OrderID = orderID
+
+	return store.Order{
+		ID:        orderID,
+		KioskID:   kioskID,
+		ComboID:   comboID,
+		Status:    status,
+		CreatedAt: moment(),
+		PaidAt:    paidAt,
+		Lines:     []store.Line{line},
+	}
+}
+
+func TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	now := moment().Add(5 * time.Minute)
+
+	mustCreateOrder(t, st, orderWithLine("order-reclamada", store.OrderDispatching, moment(),
+		storedLine("line-reclamada", 1, dispenser.LinePending, moment().Add(time.Minute))))
+	mustCreateOrder(t, st, orderWithLine("order-sin-plazo", store.OrderDispatching, moment(),
+		storedLine("line-sin-plazo", 1, dispenser.LinePending, time.Time{})))
+
+	due, err := st.DueLines(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("no se pudo consultar las líneas vencidas: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != "line-reclamada" {
+		t.Fatalf("DueLines devolvió %d líneas, se esperaba sólo la pendiente con plazo vencido: %+v", len(due), due)
+	}
+	if due[0].State != dispenser.LinePending {
+		t.Fatalf("la línea reclamada volvió en %q, se esperaba %q", due[0].State, dispenser.LinePending)
+	}
+}
+
+func TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	cut := moment().Add(5 * time.Minute)
+
+	mustCreateOrder(t, st, orderWithLine("order-paga", store.OrderPaid, moment(),
+		storedLine("line-paga", 1, dispenser.LinePending, time.Time{})))
+	mustCreateOrder(t, st, orderWithLine("order-despachando", store.OrderDispatching, moment().Add(time.Minute),
+		storedLine("line-despachando", 1, dispenser.LinePending, time.Time{})))
+	mustCreateOrder(t, st, orderWithLine("order-reclamada", store.OrderPaid, moment(),
+		storedLine("line-reclamada", 1, dispenser.LinePending, moment().Add(time.Minute))))
+	mustCreateOrder(t, st, orderWithLine("order-reciente", store.OrderPaid, moment().Add(10*time.Minute),
+		storedLine("line-reciente", 1, dispenser.LinePending, time.Time{})))
+	mustCreateOrder(t, st, orderWithLine("order-sin-pago", store.OrderPendingPayment, time.Time{},
+		storedLine("line-sin-pago", 1, dispenser.LinePending, time.Time{})))
+	mustCreateOrder(t, st, orderWithLine("order-entregada", store.OrderDelivered, moment(),
+		storedLine("line-entregada", 1, dispenser.LinePending, time.Time{})))
+
+	stalled, err := st.StalledLines(ctx, cut, 10)
+	if err != nil {
+		t.Fatalf("no se pudo consultar las líneas trabadas: %v", err)
+	}
+	if len(stalled) != 2 || stalled[0].ID != "line-paga" || stalled[1].ID != "line-despachando" {
+		t.Fatalf("StalledLines devolvió %d líneas, se esperaban la paga y la que quedó despachando: %+v", len(stalled), stalled)
+	}
+
+	limited, err := st.StalledLines(ctx, cut, 1)
+	if err != nil {
+		t.Fatalf("no se pudo consultar con tope: %v", err)
+	}
+	if len(limited) != 1 || limited[0].ID != "line-paga" {
+		t.Fatalf("el tope no se respetó: %+v", limited)
+	}
+
+	none, err := st.StalledLines(ctx, moment().Add(-time.Minute), 10)
+	if err != nil {
+		t.Fatalf("no se pudo consultar antes del corte: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("no hay líneas trabadas antes del corte y volvieron %d", len(none))
+	}
+}

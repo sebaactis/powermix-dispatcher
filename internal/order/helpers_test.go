@@ -112,6 +112,13 @@ func (s *flakyMachine) callCount() int {
 	return len(s.calls)
 }
 
+type recordedEvent struct {
+	Kind     string
+	State    dispenser.LineState
+	Deadline time.Time
+	Until    time.Time
+}
+
 type recordingStore struct {
 	*store.Memory
 
@@ -120,6 +127,7 @@ type recordingStore struct {
 	appended   []store.Attempt
 	saved      []store.Attempt
 	savedLines []store.Line
+	events     []recordedEvent
 }
 
 func newRecordingStore() *recordingStore {
@@ -145,6 +153,7 @@ func (r *recordingStore) AppendAttempt(ctx context.Context, attempt store.Attemp
 
 	r.mu.Lock()
 	r.appended = append(r.appended, attempt)
+	r.events = append(r.events, recordedEvent{Kind: "appendAttempt"})
 	r.mu.Unlock()
 
 	return nil
@@ -170,9 +179,43 @@ func (r *recordingStore) SaveLine(ctx context.Context, line store.Line) (store.L
 
 	r.mu.Lock()
 	r.savedLines = append(r.savedLines, saved)
+	r.events = append(r.events, recordedEvent{
+		Kind:     "saveLine",
+		State:    saved.State,
+		Deadline: saved.DeadlineAt,
+		Until:    saved.ReconcileUntil,
+	})
 	r.mu.Unlock()
 
 	return saved, nil
+}
+
+func (r *recordingStore) record(kind string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.events = append(r.events, recordedEvent{Kind: kind})
+}
+
+func (r *recordingStore) recordedEvents() []recordedEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]recordedEvent(nil), r.events...)
+}
+
+func (r *recordingStore) savedLinesFor(lineID string) []store.Line {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var lines []store.Line
+	for _, line := range r.savedLines {
+		if line.ID == lineID {
+			lines = append(lines, line)
+		}
+	}
+
+	return lines
 }
 
 func (r *recordingStore) lineStatesFor(lineID string) []dispenser.LineState {

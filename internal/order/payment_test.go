@@ -479,9 +479,19 @@ func TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed(t *testing.
 	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
 
 	got := st.lineStatesFor(line.ID)
-	want := []dispenser.LineState{dispenser.LinePending, dispenser.LineSent}
+	want := []dispenser.LineState{dispenser.LinePending, dispenser.LinePending, dispenser.LinePending, dispenser.LineSent}
 	if !slices.Equal(got, want) {
-		t.Fatalf("la línea reintentada se guardó con los estados %v, se esperaba %v: un rechazo con intentos pendientes no pasa por failed", got, want)
+		t.Fatalf("la línea reintentada se guardó con los estados %v, se esperaba %v: cada vuelta reclama la línea antes del intento y un rechazo con intentos pendientes no pasa por failed", got, want)
+	}
+
+	saved := st.savedLinesFor(line.ID)
+	rejected := saved[1]
+
+	if rejected.Attempts != 1 {
+		t.Fatalf("el rechazo con intentos pendientes guardó %d intentos, se esperaba 1", rejected.Attempts)
+	}
+	if !rejected.DeadlineAt.IsZero() || !rejected.ReconcileUntil.IsZero() {
+		t.Fatalf("el rechazo con intentos pendientes conservó los plazos del reclamo: deadline=%v until=%v, se esperaban los dos en cero", rejected.DeadlineAt, rejected.ReconcileUntil)
 	}
 }
 

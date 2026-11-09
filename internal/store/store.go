@@ -96,4 +96,5 @@ type Store interface {
 	SaveAttempt(ctx context.Context, attempt Attempt) error
 	RegisterWebhook(ctx context.Context, wh Webhook) (duplicate bool, err error)
 	DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error)
+	StalledLines(ctx context.Context, paidBefore time.Time, limit int) ([]Line, error)
 }

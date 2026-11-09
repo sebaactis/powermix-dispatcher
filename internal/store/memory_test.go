@@ -700,6 +700,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 			dueLine("line-in-doubt", 8, "snacks", dispenser.LineInDoubt, baseTime),
 			dueLine("line-in-doubt-sin-plazo", 10, "snacks", dispenser.LineInDoubt, time.Time{}),
 			dueLine("line-pending", 9, "batidos", dispenser.LinePending, baseTime),
+			dueLine("line-pending-sin-plazo", 11, "batidos", dispenser.LinePending, time.Time{}),
 		},
 	}
 	second := store.Order{
@@ -718,7 +719,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 	mustCreate(t, m, first)
 	mustCreate(t, m, second)
 
-	wantAll := []string{"line-in-doubt", "line-a", "line-b", "line-c", "line-justo-ahora"}
+	wantAll := []string{"line-in-doubt", "line-pending", "line-a", "line-b", "line-c", "line-justo-ahora"}
 
 	cases := []struct {
 		limit int
@@ -978,5 +979,113 @@ func TestMemoryRejectsADuplicateClientKeyAndFindsByKey(t *testing.T) {
 	}
 	if _, err := m.OrderByClientKey(ctx, ""); err != store.ErrNotFound {
 		t.Fatalf("la clave vacía no se indexa: %v", err)
+	}
+}
+
+func unclaimedLine(lineID, orderID string, position int, kind machine.Kind) store.Line {
+	return store.Line{
+		ID:       lineID,
+		OrderID:  orderID,
+		Position: position,
+		Machine:  dispenser.MachineRef{Kind: kind},
+		State:    dispenser.LinePending,
+	}
+}
+
+func TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T) {
+	m := store.NewMemory()
+	now := baseTime.Add(10 * time.Minute)
+
+	claimed := unclaimedLine("line-reclamada", "order-1", 1, "batidos")
+	claimed.DeadlineAt = baseTime.Add(time.Minute)
+
+	unclaimed := unclaimedLine("line-sin-plazo", "order-1", 2, "snacks")
+
+	mustCreate(t, m, store.Order{
+		ID:        "order-1",
+		Status:    store.OrderDispatching,
+		CreatedAt: baseTime,
+		Lines:     []store.Line{claimed, unclaimed},
+	})
+
+	got := lineIDs(mustDue(t, m, now, 0))
+	want := []string{"line-reclamada"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DueLines devolvió %v, se esperaba %v: una línea pendiente con plazo venció, una sin plazo no", got, want)
+	}
+}
+
+func TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders(t *testing.T) {
+	m := store.NewMemory()
+	cut := baseTime.Add(5 * time.Minute)
+
+	stalledOrder := func(orderID string, status store.OrderStatus, paidAt time.Time, lines ...store.Line) store.Order {
+		return store.Order{
+			ID:        orderID,
+			Status:    status,
+			CreatedAt: baseTime,
+			PaidAt:    paidAt,
+			Lines:     lines,
+		}
+	}
+
+	claimed := unclaimedLine("line-reclamada", "order-paga", 2, "snacks")
+	claimed.DeadlineAt = baseTime.Add(time.Minute)
+
+	sent := unclaimedLine("line-enviada", "order-paga", 3, "batidos")
+	sent.State = dispenser.LineSent
+
+	mustCreate(t, m, stalledOrder("order-paga", store.OrderPaid, baseTime,
+		unclaimedLine("line-b", "order-paga", 1, "snacks"),
+		claimed,
+		sent,
+		unclaimedLine("line-a", "order-paga", 4, "batidos"),
+	))
+	mustCreate(t, m, stalledOrder("order-despachando", store.OrderDispatching, baseTime.Add(time.Minute),
+		unclaimedLine("line-c", "order-despachando", 1, "batidos"),
+	))
+	mustCreate(t, m, stalledOrder("order-reciente", store.OrderPaid, baseTime.Add(10*time.Minute),
+		unclaimedLine("line-reciente", "order-reciente", 1, "batidos"),
+	))
+	mustCreate(t, m, stalledOrder("order-sin-pago", store.OrderPendingPayment, baseTime,
+		unclaimedLine("line-sin-pago", "order-sin-pago", 1, "batidos"),
+	))
+	mustCreate(t, m, stalledOrder("order-entregada", store.OrderDelivered, baseTime,
+		unclaimedLine("line-entregada", "order-entregada", 1, "batidos"),
+	))
+
+	wantAll := []string{"line-a", "line-b", "line-c"}
+
+	cases := []struct {
+		limit int
+		want  []string
+	}{
+		{limit: 0, want: wantAll},
+		{limit: -1, want: wantAll},
+		{limit: 100, want: wantAll},
+		{limit: 2, want: wantAll[:2]},
+		{limit: 1, want: wantAll[:1]},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("limit=%d", tc.limit), func(t *testing.T) {
+			stalled, err := m.StalledLines(context.Background(), cut, tc.limit)
+			if err != nil {
+				t.Fatalf("StalledLines(limit=%d): %v", tc.limit, err)
+			}
+
+			if got := lineIDs(stalled); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("StalledLines devolvió %v, se esperaba %v", got, tc.want)
+			}
+		})
+	}
+
+	none, err := m.StalledLines(context.Background(), baseTime.Add(-time.Minute), 10)
+	if err != nil {
+		t.Fatalf("StalledLines sin órdenes viejas: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("StalledLines devolvió %v antes del corte, se esperaba nada", lineIDs(none))
 	}
 }

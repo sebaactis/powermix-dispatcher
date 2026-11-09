@@ -17,7 +17,9 @@ const defaultReconcileWindow = 2 * time.Minute
 const defaultReconcileInterval = 30 * time.Second
 
 func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
-	due, err := e.store.DueLines(ctx, e.now(), limit)
+	now := e.now()
+
+	due, err := e.store.DueLines(ctx, now, limit)
 	if err != nil {
 		return err
 	}
@@ -25,6 +27,15 @@ func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
 	failures := make([]error, 0, len(due))
 	touched := make([]string, 0, len(due))
 	seen := make(map[string]struct{}, len(due))
+
+	touch := func(orderID string) {
+		if _, ok := seen[orderID]; ok {
+			return
+		}
+
+		seen[orderID] = struct{}{}
+		touched = append(touched, orderID)
+	}
 
 	for _, line := range due {
 		closed, lineErr := e.reconcileLine(ctx, line)
@@ -36,12 +47,20 @@ func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
 			continue
 		}
 
-		if _, ok := seen[line.OrderID]; ok {
-			continue
-		}
+		touch(line.OrderID)
+	}
 
-		seen[line.OrderID] = struct{}{}
-		touched = append(touched, line.OrderID)
+	stalled, err := e.store.StalledLines(ctx, now.Add(-e.deadline), limit)
+	if err != nil {
+		failures = append(failures, err)
+	} else {
+		for _, line := range stalled {
+			if lineErr := e.resumeStalledLine(ctx, line); lineErr != nil {
+				failures = append(failures, lineErr)
+			}
+
+			touch(line.OrderID)
+		}
 	}
 
 	for _, orderID := range touched {
@@ -51,6 +70,26 @@ func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
 	}
 
 	return errors.Join(failures...)
+}
+
+func (e *Engine) resumeStalledLine(ctx context.Context, line store.Line) error {
+	if _, err := e.refreshOrderStatus(ctx, line.OrderID); err != nil {
+		return err
+	}
+
+	fresh, err := e.reloadLine(ctx, line)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if fresh.State != dispenser.LinePending || !fresh.DeadlineAt.IsZero() {
+		return nil
+	}
+
+	return e.dispatchLine(ctx, line.OrderID, fresh)
 }
 
 func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, error) {
