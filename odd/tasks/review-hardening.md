@@ -22,14 +22,16 @@ Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-
 | T2 | S2 | inline | ver commit `docs(snacks)` hecho |
 | T3a | S3a | inline + verify | `646320a` hecho, verify PASS |
 | T3b | S3b | worker + verify | `7a1f963` hecho, verify PASS (Postgres sin ejecutar) |
-| T4a | S4r | worker | ver commit `fix(order): conserva el código` |
-| T4b | S4 | worker + verify | pendiente |
+| T4a | S4r | worker + verify | `9833a3d` hecho, verify PASS |
+| T4b | S4 | worker + verify | `333e55a` hecho, verify PASS (Postgres sin ejecutar) |
 | T5 | S5 | pendiente | pendiente |
 | T6 | S6 | pendiente | pendiente |
 
 ## Corte de entrega
 
 - **Porción 1** (pasos 1 y 2): `415fdb1`, `eb34cbc`, `646320a`, `7a1f963`. ~830 líneas, por encima de las ~400 recomendadas por revisión, porque 2B cambia el contrato del store en las dos implementaciones a la vez. Candidata a un PR propio antes del paso 3.
+
+- **Porción 2** (paso 3): `9833a3d`, `333e55a` en `fix/recover-pending-lines`. ~970 líneas, la mayor parte tests (casos C1, C2, C3 y guardias). Candidata a su propio PR.
 
 ## Log
 
@@ -50,3 +52,4 @@ Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-
   3. Después del despacho: aceptado y en duda fijan sus plazos como hoy; un rechazo con intentos pendientes guarda la línea `pending`, `Attempts=number`, con `DeadlineAt` y `ReconcileUntil` en cero (sin reclamo); el rechazo final (`failed`) deja los dos plazos en cero.
   4. Store: `DueLines` incluye `pending` además de `sent|brewing|in_doubt` (misma condición de plazo vencido). Método nuevo en el puerto `StalledLines(ctx, paidBefore time.Time, limit int) ([]Line, error)`: líneas `pending` sin `DeadlineAt` cuya orden está `paid` o `dispatching` y tiene `paid_at <= paidBefore`, ordenadas por `paid_at`, id. Postgres con `JOIN orders`. Memoria con la misma regla.
   5. Barrido (`ReconcileDue`): las líneas vencidas se reconcilian como hoy, también las `pending` (nunca se vuelven a despachar). Después pide `StalledLines(now - deadline, limit)` y por cada una: `refreshOrderStatus` de su orden (saca a `paid` hacia `dispatching`), luego `dispatchLine` con la línea recargada. Las órdenes tocadas se asientan con `settleOrder` al final, como hoy.
+- **L8** (verificación de T4a/T4b): PASS en todo salvo Postgres en ejecución (sin base). Riesgo bajo anotado: una línea `pending` sin reclamo con `Attempts >= maxAttempts` volvería en cada barrido ocupando cupo; ningún camino normal la produce (sólo bajar `maxAttempts` por configuración).
