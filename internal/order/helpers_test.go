@@ -231,7 +231,7 @@ func comboDraft() order.Draft {
 				AmountCents: 1500,
 				Machine: dispenser.MachineRef{
 					KioskID:      "kiosk-1",
-					Type:         "batidos",
+					Kind:         "batidos",
 					Name:         "Batidos Powermix",
 					DeviceID:     "device-1",
 					DeviceNo:     "1",
@@ -243,7 +243,7 @@ func comboDraft() order.Draft {
 				AmountCents: 1000,
 				Machine: dispenser.MachineRef{
 					KioskID: "kiosk-1",
-					Type:    "snacks",
+					Kind:    "snacks",
 					Name:    "Snacks Powermix",
 					MID:     "mid-1",
 				},
@@ -275,7 +275,7 @@ func lineFor(t *testing.T, o store.Order, machineType string) store.Line {
 	t.Helper()
 
 	for _, line := range o.Lines {
-		if line.MachineType == machine.Kind(machineType) {
+		if line.Machine.Kind == machine.Kind(machineType) {
 			return line
 		}
 	}

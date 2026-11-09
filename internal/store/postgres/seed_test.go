@@ -125,12 +125,11 @@ func TestSeedWritesTheTopologyThatAnOrderNeeds(t *testing.T) {
 		CreatedAt:   moment(),
 		Lines: []store.Line{
 			{
-				ID:          "order-docker-batidos",
-				Position:    1,
-				MachineType: "batidos",
+				ID:       "order-docker-batidos",
+				Position: 1,
 				Machine: dispenser.MachineRef{
 					KioskID:      "kiosk-docker",
-					Type:         "batidos",
+					Kind:         "batidos",
 					Name:         "Batidos Powermix",
 					DeviceID:     "dev-docker",
 					DeviceNo:     "devno-docker",

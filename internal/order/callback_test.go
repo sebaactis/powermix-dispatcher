@@ -64,7 +64,7 @@ func twoSnackLinesDraft() order.Draft {
 			AmountCents: 1000,
 			Machine: dispenser.MachineRef{
 				KioskID: "kiosk-1",
-				Type:    "snacks",
+				Kind:    "snacks",
 				Name:    "Snacks Powermix",
 				MID:     "mid-1",
 			},

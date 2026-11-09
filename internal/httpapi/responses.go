@@ -58,7 +58,7 @@ func newOrderResponse(loaded store.Order) orderResponse {
 		response.Lines = append(response.Lines, lineResponse{
 			ID:          line.ID,
 			Position:    line.Position,
-			MachineType: line.MachineType,
+			MachineType: line.Machine.Kind,
 			SKU:         line.SKU,
 			State:       line.State,
 			Attempts:    line.Attempts,

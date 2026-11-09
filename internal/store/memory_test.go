@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
 
@@ -32,13 +33,12 @@ func fixtureOrder() store.Order {
 		PaidAt:      baseTime.Add(time.Minute),
 		Lines: []store.Line{
 			{
-				ID:          drinkLineID,
-				OrderID:     "order-1",
-				Position:    1,
-				MachineType: "batidos",
+				ID:       drinkLineID,
+				OrderID:  "order-1",
+				Position: 1,
 				Machine: dispenser.MachineRef{
 					KioskID:      "kiosk-1",
-					Type:         "batidos",
+					Kind:         "batidos",
 					Name:         "Batidos Powermix",
 					DeviceID:     "device-1",
 					DeviceNo:     "1",
@@ -52,13 +52,12 @@ func fixtureOrder() store.Order {
 				ReconcileUntil: baseTime.Add(4 * time.Minute),
 			},
 			{
-				ID:          snackLineID,
-				OrderID:     "order-1",
-				Position:    2,
-				MachineType: "snacks",
+				ID:       snackLineID,
+				OrderID:  "order-1",
+				Position: 2,
 				Machine: dispenser.MachineRef{
 					KioskID: "kiosk-1",
-					Type:    "snacks",
+					Kind:    "snacks",
 					Name:    "Snacks Powermix",
 					MID:     "mid-snacks",
 				},
@@ -594,6 +593,17 @@ func TestMemoryRegisterWebhookDeduplicatesBySourceAndKey(t *testing.T) {
 	}
 }
 
+func dueLine(id string, position int, kind machine.Kind, state dispenser.LineState, deadline time.Time) store.Line {
+	return store.Line{
+		ID:         id,
+		OrderID:    "order-1",
+		Position:   position,
+		Machine:    dispenser.MachineRef{Kind: kind},
+		State:      state,
+		DeadlineAt: deadline,
+	}
+}
+
 func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 	m := store.NewMemory()
 	now := baseTime.Add(10 * time.Minute)
@@ -607,16 +617,16 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 		Status:      store.OrderDispatching,
 		CreatedAt:   baseTime,
 		Lines: []store.Line{
-			{ID: "line-a", OrderID: "order-1", Position: 1, MachineType: "batidos", State: dispenser.LineSent, DeadlineAt: baseTime.Add(time.Minute)},
-			{ID: "line-b", OrderID: "order-1", Position: 2, MachineType: "snacks", State: dispenser.LineBrewing, DeadlineAt: baseTime.Add(time.Minute)},
-			{ID: "line-c", OrderID: "order-1", Position: 3, MachineType: "batidos", State: dispenser.LineSent, DeadlineAt: baseTime.Add(5 * time.Minute)},
-			{ID: "line-future", OrderID: "order-1", Position: 4, MachineType: "snacks", State: dispenser.LineSent, DeadlineAt: now.Add(time.Second)},
-			{ID: "line-sin-plazo", OrderID: "order-1", Position: 5, MachineType: "batidos", State: dispenser.LineBrewing},
-			{ID: "line-delivered", OrderID: "order-1", Position: 6, MachineType: "snacks", State: dispenser.LineDelivered, DeadlineAt: baseTime},
-			{ID: "line-failed", OrderID: "order-1", Position: 7, MachineType: "batidos", State: dispenser.LineFailed, DeadlineAt: baseTime},
-			{ID: "line-in-doubt", OrderID: "order-1", Position: 8, MachineType: "snacks", State: dispenser.LineInDoubt, DeadlineAt: baseTime},
-			{ID: "line-in-doubt-sin-plazo", OrderID: "order-1", Position: 10, MachineType: "snacks", State: dispenser.LineInDoubt},
-			{ID: "line-pending", OrderID: "order-1", Position: 9, MachineType: "batidos", State: dispenser.LinePending, DeadlineAt: baseTime},
+			dueLine("line-a", 1, "batidos", dispenser.LineSent, baseTime.Add(time.Minute)),
+			dueLine("line-b", 2, "snacks", dispenser.LineBrewing, baseTime.Add(time.Minute)),
+			dueLine("line-c", 3, "batidos", dispenser.LineSent, baseTime.Add(5*time.Minute)),
+			dueLine("line-future", 4, "snacks", dispenser.LineSent, now.Add(time.Second)),
+			dueLine("line-sin-plazo", 5, "batidos", dispenser.LineBrewing, time.Time{}),
+			dueLine("line-delivered", 6, "snacks", dispenser.LineDelivered, baseTime),
+			dueLine("line-failed", 7, "batidos", dispenser.LineFailed, baseTime),
+			dueLine("line-in-doubt", 8, "snacks", dispenser.LineInDoubt, baseTime),
+			dueLine("line-in-doubt-sin-plazo", 10, "snacks", dispenser.LineInDoubt, time.Time{}),
+			dueLine("line-pending", 9, "batidos", dispenser.LinePending, baseTime),
 		},
 	}
 	second := store.Order{
@@ -628,7 +638,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 		Status:      store.OrderDispatching,
 		CreatedAt:   baseTime,
 		Lines: []store.Line{
-			{ID: "line-justo-ahora", OrderID: "order-2", Position: 1, MachineType: "snacks", State: dispenser.LineBrewing, DeadlineAt: now},
+			{ID: "line-justo-ahora", OrderID: "order-2", Position: 1, Machine: dispenser.MachineRef{Kind: "snacks"}, State: dispenser.LineBrewing, DeadlineAt: now},
 		},
 	}
 
@@ -776,7 +786,7 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 					ID:          lineID,
 					OrderID:     orderID,
 					Position:    1,
-					MachineType: "snacks",
+					Machine:     dispenser.MachineRef{Kind: "snacks"},
 					SKU:         "sku-snack",
 					AmountCents: 100,
 					State:       dispenser.LineSent,

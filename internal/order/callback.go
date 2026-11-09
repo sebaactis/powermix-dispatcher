@@ -141,7 +141,7 @@ func lineByThirdOrderNo(lines []store.Line, thirdOrderNo string, machineType mac
 	}
 
 	for _, line := range lines {
-		if line.ID == thirdOrderNo && line.MachineType == machineType {
+		if line.ID == thirdOrderNo && line.Machine.Kind == machineType {
 			return line, true
 		}
 	}
@@ -157,7 +157,7 @@ func lineByMachineType(lines []store.Line, machineType machine.Kind) (store.Line
 	candidates := make([]store.Line, 0, 1)
 
 	for _, line := range lines {
-		if line.MachineType == machineType {
+		if line.Machine.Kind == machineType {
 			candidates = append(candidates, line)
 		}
 	}

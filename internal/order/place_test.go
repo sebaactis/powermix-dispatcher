@@ -59,8 +59,8 @@ func TestEnginePlaceCreatesOneLinePerMachine(t *testing.T) {
 		if line.Position != i+1 {
 			t.Fatalf("la línea %d tiene Position=%d", i+1, line.Position)
 		}
-		if line.MachineType != want.Machine.Type {
-			t.Fatalf("la línea %d tiene MachineType=%q, se esperaba %q", i+1, line.MachineType, want.Machine.Type)
+		if line.Machine.Kind != want.Machine.Kind {
+			t.Fatalf("la línea %d tiene Machine.Kind=%q, se esperaba %q", i+1, line.Machine.Kind, want.Machine.Kind)
 		}
 		if line.SKU != want.SKU {
 			t.Fatalf("la línea %d tiene SKU=%q, se esperaba %q", i+1, line.SKU, want.SKU)
@@ -97,12 +97,12 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 		},
 		{
 			name:         "sin tipo de máquina",
-			mutate:       func(draft *order.Draft) { draft.Items[0].Machine.Type = "" },
+			mutate:       func(draft *order.Draft) { draft.Items[0].Machine.Kind = "" },
 			wantPosition: "ítem 1",
 		},
 		{
 			name:         "con un tipo de máquina desconocido",
-			mutate:       func(draft *order.Draft) { draft.Items[1].Machine.Type = "cafetera" },
+			mutate:       func(draft *order.Draft) { draft.Items[1].Machine.Kind = "cafetera" },
 			wantPosition: "ítem 2",
 		},
 		{
@@ -113,7 +113,7 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 		{
 			name: "sin identificador de máquina",
 			mutate: func(draft *order.Draft) {
-				draft.Items[0].Machine = dispenser.MachineRef{KioskID: "kiosk-1", Type: "batidos"}
+				draft.Items[0].Machine = dispenser.MachineRef{KioskID: "kiosk-1", Kind: "batidos"}
 			},
 			wantPosition: "ítem 1",
 		},
@@ -180,11 +180,11 @@ func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 			)
 
 			draft := comboDraft()
-			draft.Items[0].Machine.Type = tc.machineType
+			draft.Items[0].Machine.Kind = tc.machineType
 
 			placed, err := engine.Place(context.Background(), draft)
 			if err == nil {
-				t.Fatalf("Place aceptó un ítem con Machine.Type=%q y devolvió %+v", tc.machineType, placed)
+				t.Fatalf("Place aceptó un ítem con Machine.Kind=%q y devolvió %+v", tc.machineType, placed)
 			}
 			if !reflect.DeepEqual(placed, store.Order{}) {
 				t.Fatalf("Place devolvió %+v junto al error", placed)
@@ -221,14 +221,14 @@ func TestEnginePlaceTakesTheLineMachineTypeFromTheMachineRef(t *testing.T) {
 	for i, item := range draft.Items {
 		line := stored.Lines[i]
 
-		if line.MachineType != item.Machine.Type {
-			t.Fatalf("la línea %d se guardó con MachineType=%q, se esperaba el tipo de la máquina %q", i+1, line.MachineType, item.Machine.Type)
+		if line.Machine.Kind != item.Machine.Kind {
+			t.Fatalf("la línea %d se guardó con Machine.Kind=%q, se esperaba el tipo de la máquina %q", i+1, line.Machine.Kind, item.Machine.Kind)
 		}
 		if !reflect.DeepEqual(line.Machine, item.Machine) {
 			t.Fatalf("la línea %d se guardó con la máquina %+v, se esperaba %+v", i+1, line.Machine, item.Machine)
 		}
-		if _, ok := machines[line.MachineType]; !ok {
-			t.Fatalf("la línea %d se guardó con un tipo sin driver: %q", i+1, line.MachineType)
+		if _, ok := machines[line.Machine.Kind]; !ok {
+			t.Fatalf("la línea %d se guardó con un tipo sin driver: %q", i+1, line.Machine.Kind)
 		}
 	}
 }

@@ -31,7 +31,7 @@ var sixDigitCode = regexp.MustCompile(`^\d{6}$`)
 func newMachineRef() dispenser.MachineRef {
 	return dispenser.MachineRef{
 		KioskID:      "kiosk-1",
-		Type:         "batidos",
+		Kind:         "batidos",
 		Name:         "Batidos Powermix",
 		DeviceID:     dispatchDeviceID,
 		DeviceNo:     dispatchDeviceNo,

@@ -651,3 +651,15 @@ Lo que se dejó como estaba, y por qué: el puerto `dispenser` con sus dos adapt
 Evidencia: `gofmt -l .` sin salida, `go vet ./...` sin salida, `go build ./...` ok, `go test ./...` con **16 paquetes en verde y 311 funciones de test** (298 conservadas, ninguna con la expectativa cambiada, más 13 nuevas de administración). Ningún comportamiento cambió: la reorganización se valida comparando el contenido de `HEAD` contra los archivos nuevos, y lo único distinto son las adaptaciones mecánicas (receptor, `fail` como función libre con logger, campos que se mudaron de `Handler` a `Callbacks`).
 
 Costo declarado: el diff es grande y ensucia `git blame` en archivos jóvenes, y hubo tres borrados por consolidación (`callback_safety_test.go`, `publicbaseurl_test.go`, `engine_test.go`), con su contenido íntegro en los archivos nuevos. Se hizo ahora, antes de seguir agregando piezas, justamente porque después es más caro.
+
+**L45 — La deuda L31, pagada: una sola fuente para la familia de máquina.** Con el cambio 3b de la revisión de código.
+
+Lo que había: `store.Line` guardaba `MachineType` **y** `Line.Machine.Type`. Las dos se escribían del mismo valor, pero nada obligaba a que coincidieran después, así que se podía construir una línea que dijera `snacks` y llevara los identificadores del batido: el motor habría elegido el driver de snacks con la identidad de la otra máquina.
+
+Lo que se hizo: se borró `Line.MachineType` y `MachineRef.Type` pasó a `MachineRef.Kind` — `Type` mentía, porque el tipo de dispositivo es `DeviceTypeID`. Todo el motor lee ahora `line.Machine.Kind`: el lookup del driver, el mensaje de error, las dos reglas de correlación de callbacks y el DTO de la API. En Postgres la columna `order_line.machine_type` **sobrevive** sin migración: la columna es el dato persistido, el campo Go era la duplicación; al escanear se reconstruye directamente la `MachineRef`.
+
+Decisión tomada junto al dueño del producto, y vale registrarla porque es una omisión deliberada: **no se agregó validación en el store** para una línea sin familia. `validateDraft` ya rechaza un ítem sin tipo de máquina y el `CHECK` de `machine_type` es la última red. El store en memoria queda más permisivo que Postgres; se acepta la asimetría antes que sumar código para un caso que no puede llegar desde el motor.
+
+Evidencia: el rojo fueron los errores de compilación que enumeraron los 17 sitios de test con literales de `MachineType`/`Type`; después `gofmt` y `vet` sin salida, `go build` ok y `go test ./...` con **18 paquetes en verde y 311 funciones de test** (las mismas, ninguna aserción cambiada). Un helper `dueLine` en `internal/store/memory_test.go` evitó diez literales largos.
+
+Queda anotado para no repetir el error de criterio: hace dos entradas califiqué de «tolerable» que `store` importe `dispenser` por `LineState`. No lo es — es el mismo patrón que acabamos de corregir, sólo que con un enum. La flecha `store → dispenser` sigue viva y es el próximo cambio de esta revisión (unificar el vocabulario de estados en el kernel compartido, moviendo `LineState`, `OrderStatus` y `MachineRef`).

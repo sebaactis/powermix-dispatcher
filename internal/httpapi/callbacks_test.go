@@ -339,7 +339,7 @@ func TestSnacksCallbackDoesNotCloseTheBatidosLineByThirdOrderNo(t *testing.T) {
 	batidos := store.Line{}
 
 	for _, line := range paid.Lines {
-		if line.MachineType == "batidos" {
+		if line.Machine.Kind == "batidos" {
 			batidos = line
 		}
 	}
@@ -368,7 +368,7 @@ func TestSnacksCallbackDoesNotCloseTheBatidosLineByThirdOrderNo(t *testing.T) {
 	}
 
 	for _, line := range loaded.Lines {
-		if line.MachineType != "batidos" {
+		if line.Machine.Kind != "batidos" {
 			continue
 		}
 

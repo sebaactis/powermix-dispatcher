@@ -443,6 +443,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### MachineRef
 
+> La familia de la máquina se llama `Kind` y no `Type` porque ya tiene su propio tipo —`machine.Kind`—: un campo `Type` de tipo `Kind` se lee al revés, y `Type` sugería que ahí vivía el tipo de dispositivo, que es otra cosa y es `DeviceTypeID`.
+
+### MachineRef
+
 > Batidos
 
 ### MachineRef
@@ -1242,7 +1246,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Line
 
-> La unidad de ejecución. `State` reusa `dispenser.LineState` a propósito: el estado de una línea es el mismo que informa el puerto de las máquinas, y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde.
+> La unidad de ejecución. La familia de la máquina vive en un solo lugar: `Machine.Kind`. Antes la línea la guardaba dos veces —`MachineType` por un lado y la `MachineRef` por otro— y nada obligaba a que coincidieran: una línea podía decir «snacks» y llevar los identificadores del batido, y el motor elegía el driver de una máquina y le mandaba la identidad de la otra. Con un solo campo la incoherencia no se puede escribir: no compila.
+>
+> `State` reusa `dispenser.LineState` a propósito: el estado de una línea es el mismo que informa el puerto de las máquinas, y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde.
 >
 > `Ref` tiene dos significados según la máquina —código de canje en batidos, asa del proveedor en snacks— porque el SQL tiene dos columnas y el motor nunca necesita las dos a la vez.
 >
@@ -1340,7 +1346,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Draft / Item
 
-> `Draft` es lo que la tablet manda antes de que exista una orden. `Item` lleva la máquina en un solo lugar: `Item.Machine`, y el tipo de máquina sale de `Item.Machine.Type`. La orden guarda la referencia completa en `store.Line.Machine`, así que el motor no retiene nada en memoria y un reinicio no le quita con qué hablarle a la máquina.
+> `Draft` es lo que la tablet manda antes de que exista una orden. `Item` lleva la máquina en un solo lugar: `Item.Machine`, y el tipo de máquina sale de `Item.Machine.Kind`. La orden guarda la referencia completa en `store.Line.Machine`, así que el motor no retiene nada en memoria y un reinicio no le quita con qué hablarle a la máquina.
 
 ### WithLineDeadline
 
@@ -1350,17 +1356,23 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### El tipo de máquina como fuente única
 
-> Antes el tipo estaba dos veces —`Item.MachineType` y `Item.Machine.Type`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `MachineRef{Type: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
+> Antes el tipo estaba dos veces —`Item.MachineType` y la familia de la `MachineRef`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `MachineRef{Kind: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
 >
 > Se arregló por la vía limpia y no con una validación de coincidencia: dos campos que deben coincidir es una regla que se puede olvidar, un campo solo no. Ahora la incoherencia no se puede escribir —no compila—, que es más fuerte que cualquier chequeo en ejecución.
 >
-> `validateDraft` exige que `item.Machine.Type` no esté vacío y que ese tipo exista en el mapa de drivers, que es el mismo mapa con el que `dispatchLine` busca la máquina después: lo que se valida en el alta y lo que se usa en el despacho es la misma fuente, así que un borrador aceptado no puede terminar en «no hay una máquina configurada para el tipo».
+> Lo mismo pasaba un escalón más abajo, en la línea: `store.Line` guardaba `MachineType` y además la `MachineRef` completa. Se borró el campo de la línea, no se lo validó: la línea lleva sólo `Machine` y todo el motor lee `line.Machine.Kind` —el mapa de drivers del despacho, la reconciliación y las dos reglas de correlación del callback—. `catalog.Item.MachineType` y `order.Callback.MachineType` se quedan, porque no son la identidad de una máquina: el primero dice qué familia pide un combo en el menú y el segundo qué máquina habla en el aviso.
 >
-> Riesgo residual anotado: `machineIdentified` sigue aceptando **algún** identificador, así que `Machine.Type: snacks` con un `DeviceID` de batidos es expresable. Ya no hay dos fuentes de tipo, pero la identidad no se valida contra el tipo.
+> `validateDraft` exige que `item.Machine.Kind` no esté vacío y que ese tipo exista en el mapa de drivers, que es el mismo mapa con el que `dispatchLine` busca la máquina después: lo que se valida en el alta y lo que se usa en el despacho es la misma fuente, así que un borrador aceptado no puede terminar en «no hay una máquina configurada para el tipo».
+>
+> Riesgo residual anotado: `machineIdentified` sigue aceptando **algún** identificador, así que `Machine.Kind: snacks` con un `DeviceID` de batidos es expresable. Ya no hay dos fuentes de tipo, pero la identidad no se valida contra el tipo.
+>
+> No se agregó ninguna validación nueva en el store. `validateDraft` ya rechaza un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` es la última red; sumar un chequeo en memoria duplicaría esa regla en un tercer lugar. El store en memoria queda más permisivo que Postgres —acepta una línea sin familia— y es una asimetría conocida y aceptada, no un olvido.
 
 ### Place
 
 > Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
+>
+> La línea se arma copiando la `MachineRef` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
 
 ## internal/order/payment.go
 
@@ -1378,6 +1390,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### dispatchLine
 
+> El driver se elige por `line.Machine.Kind`, y por eso el mapa de drivers del motor y la familia escrita en la línea son el mismo dato: antes el despacho leía `line.MachineType` y mandaba `line.Machine` en el `dispenser.Request`, así que una línea incoherente elegía un driver y le pasaba la identidad del otro.
+>
 > El orden de las llamadas es la garantía contra la doble entrega: primero se registra el intento como `ambiguous`, después se llama a la máquina, y al final se cierra el intento y se guarda la línea. Si el proceso muere en el medio, queda un intento `ambiguous` —la evidencia de que hubo una llamada— y la línea sigue `pending`.
 >
 > La clave es `orden:línea:número de intento`, con el número sacado de `Attempts+1`. Si `AppendAttempt` dice que ya existe, ese intento ocurrió en una vida anterior del proceso: no se despacha, no se toca la línea, se devuelve nil. Es la razón por la que un reinicio no puede sacar dos productos.
@@ -1483,6 +1497,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > El worker que cierra E4: lee las líneas vencidas y le pregunta al proveedor qué pasó realmente con cada una. Las procesa de a una, en serie: un worker corre sobre una cadencia y el manejo de fallos se lee de arriba abajo. `limit` es la perilla — una máquina lenta retrasa el lote entero.
 >
 > Los errores no cortan el lote: se acumulan y se devuelven juntos, para que una línea que falló no deje sin reconciliar a las demás. Un error de consulta no pierde la línea: se trata como «sigue en duda» y se agenda el próximo intento.
+>
+> `reconcileLine` busca el driver con `line.Machine.Kind`, igual que el despacho, y por eso una línea que se reconcilia después de un reinicio elige exactamente el mismo driver que la despachó.
 
 ### extendReconcile
 
@@ -1573,8 +1589,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > La línea se resuelve con tres reglas, de la más exacta a la más tolerante, y en ese orden porque el orden es la garantía: una coincidencia exacta nunca compite con una deducción.
 >
 > 1. `line.Ref == cb.Ref`, con `cb.Ref` no vacío. Es el camino de siempre.
-> 2. `line.ID == cb.ThirdOrderNo` **y** `line.MachineType == cb.MachineType`, con `cb.ThirdOrderNo` y `cb.MachineType` no vacíos. El proveedor de snacks documenta ese campo como «thirdparty suborder number» y es nuestro propio `OrderProductId`, el `LineID` que mandamos al despachar: sirve aunque el despacho no haya devuelto ningún id de suborden. El filtro de máquina no es adorno: los identificadores de línea los genera el motor, y un aviso de snacks que traiga el `ThirdOrderNo` de la línea de batidos la cerraría con el resultado de la otra máquina, que es irreversible.
-> 3. La **única** línea de la orden cuyo `MachineType == cb.MachineType`, y sólo si su `Ref` está vacío. Las candidatas son **todas** las líneas de esa máquina, con `Ref` o sin él: la referencia del callback ya falló en la regla 1, así que no puede decidir nada acá. Es la red para cuando el proveedor tampoco manda el `ThirdOrderNo`. No se adivina nunca: con más de una candidata se devuelve `ErrCallbackAmbiguous` sin mirar sus `Ref` —una línea sin referencia entre dos no es la candidata, es la mitad de una ambigüedad— y no se toca ninguna línea; con ninguna candidata, o con una sola ya referenciada, `ErrCallbackUnknownLine` como antes. Sin `MachineType` las reglas 2 y 3 no aplican en absoluto: elegir entre máquinas sería inventar el dato, así que ahí sólo queda la coincidencia exacta de la regla 1.
+> 2. `line.ID == cb.ThirdOrderNo` **y** `line.Machine.Kind == cb.MachineType`, con `cb.ThirdOrderNo` y `cb.MachineType` no vacíos. El proveedor de snacks documenta ese campo como «thirdparty suborder number» y es nuestro propio `OrderProductId`, el `LineID` que mandamos al despachar: sirve aunque el despacho no haya devuelto ningún id de suborden. El filtro de máquina no es adorno: los identificadores de línea los genera el motor, y un aviso de snacks que traiga el `ThirdOrderNo` de la línea de batidos la cerraría con el resultado de la otra máquina, que es irreversible.
+> 3. La **única** línea de la orden cuyo `Machine.Kind == cb.MachineType`, y sólo si su `Ref` está vacío. Las candidatas son **todas** las líneas de esa máquina, con `Ref` o sin él: la referencia del callback ya falló en la regla 1, así que no puede decidir nada acá. Es la red para cuando el proveedor tampoco manda el `ThirdOrderNo`. No se adivina nunca: con más de una candidata se devuelve `ErrCallbackAmbiguous` sin mirar sus `Ref` —una línea sin referencia entre dos no es la candidata, es la mitad de una ambigüedad— y no se toca ninguna línea; con ninguna candidata, o con una sola ya referenciada, `ErrCallbackUnknownLine` como antes. Sin `MachineType` las reglas 2 y 3 no aplican en absoluto: elegir entre máquinas sería inventar el dato, así que ahí sólo queda la coincidencia exacta de la regla 1.
 >
 > El orden importa y costó una corrección: **primero el efecto, después el registro**. La primera versión registraba el callback como visto antes de aplicarlo; si el store fallaba en el medio, la clave quedaba quemada y el reintento del proveedor se descartaba, perdiendo el evento para siempre. Ahora un fallo transitorio devuelve error sin registrar nada, así que el reintento puede funcionar.
 >
@@ -1586,7 +1602,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### lineByRef / lineByThirdOrderNo / lineByMachineType
 
-> Las tres reglas, una por función, para que el orden se lea en `callbackLine` y no quede escondido dentro de un bucle. `lineByThirdOrderNo` exige que el aviso diga de qué máquina habla, porque el `ID` de una línea no dice nada del aviso que lo trae. `lineByMachineType` cuenta primero todas las líneas de esa máquina y recién después mira la referencia: devuelve la candidata sólo si es exactamente una y está sin `Ref`; dos o más es `ErrCallbackAmbiguous` sin importar sus `Ref`, y ninguna —o una sola ya referenciada— es `ErrCallbackUnknownLine`. Es la misma regla conservadora que el resto del proyecto: antes que suponer, se acusa recibo y se deja la línea quieta.
+> Las tres reglas, una por función, para que el orden se lea en `callbackLine` y no quede escondido dentro de un bucle. `lineByThirdOrderNo` exige que el aviso diga de qué máquina habla, porque el `ID` de una línea no dice nada del aviso que lo trae, y compara `line.Machine.Kind` contra `cb.MachineType`. `lineByMachineType` cuenta primero todas las líneas de esa máquina y recién después mira la referencia: devuelve la candidata sólo si es exactamente una y está sin `Ref`; dos o más es `ErrCallbackAmbiguous` sin importar sus `Ref`, y ninguna —o una sola ya referenciada— es `ErrCallbackUnknownLine`. Es la misma regla conservadora que el resto del proyecto: antes que suponer, se acusa recibo y se deja la línea quieta.
 
 ### adoptRef
 
@@ -1783,7 +1799,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### Mapeo de columnas
 
 > - `Line.Ref` → `order_line.external_ref`. La columna `exchange_code` del esquema inicial quedó sin uso: era el nombre del proveedor de batidos y el asa de snacks no es un código de canje. Un campo con dos significados (R5) es menos código que dos campos de los cuales siempre se usa uno.
-> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Type` no tiene columna propia: se escribe y se lee de `order_line.machine_type`, que ya existía y ya guarda `Line.MachineType`, para no tener dos fuentes del mismo dato. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
+> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Kind` no tiene columna propia: se escribe y se lee de `order_line.machine_type`. La columna sobrevive al campo Go que se borró, y la razón es que no eran lo mismo: la columna es el dato persistido —existe desde `0001_init.sql`, la escriben las migraciones y el seed, y tiene un `CHECK` con las dos familias— y `Line.MachineType` era la duplicación en memoria de algo que ya viajaba dentro de la `MachineRef`. Por eso no hay migración: `SaveLine` escribe `line.Machine.Kind` en `machine_type` y `scanLine` construye `dispenser.MachineRef{Kind: machine.Kind(<columna>)}` directamente. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
 > - `Line.Version` → `order_line.version`, `bigint NOT NULL DEFAULT 0`.
 > - `Order.ClientKey` → `orders.client_key`, con índice único parcial (`WHERE client_key IS NOT NULL`) para que dos órdenes sin clave no choquen entre sí.
 > - `Attempt.Outcome`/`Detail` → `outcome`/`error_detail`. `request_payload` es `NOT NULL` en el esquema y se inserta `'{}'::jsonb`; `response_payload` y `http_status` quedan `NULL` porque hoy el motor no los recibe. No se inventa el cuerpo: un `NULL` dice «no hay dato» y un cuerpo vacío diría «el cuerpo estaba vacío».

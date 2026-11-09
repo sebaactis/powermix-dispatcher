@@ -89,7 +89,7 @@ func (h *Handler) buildDraft(kiosk config.Kiosk, combo catalog.Combo, clientKey 
 			SKU: item.SKU,
 			Machine: dispenser.MachineRef{
 				KioskID:      kiosk.ID,
-				Type:         machine.Type,
+				Kind:         machine.Type,
 				Name:         machine.Name,
 				DeviceID:     machine.DeviceID,
 				DeviceNo:     machine.DeviceNo,

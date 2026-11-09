@@ -39,9 +39,9 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			return err
 		}
 
-		machine, ok := e.machines[line.MachineType]
+		machine, ok := e.machines[line.Machine.Kind]
 		if !ok {
-			return fmt.Errorf("no hay una máquina configurada para el tipo %q", line.MachineType)
+			return fmt.Errorf("no hay una máquina configurada para el tipo %q", line.Machine.Kind)
 		}
 
 		result, dispatchErr := machine.Dispatch(ctx, dispenser.Request{

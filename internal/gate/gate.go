@@ -59,7 +59,7 @@ func (g *Gate) request(draft order.Draft) (preflight.Request, error) {
 	)
 
 	for _, item := range draft.Items {
-		switch item.Machine.Type {
+		switch item.Machine.Kind {
 		case machine.Batidos:
 			batidos++
 

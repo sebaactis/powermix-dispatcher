@@ -21,7 +21,7 @@ const (
 
 type MachineRef struct {
 	KioskID      string
-	Type         machine.Kind
+	Kind         machine.Kind
 	Name         string
 	DeviceID     string
 	DeviceNo     string

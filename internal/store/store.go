@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
-	"compras-remotas/internal/machine"
 )
 
 type OrderStatus string
@@ -41,7 +40,6 @@ type Line struct {
 	ID             string
 	OrderID        string
 	Position       int
-	MachineType    machine.Kind
 	Machine        dispenser.MachineRef
 	SKU            string
 	AmountCents    int64

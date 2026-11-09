@@ -52,7 +52,7 @@ func mixedDraft() order.Draft {
 				SKU: "batido-frutilla",
 				Machine: dispenser.MachineRef{
 					KioskID:  "kiosk-1",
-					Type:     "batidos",
+					Kind:     "batidos",
 					Name:     "Batidos Powermix",
 					DeviceID: "batidos-device-1",
 					DeviceNo: "7",
@@ -62,7 +62,7 @@ func mixedDraft() order.Draft {
 				SKU: "snack-alfajor",
 				Machine: dispenser.MachineRef{
 					KioskID: "kiosk-1",
-					Type:    "snacks",
+					Kind:    "snacks",
 					Name:    "Snacks Powermix",
 					MID:     "snacks-mid-1",
 				},
@@ -137,7 +137,7 @@ func TestGateRejectsADraftWithTwoItemsOfTheSameMachineType(t *testing.T) {
 	draft := mixedDraft()
 	draft.Items = append(draft.Items, order.Item{
 		SKU:     "batido-chocolate",
-		Machine: dispenser.MachineRef{KioskID: "kiosk-1", Type: "batidos", DeviceID: "batidos-device-2"},
+		Machine: dispenser.MachineRef{KioskID: "kiosk-1", Kind: "batidos", DeviceID: "batidos-device-2"},
 	})
 
 	err := gate.New(checker).Check(context.Background(), draft)

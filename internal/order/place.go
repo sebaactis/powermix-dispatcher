@@ -50,7 +50,6 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 			ID:          lineID,
 			OrderID:     orderID,
 			Position:    i + 1,
-			MachineType: item.Machine.Type,
 			Machine:     item.Machine,
 			SKU:         item.SKU,
 			AmountCents: item.AmountCents,
@@ -84,12 +83,12 @@ func (e *Engine) validateDraft(draft Draft) error {
 	for i, item := range draft.Items {
 		position := i + 1
 
-		if item.Machine.Type == "" {
+		if item.Machine.Kind == "" {
 			return fmt.Errorf("ítem %d: falta el tipo de máquina", position)
 		}
 
-		if _, ok := e.machines[item.Machine.Type]; !ok {
-			return fmt.Errorf("ítem %d: no hay una máquina configurada para el tipo %q", position, item.Machine.Type)
+		if _, ok := e.machines[item.Machine.Kind]; !ok {
+			return fmt.Errorf("ítem %d: no hay una máquina configurada para el tipo %q", position, item.Machine.Kind)
 		}
 
 		if item.SKU == "" {

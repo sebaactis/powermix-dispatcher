@@ -143,13 +143,12 @@ func sampleOrder(orderID, clientKey string) store.Order {
 		CreatedAt:   moment(),
 		Lines: []store.Line{
 			{
-				ID:          orderID + "-batidos",
-				OrderID:     orderID,
-				Position:    1,
-				MachineType: "batidos",
+				ID:       orderID + "-batidos",
+				OrderID:  orderID,
+				Position: 1,
 				Machine: dispenser.MachineRef{
 					KioskID:      kioskID,
-					Type:         "batidos",
+					Kind:         "batidos",
 					Name:         "Batidos Powermix",
 					DeviceID:     "device-1",
 					DeviceNo:     "device-no-1",
@@ -161,13 +160,12 @@ func sampleOrder(orderID, clientKey string) store.Order {
 				Version:     7,
 			},
 			{
-				ID:          orderID + "-snacks",
-				OrderID:     orderID,
-				Position:    2,
-				MachineType: "snacks",
+				ID:       orderID + "-snacks",
+				OrderID:  orderID,
+				Position: 2,
 				Machine: dispenser.MachineRef{
 					KioskID: kioskID,
-					Type:    "snacks",
+					Kind:    "snacks",
 					Name:    "Snacks Powermix",
 					MID:     "mid-1",
 				},
@@ -191,14 +189,13 @@ func orderWithDeadline(orderID string, deadline time.Time) store.Order {
 		Status:  store.OrderDispatching,
 		Lines: []store.Line{
 			{
-				ID:          orderID + "-line",
-				OrderID:     orderID,
-				Position:    1,
-				MachineType: "snacks",
-				Machine:     dispenser.MachineRef{Type: "snacks", MID: "mid-1"},
-				SKU:         "snack-mixto",
-				State:       dispenser.LineSent,
-				DeadlineAt:  deadline,
+				ID:         orderID + "-line",
+				OrderID:    orderID,
+				Position:   1,
+				Machine:    dispenser.MachineRef{Kind: "snacks", MID: "mid-1"},
+				SKU:        "snack-mixto",
+				State:      dispenser.LineSent,
+				DeadlineAt: deadline,
 			},
 		},
 	}
@@ -266,7 +263,7 @@ func TestCreateOrderStoresTheHeaderAndTheLines(t *testing.T) {
 	}
 
 	batidos := got.Lines[0]
-	if batidos.ID != "order-1-batidos" || batidos.Position != 1 || batidos.MachineType != "batidos" {
+	if batidos.ID != "order-1-batidos" || batidos.Position != 1 || batidos.Machine.Kind != "batidos" {
 		t.Fatalf("la primera línea no es la de batidos: %+v", batidos)
 	}
 	if batidos.Version != 0 {
@@ -274,7 +271,7 @@ func TestCreateOrderStoresTheHeaderAndTheLines(t *testing.T) {
 	}
 	if batidos.Machine.DeviceID != "device-1" || batidos.Machine.DeviceNo != "device-no-1" ||
 		batidos.Machine.DeviceTypeID != "type-1" || batidos.Machine.Name != "Batidos Powermix" ||
-		batidos.Machine.KioskID != kioskID || batidos.Machine.Type != "batidos" {
+		batidos.Machine.KioskID != kioskID || batidos.Machine.Kind != "batidos" {
 		t.Fatalf("la identidad de la máquina de batidos volvió incompleta: %+v", batidos.Machine)
 	}
 	if batidos.State != dispenser.LinePending || batidos.SKU != "batido-frutilla" || batidos.AmountCents != 70000 {
@@ -285,10 +282,10 @@ func TestCreateOrderStoresTheHeaderAndTheLines(t *testing.T) {
 	}
 
 	snacks := got.Lines[1]
-	if snacks.ID != "order-1-snacks" || snacks.Position != 2 || snacks.MachineType != "snacks" {
+	if snacks.ID != "order-1-snacks" || snacks.Position != 2 || snacks.Machine.Kind != "snacks" {
 		t.Fatalf("la segunda línea no es la de snacks: %+v", snacks)
 	}
-	if snacks.Machine.MID != "mid-1" || snacks.Machine.Name != "Snacks Powermix" || snacks.Machine.Type != "snacks" {
+	if snacks.Machine.MID != "mid-1" || snacks.Machine.Name != "Snacks Powermix" || snacks.Machine.Kind != "snacks" {
 		t.Fatalf("la identidad de la máquina de snacks volvió incompleta: %+v", snacks.Machine)
 	}
 	if snacks.Machine.DeviceID != "" || snacks.Machine.DeviceNo != "" || snacks.Machine.DeviceTypeID != "" {
@@ -474,12 +471,12 @@ func TestSaveLineOnAMissingLine(t *testing.T) {
 	st, _ := newStore(t)
 
 	_, err := st.SaveLine(context.Background(), store.Line{
-		ID:          "linea-que-no-existe",
-		OrderID:     "orden-que-no-existe",
-		Position:    1,
-		MachineType: "batidos",
-		SKU:         "batido-frutilla",
-		State:       dispenser.LineSent,
+		ID:       "linea-que-no-existe",
+		OrderID:  "orden-que-no-existe",
+		Position: 1,
+		Machine:  dispenser.MachineRef{Kind: "batidos"},
+		SKU:      "batido-frutilla",
+		State:    dispenser.LineSent,
 	})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("se esperaba ErrNotFound y se obtuvo: %v", err)
@@ -639,7 +636,7 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 	if due[0].ID != "order-pronto-line" || due[1].ID != "order-media-line" {
 		t.Fatalf("las líneas no salieron ordenadas por plazo: %q, %q", due[0].ID, due[1].ID)
 	}
-	if due[0].OrderID != "order-pronto" || due[0].MachineType != "snacks" || due[0].State != dispenser.LineSent {
+	if due[0].OrderID != "order-pronto" || due[0].Machine.Kind != "snacks" || due[0].State != dispenser.LineSent {
 		t.Fatalf("la línea vencida volvió incompleta: %+v", due[0])
 	}
 

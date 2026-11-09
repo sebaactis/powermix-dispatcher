@@ -63,12 +63,12 @@ func TestCreateOrderBuildsTheDraftFromTheComboAndTheKiosk(t *testing.T) {
 	}
 
 	batidos := stored.Lines[0].Machine
-	if batidos.KioskID != "kiosco-centro" || batidos.Type != "batidos" || batidos.DeviceID != "batidos-device-kiosco-centro" || batidos.DeviceNo != "batidos-devno-kiosco-centro" {
+	if batidos.KioskID != "kiosco-centro" || batidos.Kind != "batidos" || batidos.DeviceID != "batidos-device-kiosco-centro" || batidos.DeviceNo != "batidos-devno-kiosco-centro" {
 		t.Fatalf("la línea de batidos debe llevar la identidad de la máquina del mueble: %+v", batidos)
 	}
 
 	snacks := stored.Lines[1].Machine
-	if snacks.KioskID != "kiosco-centro" || snacks.Type != "snacks" || snacks.MID != "snacks-mid-kiosco-centro" {
+	if snacks.KioskID != "kiosco-centro" || snacks.Kind != "snacks" || snacks.MID != "snacks-mid-kiosco-centro" {
 		t.Fatalf("la línea de snacks debe llevar el mid de la máquina del mueble: %+v", snacks)
 	}
 }

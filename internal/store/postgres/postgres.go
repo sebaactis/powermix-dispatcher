@@ -145,7 +145,7 @@ func (s *Store) SaveLine(ctx context.Context, line store.Line) (store.Line, erro
 		machine_mid = $18
 		WHERE id = $1 AND version = $2
 		RETURNING `+lineColumns,
-		line.ID, line.Version, line.Position, string(line.MachineType), line.SKU, line.AmountCents, string(line.State),
+		line.ID, line.Version, line.Position, string(line.Machine.Kind), line.SKU, line.AmountCents, string(line.State),
 		nullableText(line.Ref), line.Attempts, nullableTime(line.DeadlineAt), nullableTime(line.ReconcileUntil),
 		nullableText(line.LastError), nullableText(line.Machine.KioskID), nullableText(line.Machine.Name),
 		nullableText(line.Machine.DeviceID), nullableText(line.Machine.DeviceNo),
@@ -359,7 +359,6 @@ func scanLine(row rowScanner) (store.Line, error) {
 		return store.Line{}, err
 	}
 
-	line.MachineType = machine.Kind(machineType)
 	line.State = dispenser.LineState(state)
 	line.Ref = ref.String
 	line.DeadlineAt = deadlineAt.Time
@@ -367,7 +366,7 @@ func scanLine(row rowScanner) (store.Line, error) {
 	line.LastError = lastError.String
 	line.Machine = dispenser.MachineRef{
 		KioskID:      kioskID.String,
-		Type:         line.MachineType,
+		Kind:         machine.Kind(machineType),
 		Name:         machineName.String,
 		DeviceID:     deviceID.String,
 		DeviceNo:     deviceNo.String,
@@ -380,7 +379,7 @@ func scanLine(row rowScanner) (store.Line, error) {
 
 func lineInsertArgs(orderID string, line store.Line) []any {
 	return []any{
-		line.ID, orderID, line.Position, string(line.MachineType), line.SKU, line.AmountCents, string(line.State),
+		line.ID, orderID, line.Position, string(line.Machine.Kind), line.SKU, line.AmountCents, string(line.State),
 		nullableText(line.Ref), line.Attempts, nullableTime(line.DeadlineAt), nullableTime(line.ReconcileUntil),
 		nullableText(line.LastError), 0,
 		nullableText(line.Machine.KioskID), nullableText(line.Machine.Name), nullableText(line.Machine.DeviceID),

@@ -23,7 +23,7 @@ const (
 func newDispenserMachine() dispenser.MachineRef {
 	return dispenser.MachineRef{
 		KioskID: "kiosk-1",
-		Type:    "snacks",
+		Kind:    "snacks",
 		Name:    "Snacks Powermix",
 		MID:     dispenserDeviceCode,
 	}

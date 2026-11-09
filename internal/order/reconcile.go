@@ -54,9 +54,9 @@ func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
 }
 
 func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, error) {
-	machine, ok := e.machines[line.MachineType]
+	machine, ok := e.machines[line.Machine.Kind]
 	if !ok {
-		unconfigured := fmt.Errorf("no hay una máquina configurada para el tipo %q", line.MachineType)
+		unconfigured := fmt.Errorf("no hay una máquina configurada para el tipo %q", line.Machine.Kind)
 
 		closed, scheduleErr := e.extendReconcile(ctx, line, unconfigured.Error())
 
