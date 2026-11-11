@@ -3,6 +3,8 @@ package preflight
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	"compras-remotas/internal/dispenser/batidos"
 	"compras-remotas/internal/dispenser/snacks"
@@ -11,6 +13,7 @@ import (
 const (
 	devicesPage     = 1
 	devicesPageSize = 10
+	checkBudget     = 8 * time.Second
 )
 
 type Batidos interface {
@@ -57,23 +60,64 @@ type Result struct {
 type Checker struct {
 	batidos Batidos
 	snacks  Snacks
+	budget  time.Duration
 }
 
-func New(b Batidos, s Snacks) *Checker {
-	return &Checker{batidos: b, snacks: s}
+type Option func(*Checker)
+
+func New(b Batidos, s Snacks, opts ...Option) *Checker {
+	checker := &Checker{batidos: b, snacks: s, budget: checkBudget}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(checker)
+		}
+	}
+
+	return checker
+}
+
+func WithBudget(d time.Duration) Option {
+	return func(checker *Checker) {
+		if d > 0 {
+			checker.budget = d
+		}
+	}
+}
+
+type machineResult struct {
+	reasons []Reason
+	err     error
 }
 
 func (c *Checker) Check(ctx context.Context, req Request) (Result, error) {
-	batidosReasons, batidosErr := c.checkBatidos(ctx, req)
-	snacksReasons, snacksErr := c.checkSnacks(ctx, req)
+	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	defer cancel()
 
-	if err := errors.Join(batidosErr, snacksErr); err != nil {
+	var (
+		batidosResult machineResult
+		snacksResult  machineResult
+		wait          sync.WaitGroup
+	)
+
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		batidosResult.reasons, batidosResult.err = c.checkBatidos(ctx, req)
+	}()
+	go func() {
+		defer wait.Done()
+		snacksResult.reasons, snacksResult.err = c.checkSnacks(ctx, req)
+	}()
+	wait.Wait()
+
+	if err := errors.Join(batidosResult.err, snacksResult.err); err != nil {
 		return Result{}, err
 	}
 
-	reasons := make([]Reason, 0, len(batidosReasons)+len(snacksReasons))
-	reasons = append(reasons, batidosReasons...)
-	reasons = append(reasons, snacksReasons...)
+	reasons := make([]Reason, 0, len(batidosResult.reasons)+len(snacksResult.reasons))
+	reasons = append(reasons, batidosResult.reasons...)
+	reasons = append(reasons, snacksResult.reasons...)
 
 	return Result{Sellable: len(reasons) == 0, Reasons: reasons}, nil
 }

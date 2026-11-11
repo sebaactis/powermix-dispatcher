@@ -1162,11 +1162,29 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Checker / New
 
-> Consulta las dos máquinas para un combo, sin estado ni caché: cada llamada es una foto nueva. Recibe interfaces y no clientes concretos para que el motor de órdenes pueda sustituirlos en las pruebas.
+> Consulta las dos máquinas para un combo, sin estado ni caché: cada llamada es una foto nueva. Recibe interfaces y no clientes concretos para que el motor de órdenes pueda sustituirlos en las pruebas. Acepta opciones al construirse para que una prueba pueda acortar el presupuesto sin tocar el valor de producción.
+
+### Option
+
+> Las opciones funcionales que ya usan el motor de órdenes (`order.Option`) y los dos clientes: `New` arranca con los valores por defecto y cada opción cambia sólo lo que le toca. Si mañana aparece otro ajuste del chequeo, se suma acá y ninguna firma existente se rompe.
+
+### checkBudget
+
+> Ocho segundos para el chequeo entero. El número sale del borde: el `WriteTimeout` del servidor HTTP es 60 s (`cmd/api/server.go`), así que el chequeo previo nunca es el que corta la respuesta del `POST /orders`. Antes eran cuatro llamadas de 10 s en fila, hasta 40 s de reloj para crear una orden; ahora son dos ramas de dos llamadas con un techo total de 8 s.
+
+### WithBudget
+
+> Sólo acepta un valor positivo. Cero o negativo vencería el contexto antes de la primera llamada y el chequeo fallaría sin preguntarle nada a las máquinas, que es peor que no tener presupuesto. Existe para los tests: el del presupuesto comprueba el corte con 50 ms en vez de esperar los 8 s de producción.
 
 ### Check
 
-> Consulta los cuatro datos siempre, incluso cuando la primera máquina ya falló, y recién después decide. Un error de proveedor o de red se devuelve como error junto con un Result vacío; nunca se disfraza de razón. La regla de negocio es del llamador: acá no se decide no vender, solo se informa que no se pudo averiguar. Los dos errores se juntan con errors.Join para no perder el de la segunda máquina.
+> Corre las dos máquinas a la vez —una goroutine por máquina con el `sync.WaitGroup` de la biblioteca estándar— y espera a las dos antes de decidir. Dentro de cada máquina las dos llamadas siguen siendo secuenciales, porque la segunda consulta depende del identificador que devuelve la primera. Lo que se gana es el paralelismo **entre** máquinas, que es donde estaba la suma de plazos: 8 s de techo en lugar de 40 s de reloj.
+>
+> El plazo es uno solo y se deriva del contexto entrante con `context.WithTimeout`: si la tablet ya cortó, el chequeo se va con ella y no con su propio reloj.
+>
+> Consulta los cuatro datos siempre, incluso cuando una máquina ya falló, y recién después decide. Una máquina que agota el presupuesto devuelve el error del contexto, y el resultado es el mismo que con un proveedor que no contesta: `Result` vacío y error, nunca una razón, porque un plazo vencido no describe el estado del mueble y disfrazarlo de causa de bloqueo mentiría sobre lo que sabemos.
+>
+> Cada goroutine escribe sólo su propio `machineResult` y la combinación ocurre después de `Wait`: no hay estado compartido que proteger con un mutex. El orden de las razones tampoco depende de quién terminó antes: se concatenan siempre batidos y después snacks, igual que cuando el chequeo era secuencial, para que el cuerpo del 409 no cambie entre dos pedidos idénticos. Los errores se juntan en ese mismo orden con `errors.Join`, para no perder el de la segunda máquina.
 
 ### checkBatidos
 
@@ -1179,6 +1197,24 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### slotReasons
 
 > Decide si algún slot puede entregar el SKU y, si ninguno puede, cuál de las tres causas es la verdadera: no está cargado, tiene stock en slots no vendibles, o está agotado. El orden importa y son excluyentes: evaluar stock y estado por separado daría «vendible» cuando un slot tiene el estado y otro el stock, y ningún slot puede entregar nada.
+
+## internal/preflight/checker_parallel_test.go
+
+### (archivo)
+
+> Viven en el paquete externo `preflight_test`, como `checker_test.go`, y traen sus propios dobles a propósito: los de `checker_test.go` cuentan llamadas para afirmar el contrato del chequeo, y estos necesitan bloquearse, esperar un turno y medir plazos. Mezclar los dos usos en el mismo doble habría vuelto ilegible el test de regresión.
+
+### TestCheck_ConsultaLasDosMaquinasALaVez
+
+> Es el test de la concurrencia, y el único que puede fallar por la forma del código: las dos máquinas entran a una barrera de dos y ninguna sigue hasta que la otra llegó. Con el chequeo secuencial la primera espera a una segunda que nunca va a entrar, así que `Check` no puede cumplir el segundo de plazo que le da el test; con dos goroutines entran a la vez y el resultado llega vendible. La barrera también espera al contexto, y el test tiene un `time.After` de guarda: un test colgado no informa nada.
+
+### TestCheck_RespetaElPresupuesto
+
+> Los dos dobles esperan `ctx.Done()` y devuelven su error: no hay proveedor lento, hay proveedor que no contesta. `Check` tiene que volver con el plazo agotado —`context.DeadlineExceeded` y `Result` vacío— y no colgarse. El presupuesto se acorta a 50 ms con `WithBudget`, así el test corre en milisegundos y no en los 8 s de producción; el margen de un segundo es para la máquina lenta, no para el código.
+
+### TestCheck_ElOrdenDeLasRazonesNoDependeDeCualTerminaAntes
+
+> Las dos máquinas reportan problemas y la de snacks termina primero (la de batidos duerme 20 ms a propósito). Las razones tienen que salir en el orden de siempre, batidos antes que snacks: el cuerpo del 409 es una lista estable y no un reflejo de la carrera. Es el test que corre `-count=20` para mostrar que no depende de la suerte.
 
 ## internal/dispenser/batidos/dispenser.go
 

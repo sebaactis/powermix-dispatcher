@@ -28,7 +28,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T4b | S4 | worker + verify | `333e55a` hecho, verify PASS (Postgres sin ejecutar) |
 | T5a | S5a | worker | ver commit `fix(api): agrega timeouts` |
 | T5b | S5b | worker | ver commit `fix(order): el despacho sobrevive` |
-| T5c | S5c | worker | pendiente |
+| T5c | S5c | worker | ver commit `fix(preflight)` |
 | T5v | S5a-S5c | verify | pendiente |
 | T6 | S6 | pendiente | pendiente |
 

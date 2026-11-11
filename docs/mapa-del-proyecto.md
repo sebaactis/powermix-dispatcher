@@ -11,7 +11,7 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 338 funciones de test, 17 paquetes
+go test ./...                          # 341 funciones de test, 17 paquetes
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -74,7 +74,7 @@ Reglas que no se rompen:
 | --- | --- | --- | --- |
 | 1 | menú | `GET /combos` | `httpapi/combos.go` → `catalog.Memory` |
 | 2 | crear orden | `POST /orders` | `httpapi/orders.go` → `draft.go` (arma el `Draft`) → `order.Place` |
-| 3 | chequeo previo | (dentro del paso 2) | `order/place.go` → `gate.Check` → `preflight.Checker` → las dos máquinas |
+| 3 | chequeo previo | (dentro del paso 2) | `order/place.go` → `gate.Check` → `preflight.Checker` → las dos máquinas en paralelo, con un presupuesto de 8 s y dos llamadas en fila por máquina |
 | 4 | pago | `POST /orders/{id}/pay` | `httpapi/orders.go` → `order.ConfirmPayment` → `dispatch.go` en paralelo; el despacho **sigue aunque la tablet corte** (`context.WithoutCancel` + un plazo por línea) |
 | 5 | estado | `GET /orders/{id}` | `httpapi/orders.go` → `store.LoadOrder` → `responses.go` |
 | 6 | cierre | callbacks y barrido | `httpapi/callbacks.go` y `sweep` → `order/reconcile.go` |
@@ -158,11 +158,12 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | conexión ociosa | 60 s | `cmd/api/server.go` |
 | encabezados máximos | 64 KB | `cmd/api/server.go` |
 | cuerpo máximo aceptado | 64 KB | `httpapi/respond.go` |
+| presupuesto del chequeo previo | 8 s | `preflight/checker.go` |
 
 ## Qué NO está verificado
 
 - **Nada del store de Postgres se ejecutó contra una base real.** Las migraciones `0004` y `0005` y los 14 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
-- **`go test -race` no corre** en esta máquina: la concurrencia se demuestra de forma determinista (copias viejas inyectadas), no con goroutines reales.
+- **`go test -race` no corre** en esta máquina. Casi toda la concurrencia se demuestra de forma determinista (copias viejas inyectadas); la excepción es el chequeo previo, que sí corre sus dos goroutines contra una barrera (`preflight/checker_parallel_test.go`), pero sin detector de carreras.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
 - Los webhooks de callback **no** se verificaron contra los proveedores reales: no hay credenciales ni sandbox.
 
