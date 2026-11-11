@@ -11,7 +11,7 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 334 funciones de test, 16 paquetes
+go test ./...                          # 335 funciones de test, 17 paquetes
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -27,7 +27,7 @@ docker compose up -d --build           # db + migrate + api + fakeapi
 
 | Paquete | Responsabilidad | Símbolos que importan |
 | --- | --- | --- |
-| `cmd/api` | composition root: es el único que conoce a la vez proveedores y dominio | `main`, `openStore` |
+| `cmd/api` | composition root: es el único que conoce a la vez proveedores y dominio | `main`, `newServer`, `openStore` |
 | `cmd/fakeapi` | levanta los dos sustitutos locales + siembra inicial + guardia de loopback | `main`, `requireLoopback` |
 | `internal/machine` | **vocabulario compartido**: la familia de máquina | `Kind`, `Batidos`, `Snacks` |
 | `internal/config` | topología del mueble desde JSON + secretos por entorno, validada al arrancar | `Load`, `Config`, `Kiosk`, `Machine`, `validate` |
@@ -153,6 +153,10 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | intervalo de reconciliación | 30 s | `order/reconcile.go` |
 | intentos por línea | 2 | `order/dispatch.go` |
 | barrido | cada 30 s, 10 líneas | `cmd/api/main.go` |
+| lectura del servidor HTTP | 10 s | `cmd/api/server.go` |
+| escritura del servidor HTTP | 60 s | `cmd/api/server.go` |
+| conexión ociosa | 60 s | `cmd/api/server.go` |
+| encabezados máximos | 64 KB | `cmd/api/server.go` |
 | cuerpo máximo aceptado | 64 KB | `httpapi/respond.go` |
 
 ## Qué NO está verificado

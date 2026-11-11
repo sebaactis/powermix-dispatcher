@@ -158,11 +158,7 @@ func main() {
 		Snacks:  cfg.SnacksCallbackSecret,
 	}, httpapi.WithCallbacksLogger(logger)).Register(mux)
 
-	server := &http.Server{
-		Addr:              envOr("HTTP_ADDR", "127.0.0.1:8080"),
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := newServer(envOr("HTTP_ADDR", "127.0.0.1:8080"), mux)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

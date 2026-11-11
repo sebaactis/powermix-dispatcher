@@ -20,6 +20,52 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los nombres de los campos JSON se mantienen estables: son un contrato
 > legible por máquinas, no texto para una persona.
 
+## cmd/api/server.go
+
+### (archivo)
+
+> Las cotas del servidor HTTP viven acá y no en `main` por una razón práctica:
+> `main` es el armado del proceso y no se puede probar sin levantar todo. Con la
+> construcción extraída, un test mira el `*http.Server` campo por campo sin abrir
+> un puerto.
+
+### const
+
+> `readHeaderTimeout` (5 s) corta al cliente que abre la conexión y no manda los
+> encabezados, que es el ataque lento más barato de hacer. `readTimeout` (10 s)
+> cubre encabezados más cuerpo; el cuerpo más grande que aceptamos son 64 KB
+> (`maxBodyBytes` de `httpapi`), así que 10 s es holgura y no límite.
+>
+> `writeTimeout` (60 s) **tiene que superar al handler más lento**, y el más
+> lento no es el que escribe: `POST /orders` corre el preflight, que consulta las
+> dos máquinas con cuatro llamadas de cliente (dispositivo y bienes en batidos,
+> dispositivos y ranuras en snacks), cada una con su propio tope de 10 s; el peor
+> caso son 40 s. `/pay` despacha a las máquinas en el mismo pedido. Con menos de
+> 60 s, una máquina que responde justo en el límite cortaría la respuesta al
+> cliente mientras el despacho ya está en curso. El plazo de reclamo de 2 min de
+> `order/reconcile.go` **no** entra en esta cuenta: no es un plazo del pedido, es
+> el que rearma el barrido si el proceso muere con la llamada en vuelo.
+>
+> `idleTimeout` (60 s) cierra la conexión keep-alive que la tablet no vuelve a
+> usar; sin él, un cliente puede dejar conexiones colgadas indefinidamente.
+> `maxHeaderBytes` (64 KB) es el mismo número que el cuerpo máximo aceptado: los
+> encabezados de nuestra tablet no llegan a un kilobyte, y el valor por defecto
+> de Go (1 MB) es margen que nadie usa.
+
+### newServer
+
+> Arma el `*http.Server` con las cinco cotas de arriba y el handler recibido, sin
+> abrir nada: quien escucha es `ListenAndServe` en `main`. La dirección se pasa
+> desde afuera (`envOr("HTTP_ADDR", …)`) para que este archivo no dependa del
+> entorno.
+
+### TestNewServerSetsTheTimeoutsAndTheHandler
+
+> Afirma los siete campos uno por uno, incluida la identidad del handler (el
+> mismo `mux` que se pasó, no otro equivalente). Cada cota está fijada acá y en
+> ningún otro lado: si alguien relaja un plazo para destrabar un caso puntual, el
+> test falla y la discusión ocurre antes de que el cambio llegue a producción.
+
 ## cmd/fakeapi/main.go
 
 ### (archivo)

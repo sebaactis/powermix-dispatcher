@@ -1,7 +1,7 @@
 # Endurecimiento tras la revisión
 
 Correcciones surgidas de la revisión de buenas prácticas, en el orden recomendado, un paso por vez.
-Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-lines` (paso 3). Cada paso espera la decisión del usuario cuando es estructural.
+Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4). Cada paso espera la decisión del usuario cuando es estructural.
 
 ## Specs
 
@@ -11,7 +11,9 @@ Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-
 - **S3b** (paso 2, opción B1): «`store.Order` gana `Version int64` y una migración nueva `0005` agrega `orders.version`. `SaveOrder` escribe `WHERE id = $1 AND version = $2` y devuelve `ErrStale` si alguien escribió antes. `settleOrder` recarga y reintenta una vez ante `ErrStale`.» `ConfirmPayment` escribe con versión: el segundo `/pay` concurrente recibe `ErrStale` y termina sin despachar.
 - **S4** (paso 3, opción R1 aceptada): recuperar las líneas `pending` trabadas. Casos: **C1** el proceso cayó entre registrar el intento y guardar su resultado («no: el pedido pudo llegar a la máquina (invariante 8)»); **C2** rechazo con intentos pendientes y caída antes del siguiente («sí: el último intento fue rechazado de forma explícita»); **C3** el guardado a `dispatching` chocó con otro escritor («sí: nadie llamó a la máquina»). Regla del usuario aceptada: «Antes de `AppendAttempt`, `dispatchLine` guarda la línea con `DeadlineAt` (plazo de 2 min). Una línea `pending` con plazo significa «alguien la llamó y no sabemos cómo terminó».» Con plazo vencido «el barrido no la despacha de nuevo. La **reconcilia**»; sin plazo, de una orden pagada hace más de 2 minutos, «el barrido llama a `dispatchLine` con el número de intento siguiente»; «una orden que quedó `paid` pasa a `dispatching` cuando el barrido la toma (C3)».
 - **S4r** (paso 3, agregado aceptado): «Si lo guardamos siempre que venga, C1 en batidos puede llegar a resolverse como entregado o fallido»: `dispatchLine` guarda `result.ProviderRef` en `line.Ref` aunque el intento no se haya aceptado, cuando viene no vacío.
-- **S5** (paso 4): timeouts del servidor, despacho con `context.WithoutCancel`, chequeo previo en paralelo. Pendiente de decisión.
+- **S5a** (paso 4, aceptado): timeouts del `http.Server`: «`ReadTimeout` 10 s, `WriteTimeout` 60 s, `IdleTimeout` 60 s, `MaxHeaderBytes` 64 KB», con la configuración extraída a `newServer` para poder probarla.
+- **S5b** (paso 4, aceptado): «Usar `context.WithoutCancel(ctx)`» en el despacho de `ConfirmPayment` y «darle a cada línea su propio plazo con `context.WithTimeout`, igual al plazo de reclamo (2 min)».
+- **S5c** (paso 4, aceptado): «`sync.WaitGroup` de la biblioteca estándar, una goroutine por máquina, con un plazo total de 8 s». «Las dos llamadas de cada máquina siguen siendo secuenciales».
 - **S6** (paso 5): versionado de migraciones y tests de Postgres y `-race`. Pendiente de decisión.
 
 ## Tasks
@@ -24,7 +26,10 @@ Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-
 | T3b | S3b | worker + verify | `7a1f963` hecho, verify PASS (Postgres sin ejecutar) |
 | T4a | S4r | worker + verify | `9833a3d` hecho, verify PASS |
 | T4b | S4 | worker + verify | `333e55a` hecho, verify PASS (Postgres sin ejecutar) |
-| T5 | S5 | pendiente | pendiente |
+| T5a | S5a | worker | ver commit `fix(api): agrega timeouts` |
+| T5b | S5b | worker | pendiente |
+| T5c | S5c | worker | pendiente |
+| T5v | S5a-S5c | verify | pendiente |
 | T6 | S6 | pendiente | pendiente |
 
 ## Corte de entrega
@@ -53,3 +58,5 @@ Ramas: `fix/review-hardening` (pasos 1 y 2, ya en `main`), `fix/recover-pending-
   4. Store: `DueLines` incluye `pending` además de `sent|brewing|in_doubt` (misma condición de plazo vencido). Método nuevo en el puerto `StalledLines(ctx, paidBefore time.Time, limit int) ([]Line, error)`: líneas `pending` sin `DeadlineAt` cuya orden está `paid` o `dispatching` y tiene `paid_at <= paidBefore`, ordenadas por `paid_at`, id. Postgres con `JOIN orders`. Memoria con la misma regla.
   5. Barrido (`ReconcileDue`): las líneas vencidas se reconcilian como hoy, también las `pending` (nunca se vuelven a despachar). Después pide `StalledLines(now - deadline, limit)` y por cada una: `refreshOrderStatus` de su orden (saca a `paid` hacia `dispatching`), luego `dispatchLine` con la línea recargada. Las órdenes tocadas se asientan con `settleOrder` al final, como hoy.
 - **L8** (verificación de T4a/T4b): PASS en todo salvo Postgres en ejecución (sin base). Riesgo bajo anotado: una línea `pending` sin reclamo con `Attempts >= maxAttempts` volvería en cada barrido ocupando cupo; ningún camino normal la produce (sólo bajar `maxAttempts` por configuración).
+- **L9**: «Si. Lo mismo antes de seguir.» (paso 3 fusionado y subido: `f036d82`).
+- **L10**: «Dale.» (paso 4 con los valores propuestos y `sync.WaitGroup`).
