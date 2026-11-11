@@ -14,6 +14,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **S5a** (paso 4, aceptado): timeouts del `http.Server`: «`ReadTimeout` 10 s, `WriteTimeout` 60 s, `IdleTimeout` 60 s, `MaxHeaderBytes` 64 KB», con la configuración extraída a `newServer` para poder probarla.
 - **S5b** (paso 4, aceptado): «Usar `context.WithoutCancel(ctx)`» en el despacho de `ConfirmPayment` y «darle a cada línea su propio plazo con `context.WithTimeout`, igual al plazo de reclamo (2 min)».
 - **S5c** (paso 4, aceptado): «`sync.WaitGroup` de la biblioteca estándar, una goroutine por máquina, con un plazo total de 8 s». «Las dos llamadas de cada máquina siguen siendo secuenciales».
+- **S5d** (paso 4, opción 1 aceptada): «En `orders.go`, las dos relecturas de la orden después de `ConfirmPayment` usan `context.WithoutCancel(r.Context())`, igual que el despacho. Se mantiene `ReadTimeout`. Primero escribo un test que reproduzca el problema con un servidor real y un `ReadTimeout` corto». La regla queda escrita en el mapa. Se refuerza además el test del orden de razones del chequeo previo.
 - **S6** (paso 5): versionado de migraciones y tests de Postgres y `-race`. Pendiente de decisión.
 
 ## Tasks
@@ -29,7 +30,8 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T5a | S5a | worker | ver commit `fix(api): agrega timeouts` |
 | T5b | S5b | worker | ver commit `fix(order): el despacho sobrevive` |
 | T5c | S5c | worker | ver commit `fix(preflight)` |
-| T5v | S5a-S5c | verify | pendiente |
+| T5d | S5d | worker | ver commit `test(preflight)` |
+| T5v | S5a-S5d | verify | 3a76ded/fe384e9/99e68c6 PASS; S5a+S5b rompen la invariante 12 → T5d |
 | T6 | S6 | pendiente | pendiente |
 
 ## Corte de entrega
@@ -60,3 +62,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L8** (verificación de T4a/T4b): PASS en todo salvo Postgres en ejecución (sin base). Riesgo bajo anotado: una línea `pending` sin reclamo con `Attempts >= maxAttempts` volvería en cada barrido ocupando cupo; ningún camino normal la produce (sólo bajar `maxAttempts` por configuración).
 - **L9**: «Si. Lo mismo antes de seguir.» (paso 3 fusionado y subido: `f036d82`).
 - **L10**: «Dale.» (paso 4 con los valores propuestos y `sync.WaitGroup`).
+- **L11** (verificación del paso 4): `ReadTimeout` cancela el contexto del request al vencer (`net/http/server.go:1049`, `:729-733`, `:773`); con un `/pay` de más de 10 s, la relectura en `httpapi/orders.go:63,84` falla y responde 5xx, rompiendo la invariante 12.
+- **L12**: «Vamos con la 1.»
+- **L13** (T5d, prueba en ejecución): L11 es falso. Con `ReadTimeout` de 200 ms y un handler más lento, `r.Context()` nunca se canceló (4 variantes, siempre 200); `connReader.startBackgroundRead` borra el plazo de lectura antes de llamar al handler (`net/http/server.go:698`, llamado en `:2062`). Sólo un corte del cliente cancela el contexto (control confirmado). La invariante 12 no estaba rota. Probado con Go 1.26.5; el código existe desde Go 1.8.
+- **L14**: «Vamos con la B.» S5d pasa a: sin cambio en `httpapi/orders.go`; corregir `docs/comentarios-codigo.md` (la nota que dice que `WriteTimeout` es el límite que manda) y documentar que `ReadTimeout` no corre durante el handler; reforzar el test del orden de razones del chequeo previo con canales. Desde acá el usuario pide usar la skill golang-pro y recuerda: «yo tengo que entender mi proyecto». La regla del proyecto de no comentar el código sigue mandando sobre la sugerencia de comentarios de la skill.

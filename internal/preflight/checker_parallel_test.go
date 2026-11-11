@@ -199,31 +199,38 @@ func TestCheck_RespetaElPresupuesto(t *testing.T) {
 	}
 }
 
-type batidosSlowStub struct {
-	device batidos.Device
-	goods  []batidos.DeviceGoods
-	delay  time.Duration
+type batidosAfterSnacksStub struct {
+	device     batidos.Device
+	goods      []batidos.DeviceGoods
+	snacksDone <-chan struct{}
 }
 
-func (s *batidosSlowStub) Device(ctx context.Context, deviceID string) (batidos.Device, error) {
-	time.Sleep(s.delay)
-	return s.device, nil
+func (s *batidosAfterSnacksStub) Device(ctx context.Context, deviceID string) (batidos.Device, error) {
+	select {
+	case <-s.snacksDone:
+		return s.device, nil
+	case <-ctx.Done():
+		return batidos.Device{}, ctx.Err()
+	}
 }
 
-func (s *batidosSlowStub) DeviceGoods(ctx context.Context, deviceID string) ([]batidos.DeviceGoods, error) {
+func (s *batidosAfterSnacksStub) DeviceGoods(ctx context.Context, deviceID string) ([]batidos.DeviceGoods, error) {
 	return s.goods, nil
 }
 
-type snacksFastStub struct {
+type snacksFirstStub struct {
 	page  snacks.DevicesPage
 	slots []snacks.Slot
+	done  chan struct{}
 }
 
-func (s *snacksFastStub) Devices(ctx context.Context, query snacks.PageQuery) (snacks.DevicesPage, error) {
+func (s *snacksFirstStub) Devices(ctx context.Context, query snacks.PageQuery) (snacks.DevicesPage, error) {
 	return s.page, nil
 }
 
-func (s *snacksFastStub) Slots(ctx context.Context, deviceCode string) ([]snacks.Slot, error) {
+func (s *snacksFirstStub) Slots(ctx context.Context, deviceCode string) ([]snacks.Slot, error) {
+	close(s.done)
+
 	return s.slots, nil
 }
 
@@ -237,8 +244,9 @@ func TestCheck_ElOrdenDeLasRazonesNoDependeDeCualTerminaAntes(t *testing.T) {
 	sState.page.Items[0].SellStatus = snacks.SellStatusSuspended
 	sState.slots = nil
 
-	bStub := &batidosSlowStub{device: bState.device, goods: bState.goods, delay: 20 * time.Millisecond}
-	sStub := &snacksFastStub{page: sState.page, slots: sState.slots}
+	snacksDone := make(chan struct{})
+	bStub := &batidosAfterSnacksStub{device: bState.device, goods: bState.goods, snacksDone: snacksDone}
+	sStub := &snacksFirstStub{page: sState.page, slots: sState.slots, done: snacksDone}
 	checker := preflight.New(bStub, sStub)
 
 	result, err := checker.Check(context.Background(), testRequest())
@@ -255,7 +263,7 @@ func TestCheck_ElOrdenDeLasRazonesNoDependeDeCualTerminaAntes(t *testing.T) {
 		preflight.ReasonSnacksSKUNotInAnySlot,
 	}
 	if !slices.Equal(result.Reasons, want) {
-		t.Fatalf("razones %v, se esperaba el orden de siempre %v con snacks terminando primero", result.Reasons, want)
+		t.Fatalf("razones %v, se esperaba el orden de siempre %v aunque snacks haya terminado antes que batidos", result.Reasons, want)
 	}
 	if result.Sellable {
 		t.Fatal("dos máquinas con problemas no pueden dar un resultado vendible")

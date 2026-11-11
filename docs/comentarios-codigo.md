@@ -32,19 +32,32 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### const
 
 > `readHeaderTimeout` (5 s) corta al cliente que abre la conexión y no manda los
-> encabezados, que es el ataque lento más barato de hacer. `readTimeout` (10 s)
-> cubre encabezados más cuerpo; el cuerpo más grande que aceptamos son 64 KB
-> (`maxBodyBytes` de `httpapi`), así que 10 s es holgura y no límite.
+> encabezados, que es el ataque lento más barato de hacer.
 >
-> `writeTimeout` (60 s) **tiene que superar al handler más lento**, y el más
-> lento no es el que escribe: `POST /orders` corre el preflight, que consulta las
-> dos máquinas con cuatro llamadas de cliente (dispositivo y bienes en batidos,
-> dispositivos y ranuras en snacks), cada una con su propio tope de 10 s; el peor
-> caso son 40 s. `/pay` despacha a las máquinas en el mismo pedido. Con menos de
-> 60 s, una máquina que responde justo en el límite cortaría la respuesta al
-> cliente mientras el despacho ya está en curso. El plazo de reclamo de 2 min de
-> `order/reconcile.go` **no** entra en esta cuenta: no es un plazo del pedido, es
-> el que rearma el barrido si el proceso muere con la llamada en vuelo.
+> `readTimeout` (10 s) **acota sólo la lectura**, no el handler: `net/http` borra
+> el plazo de lectura justo antes de llamarlo (`connReader.startBackgroundRead`,
+> `net/http/server.go:698`, llamada en `:2062`), así que cubre encabezados y
+> cuerpo y nada más. El cuerpo más grande que aceptamos son 64 KB
+> (`maxBodyBytes` de `httpapi`), y por eso 10 s es holgura y no límite. El
+> contexto del pedido se cancela únicamente si el cliente corta la conexión,
+> cuando el handler vuelve, ante un pánico o al cerrarse la conexión: un `/pay`
+> de un minuto no lo pierde por `ReadTimeout`, así que las relecturas de
+> `httpapi/orders.go` pueden seguir usando `r.Context()`.
+>
+> `writeTimeout` (60 s) es, entonces, el único plazo del servidor que puede
+> truncar una respuesta lenta, y el número sale de los clientes de proveedor, no
+> del plazo de reclamo: cada uno lleva su propio `http.Client{Timeout: 10s}`
+> (`dispenser/batidos/client.go:28`, `dispenser/snacks/client.go:26`), y el
+> despacho corta ahí mucho antes que el plazo de 2 min por línea. Un proveedor
+> que no contesta se lee como error, la línea queda `in_doubt` y no se reintenta
+> (invariante 8); el reintento sólo sigue a un rechazo explícito, que contesta
+> rápido. Por intento, batidos gasta dos llamadas y snacks una, y `maxAttempts`
+> es 2: unos 40 s por línea en el peor caso de timeouts más una vuelta de
+> reintento. Las dos líneas corren en paralelo, así que `/pay` ronda los 41 s y
+> entra en los 60 s. Los 2 min por línea son el respaldo, y sólo se alcanzan si
+> alguien sube el `Timeout` de los clientes. `POST /orders`, con el presupuesto
+> de 8 s del preflight, está más lejos todavía. `ReadTimeout` no participa: no
+> corre durante el handler.
 >
 > `idleTimeout` (60 s) cierra la conexión keep-alive que la tablet no vuelve a
 > usar; sin él, un cliente puede dejar conexiones colgadas indefinidamente.
@@ -1214,7 +1227,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### TestCheck_ElOrdenDeLasRazonesNoDependeDeCualTerminaAntes
 
-> Las dos máquinas reportan problemas y la de snacks termina primero (la de batidos duerme 20 ms a propósito). Las razones tienen que salir en el orden de siempre, batidos antes que snacks: el cuerpo del 409 es una lista estable y no un reflejo de la carrera. Es el test que corre `-count=20` para mostrar que no depende de la suerte.
+> Las dos máquinas reportan problemas y la de snacks termina primero, sin dormir: el doble de snacks cierra un canal al volver de `Slots` y el de batidos lo espera antes de contestar `Device`, así que el orden de finalización es un hecho del test y no una apuesta al planificador. Las razones tienen que salir igual en el orden de siempre, batidos antes que snacks: el cuerpo del 409 es una lista estable y no un reflejo de la carrera. Que el test sirve se comprobó mutando el chequeo para ir adjuntando cada mitad cuando termina: las razones de snacks salieron primeras y falló. Corre con `-count=20` para mostrar que no depende de la suerte.
 
 ## internal/dispenser/batidos/dispenser.go
 
