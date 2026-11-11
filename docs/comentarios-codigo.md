@@ -5,6 +5,8 @@ El código fuente no lleva comentarios a propósito: acá se consulta, se busca 
 
 Formato: `Símbolo --> "texto del comentario"`.
 
+> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 42 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/mapa-del-proyecto.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
+
 ## cmd/api/main.go
 
 ### (archivo)

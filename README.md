@@ -49,7 +49,7 @@ worse than none.
 ## Run
 
 ```bash
-go test ./...            # includes the signature vectors taken from the docs
+go test ./...            # no tests in main: the 341 live in branch archive/tests
 go vet ./...
 go build ./...
 
@@ -193,6 +193,9 @@ documents define live in code and in tests (`internal/dispenser/*/sign*.go`, the
 `openssl` vectors), which is what actually prevents a regression.
 
 ## Tests that exist because the docs were ambiguous
+
+All of them live in branch `archive/tests`, not in `main` (see
+`docs/mapa-del-proyecto.md`).
 
 - Two Base64 HMAC vectors and two MD5 vectors computed with `openssl`, not with Go,
   so the test cannot agree with the implementation by accident.

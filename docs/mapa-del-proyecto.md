@@ -11,9 +11,13 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 341 funciones de test, 17 paquetes
+go test ./...                          # en main no hay tests: los 341 (42 archivos) viven en la rama archive/tests
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
+
+# tests: se traen de archive/tests para trabajar y se borran antes del commit en main
+git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')
+git rm -q -f $(git ls-files '*_test.go')   # índice y archivo en un solo paso; -f cubre la copia editada
 
 # local, contra los servidores falsos
 go run ./cmd/fakeapi                   # 9401 batidos, 9402 snacks, 9403 administración
@@ -22,6 +26,18 @@ go run ./cmd/api -config config.local.json -combos combos.local.json
 # contenedor (requiere Docker Desktop corriendo)
 docker compose up -d --build           # db + migrate + api + fakeapi
 ```
+
+## Tests: dónde viven y cómo se usan
+
+`main` no tiene ni un archivo de test. Los 42 `*_test.go` —341 funciones— viven en la rama `archive/tests` (commit `8fc5761`), que se sube a `origin` junto con `main`. El flujo desde acá es este:
+
+- **Antes de tocar comportamiento**, traer los tests con el `git checkout` de arriba. Sin ellos `go test ./...` responde `[no test files]` en todos los paquetes: la suite no existe hasta que se traen.
+- **El test nuevo va primero**, en el paquete que le corresponde y usando los ayudantes que ya usan los demás archivos de ese paquete (paquete externo `_test` cuando el test mira el borde). Se corre la suite completa, no sólo el test nuevo.
+- **Antes de commitear en `main`**, borrar los tests con el `git rm` de arriba: `main` no recibe ninguno.
+- **El test nuevo se commitea en `archive/tests`**, en un commit propio, para que el borrado de `main` no se lo lleve: recuperar, escribir, correr, borrar en `main` y archivar.
+- **La limpieza es un solo paso.** `git rm -q -f` saca la entrada del índice y el archivo a la vez; el `-f` hace falta cuando el test restaurado se editó y ya no coincide con `HEAD`. El par `git rm --cached` + `rm $(git ls-files --others '*_test.go')` no sirve: después del `checkout` los archivos quedan rastreados, `--others` los devuelve vacío y `rm` falla por falta de argumentos.
+
+**Costo:** mientras los tests vivan sólo en `archive/tests`, `main` no tiene red de regresión y la CI no puede correr la suite.
 
 ## Mapa de paquetes
 
@@ -162,6 +178,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 
 ## Qué NO está verificado
 
+- **`main` no tiene ni un test.** Los 42 archivos viven en `archive/tests`, así que `go test ./...` responde `[no test files]` en todos los paquetes y nada frena una regresión hasta que vuelvan.
 - **Nada del store de Postgres se ejecutó contra una base real.** Las migraciones `0004` y `0005` y los 14 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
 - **`go test -race` no corre** en esta máquina. Casi toda la concurrencia se demuestra de forma determinista (copias viejas inyectadas); la excepción es el chequeo previo, que sí corre sus dos goroutines contra una barrera (`preflight/checker_parallel_test.go`), pero sin detector de carreras.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
