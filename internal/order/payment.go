@@ -44,6 +44,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 	}
 
 	lines := loaded.Lines
+	detached := context.WithoutCancel(ctx)
 	failures := make([]error, len(lines))
 
 	var wg sync.WaitGroup
@@ -53,7 +54,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 		go func(i int) {
 			defer wg.Done()
 
-			failures[i] = e.dispatchLine(ctx, orderID, lines[i])
+			failures[i] = e.dispatchWithinDeadline(detached, orderID, lines[i])
 		}(i)
 	}
 
@@ -61,7 +62,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 
 	joined := errors.Join(failures...)
 
-	if _, err := e.refreshOrderStatus(ctx, orderID); err != nil {
+	if _, err := e.refreshOrderStatus(detached, orderID); err != nil {
 		return errors.Join(joined, err)
 	}
 

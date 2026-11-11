@@ -1464,11 +1464,21 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Esa versión es lo que separa dos `/pay` concurrentes. Si el choque llega en el guardado a `paid`, la respuesta es nil y nada más: el otro `/pay` ya registró el cobro y va a despachar, así que reintentar sería cobrar dos veces o despachar dos veces. Si llega en el guardado a `dispatching`, en cambio, el error se devuelve y no se despacha: sin ese estado no hay arista legal hacia la entrega.
 >
-> Al final se **recarga** la orden con `refreshOrderStatus`, que deriva el estado con `AdvanceOrder` sobre las líneas leídas. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
+> Después del guardado a `dispatching` —el punto en que el dinero ya está cobrado— el despacho **deja de correr con el contexto del pedido**: se separa con `context.WithoutCancel`. Con el contexto del request, una tablet que se desconecta cancela la llamada a la máquina en pleno vuelo y hace fallar con `context canceled` el `SaveLine` que guarda el resultado; el cobro queda registrado, el producto no salió y no hay dato que lo diga, porque la escritura que lo habría marcado `in_doubt` es justamente la que se abortó. `WithoutCancel` y no `context.Background()` porque conserva los **valores** del request y quita sólo la cancelación: el que puso un dato en el contexto del borde lo sigue leyendo del otro lado, y el cobro no hereda algo que no le corresponde —la suerte de una conexión HTTP ajena al producto—. Lo que sí se hereda es el plazo, y por eso cada línea recibe su propio `context.WithTimeout` sobre ese contexto separado.
+>
+> Ese plazo por línea es igual al **plazo de reclamo** (`e.deadline`, 2 min por defecto), que es el número que `dispatchLine` escribe en `DeadlineAt` en cada vuelta. Que sean la misma constante y no dos parecidas no es estética: el barrido declara vencida una línea mirando `DeadlineAt`, así que un despacho autorizado a vivir más que su propio reclamo seguiría en vuelo cuando el barrido ya lo dio por abandonado. El `cancel` se difiere dentro de la goroutine de la línea, así que el temporizador se libera en cuanto esa línea termina. Si el plazo vence, `Dispatch` vuelve con `context.DeadlineExceeded`, `classifyDispatch` lo lee como «no sabemos» y la línea queda `in_doubt` para que la reconciliación pregunte —nunca `failed`, porque cobrar sin entregar no se arregla con un reintento a ciegas (invariante 8)—.
+>
+> Al final se **recarga** la orden con `refreshOrderStatus`, que deriva el estado con `AdvanceOrder` sobre las líneas leídas, y esa recarga también usa el contexto separado: el estado de una orden que ya se despachó tiene que persistirse aunque el cliente se haya ido. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
 >
 > Sólo los errores de store vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
 
 ## internal/order/dispatch.go
+
+### dispatchWithinDeadline
+
+> Es el plazo por línea en un solo lugar: deriva `context.WithTimeout(ctx, e.deadline)`, difiere el `cancel` y llama a `dispatchLine`. Existe porque hay dos caminos que despachan —`ConfirmPayment` y `resumeStalledLine`— y los dos tienen que cortar con el mismo número con el que se reclama la línea. Si el barrido usara un plazo más corto que el reclamo, cortaría llamadas que todavía estaban vivas; si usara uno más largo, el barrido reconciliaría una línea mientras la llamada sigue en curso. Un `context.Background()` con el plazo escrito a mano en cada camino tendría el mismo problema una versión después, cuando alguien cambie `e.deadline` y olvide el otro.
+>
+> No se aplica a `reconcileLine`: la consulta de estado de una línea vencida corre con el contexto del barrido, porque no hay forma de que su cancelación deje dinero a medias —no despacha nada—.
 
 ### dispatchLine
 
@@ -2044,3 +2054,21 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## config.docker.json
 
 > Es `config.example.json` apuntado al compose: `store` en `postgres`, `public_base_url` con el puerto publicado (`18080`), y las dos URLs de proveedor con el nombre del servicio `fakeapi` en vez de `127.0.0.1`. Las credenciales son las que el falso espera por defecto (`mykey`/`mysecret`, `ak_test`/`testsecret`): valores de pruebas locales, no credenciales de nada, y así el stack levanta sin exportar variables. El `device_id` de batidos es `dev-e2e-1`, que es el dispositivo al que el falso le siembra el producto.
+
+## internal/order/payment_test.go — el despacho que sobrevive a la tablet (S5b)
+
+### TestEngineConfirmPaymentDispatchesWithACancelledRequestContext
+
+> El caso real que motivó S5b: la tablet confirma el pago, el cobro se registra y la conexión se corta. `cancellingOrderStore` reproduce ese corte en el único punto donde no hay duda de que el dinero ya está tomado: envuelve la memoria y cancela el contexto del request **después** del guardado a `dispatching`. La aserción es doble y las dos mitades importan: dentro de `Dispatch` el `ctx.Err()` tiene que ser `nil` —con el contexto del pedido sería `context.Canceled`— y la orden tiene que quedar `dispatching` con las dos líneas `sent`, no trabada a medio despachar.
+>
+> Sin el test, el arreglo se puede «lograr» pasando `context.Background()` y nadie notaría que la llamada a la máquina ya no se corta pero tampoco se puede cortar nunca: por eso el plazo vive en el mismo camino y lo fija el test siguiente.
+
+### TestEngineConfirmPaymentKeepsTheRequestContextValues
+
+> `WithoutCancel` quita la cancelación y conserva los valores; `context.Background()` habría pasado el test anterior igual. Este fija la diferencia con un valor puesto con `context.WithValue` que la máquina lee dentro de `Dispatch`. Es la guardia contra el arreglo fácil, que hoy no cambia nada visible —todavía no hay ningún valor en el contexto del `/pay`— y deja de ser cosmética el día que alguien mande el id de correlación o el kiosco por ahí.
+
+### TestEngineConfirmPaymentGivesALineTheClaimDeadline
+
+> La otra mitad de S5b: el despacho no puede sobrevivir a su propio reclamo. `blockedMachine` espera a que su contexto termine y devuelve lo que ve; el plazo se baja a 100 ms con `order.WithLineDeadline`, la opción que ya existía para el plazo de reclamo, y por eso el test fija de paso que el tope del proceso y el número que se escribe en `DeadlineAt` son el mismo. Se espera `context.DeadlineExceeded` adentro de `Dispatch` —no `context.Canceled`, que sería el request—, la línea en `in_doubt` y `ConfirmPayment` de vuelta: una máquina que no contesta no puede colgar el `/pay`. La cota de 10 s con `time.After` es del test, no del motor: si el despacho se queda esperando, el test falla en vez de colgarse.
+>
+> La máquina tiene además una salida propia a los 5 s para que la versión sin arreglo termine y el rojo se lea como «terminó con `<nil>`» en vez de como un cuelgue del binario de pruebas.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -699,4 +700,240 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	if reloaded := got.Lines[0]; reloaded.State != dispenser.LinePending {
 		t.Fatalf("la línea quedó en %q, se esperaba no tocarla en %q", reloaded.State, dispenser.LinePending)
 	}
+}
+
+func TestEngineConfirmPaymentDispatchesWithACancelledRequestContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orders := &cancellingOrderStore{Memory: store.NewMemory(), cancel: cancel}
+	batido := &probeMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
+	snack := &probeMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	engine := order.New(
+		orders,
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, comboDraft())
+
+	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("ConfirmPayment con la tablet desconectada después de cobrar: %v", err)
+	}
+
+	probes := []struct {
+		machineType string
+		probe       *probeMachine
+	}{
+		{machineType: "batidos", probe: batido},
+		{machineType: "snacks", probe: snack},
+	}
+
+	for _, item := range probes {
+		if err := item.probe.onlyContextError(t); err != nil {
+			t.Fatalf("el despacho de %s corrió con el contexto del pedido cancelado (%v): una vez cobrado, la llamada a la máquina no puede abortarse porque la tablet se fue", item.machineType, err)
+		}
+	}
+
+	got := mustOrder(t, orders, placed.ID)
+	if got.Status != store.OrderDispatching {
+		t.Fatalf("la orden quedó en %q, se esperaba %q guardado aunque el cliente se haya ido", got.Status, store.OrderDispatching)
+	}
+
+	for _, item := range probes {
+		line := lineFor(t, got, item.machineType)
+		if line.State != dispenser.LineSent {
+			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", item.machineType, line.State, dispenser.LineSent)
+		}
+	}
+}
+
+func TestEngineConfirmPaymentKeepsTheRequestContextValues(t *testing.T) {
+	ctx := context.WithValue(context.Background(), requestValueKey{}, "kiosco-7")
+
+	st := newRecordingStore()
+	batido := &probeMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	snack := &probeMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, comboDraft())
+
+	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("ConfirmPayment: %v", err)
+	}
+
+	if value := batido.onlyValue(t); value != "kiosco-7" {
+		t.Fatalf("el despacho leyó el valor %v del contexto del pedido, se esperaba %q: separar la cancelación no puede borrar los valores", value, "kiosco-7")
+	}
+}
+
+func TestEngineConfirmPaymentGivesALineTheClaimDeadline(t *testing.T) {
+	st := newRecordingStore()
+	batido := &blockedMachine{}
+	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+		order.WithLineDeadline(100*time.Millisecond),
+	)
+
+	placed := place(t, engine, comboDraft())
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- engine.ConfirmPayment(context.Background(), placed.ID, engineNow)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ConfirmPayment: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ConfirmPayment no volvió: la línea quedó esperando a una máquina que no responde")
+	}
+
+	if err := batido.onlyContextError(t); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("el despacho de batidos terminó con %v, se esperaba que el plazo de la línea lo cortara con %v", err, context.DeadlineExceeded)
+	}
+
+	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
+	if line.State != dispenser.LineInDoubt {
+		t.Fatalf("la línea cortada por el plazo quedó en %q, se esperaba %q", line.State, dispenser.LineInDoubt)
+	}
+	if line.Attempts != 1 {
+		t.Fatalf("la línea cortada por el plazo acumuló %d intentos, se esperaba 1", line.Attempts)
+	}
+}
+
+type requestValueKey struct{}
+
+type probeMachine struct {
+	mu      sync.Mutex
+	errs    []error
+	values  []any
+	attempt dispenser.DispatchResult
+}
+
+func (m *probeMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+	return dispenser.Availability{Available: true}, nil
+}
+
+func (m *probeMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.errs = append(m.errs, ctx.Err())
+	m.values = append(m.values, ctx.Value(requestValueKey{}))
+
+	return m.attempt, nil
+}
+
+func (m *probeMachine) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
+	return dispenser.Status{}, nil
+}
+
+func (m *probeMachine) onlyContextError(t *testing.T) error {
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.errs) != 1 {
+		t.Fatalf("la máquina recibió %d despachos, se esperaba 1", len(m.errs))
+	}
+
+	return m.errs[0]
+}
+
+func (m *probeMachine) onlyValue(t *testing.T) any {
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.values) != 1 {
+		t.Fatalf("la máquina recibió %d despachos, se esperaba 1", len(m.values))
+	}
+
+	return m.values[0]
+}
+
+type blockedMachine struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (m *blockedMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+	return dispenser.Availability{Available: true}, nil
+}
+
+func (m *blockedMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+	}
+
+	err := ctx.Err()
+
+	m.mu.Lock()
+	m.errs = append(m.errs, err)
+	m.mu.Unlock()
+
+	return dispenser.DispatchResult{}, err
+}
+
+func (m *blockedMachine) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
+	return dispenser.Status{}, nil
+}
+
+func (m *blockedMachine) onlyContextError(t *testing.T) error {
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.errs) != 1 {
+		t.Fatalf("la máquina bloqueada recibió %d despachos, se esperaba 1", len(m.errs))
+	}
+
+	return m.errs[0]
+}
+
+type cancellingOrderStore struct {
+	*store.Memory
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+func (s *cancellingOrderStore) SaveOrder(ctx context.Context, o store.Order) (store.Order, error) {
+	saved, err := s.Memory.SaveOrder(ctx, o)
+	if err != nil {
+		return saved, err
+	}
+
+	if o.Status != store.OrderDispatching {
+		return saved, nil
+	}
+
+	s.mu.Lock()
+	cancel := s.cancel
+	s.cancel = nil
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	return saved, nil
 }

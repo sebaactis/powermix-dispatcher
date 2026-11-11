@@ -89,7 +89,7 @@ func (e *Engine) resumeStalledLine(ctx context.Context, line store.Line) error {
 		return nil
 	}
 
-	return e.dispatchLine(ctx, line.OrderID, fresh)
+	return e.dispatchWithinDeadline(ctx, line.OrderID, fresh)
 }
 
 func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, error) {

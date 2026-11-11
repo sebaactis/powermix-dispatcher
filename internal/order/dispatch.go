@@ -19,6 +19,13 @@ type dispatchVerdict struct {
 	detail  string
 }
 
+func (e *Engine) dispatchWithinDeadline(ctx context.Context, orderID string, line store.Line) error {
+	lineCtx, cancel := context.WithTimeout(ctx, e.deadline)
+	defer cancel()
+
+	return e.dispatchLine(lineCtx, orderID, line)
+}
+
 func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Line) error {
 	for line.Attempts < e.maxAttempts {
 		number := line.Attempts + 1

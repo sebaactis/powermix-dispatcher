@@ -11,7 +11,7 @@ Léelo de arriba hacia abajo la primera vez; después usá las tablas como índi
 ## Comandos
 
 ```bash
-go test ./...                          # 335 funciones de test, 17 paquetes
+go test ./...                          # 338 funciones de test, 17 paquetes
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -75,7 +75,7 @@ Reglas que no se rompen:
 | 1 | menú | `GET /combos` | `httpapi/combos.go` → `catalog.Memory` |
 | 2 | crear orden | `POST /orders` | `httpapi/orders.go` → `draft.go` (arma el `Draft`) → `order.Place` |
 | 3 | chequeo previo | (dentro del paso 2) | `order/place.go` → `gate.Check` → `preflight.Checker` → las dos máquinas |
-| 4 | pago | `POST /orders/{id}/pay` | `httpapi/orders.go` → `order.ConfirmPayment` → `dispatch.go` en paralelo |
+| 4 | pago | `POST /orders/{id}/pay` | `httpapi/orders.go` → `order.ConfirmPayment` → `dispatch.go` en paralelo; el despacho **sigue aunque la tablet corte** (`context.WithoutCancel` + un plazo por línea) |
 | 5 | estado | `GET /orders/{id}` | `httpapi/orders.go` → `store.LoadOrder` → `responses.go` |
 | 6 | cierre | callbacks y barrido | `httpapi/callbacks.go` y `sweep` → `order/reconcile.go` |
 
@@ -86,7 +86,7 @@ Quién cierra una línea:
 
 Quién mueve una línea `pending`:
 
-- **`ConfirmPayment`**: es el camino normal, una vuelta de `dispatchLine` por intento.
+- **`ConfirmPayment`**: es el camino normal, una vuelta de `dispatchLine` por intento, con el contexto del pedido ya separado y un plazo por línea igual al plazo de reclamo.
 - **el barrido**, con dos reglas distintas: una `pending` **con plazo vencido** quedó reclamada por un despacho que no dejó resultado, y se **reconcilia** (nunca se vuelve a despachar); una `pending` **sin plazo** de una orden `paid`/`dispatching` pagada hace más de 2 minutos nunca se reclamó, y se **despacha** con el intento siguiente.
 
 Endpoints del backend:
