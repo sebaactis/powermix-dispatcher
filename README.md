@@ -28,6 +28,7 @@ port: it never learns that a drink needs a code.
 
 ```
 cmd/api          backend for the tablet: catalog, orders, live status, simulated pay
+cmd/migrate      one-shot schema runner: applies the embedded `migrations/*.sql`
 cmd/fakeapi      runs both local stand-ins plus their test-only admin surface
 internal/config  topology from JSON, secrets from env, validated at startup
 internal/dispenser          the port: Check / Dispatch / Reconcile
@@ -37,7 +38,8 @@ internal/fakeapi            local Batidos and Snacks, with their real rules enfo
 internal/httpapi            the four tablet endpoints, mapped onto catalog + engine + store
 internal/payments           Refunder port + mock that never moves money
 internal/notify             Notifier port + structured log transport
-migrations                 PostgreSQL schema
+internal/migrate            what is pending, in one transaction per file, under an advisory lock
+migrations                 PostgreSQL schema, embedded with `//go:embed`
 docs                       comments and rationale, kept out of the code
 ```
 
@@ -119,7 +121,7 @@ callback secrets and the fake providers. No real credential is involved.
 | Service | What it does |
 | --- | --- |
 | `db` | PostgreSQL 16, named volume `pgdata`, `pg_isready` healthcheck |
-| `migrate` | one-shot `psql` run over every `migrations/*.sql` in alphabetical order; exits when done |
+| `migrate` | builds the `migrate` target; applies the pending `migrations/*.sql` from inside the binary, one transaction per file, tracked in `schema_migrations`; exits when done |
 | `api` | builds the `runtime` target of the `Dockerfile` and serves the tablet backend, store on PostgreSQL |
 | `fakeapi` | builds the `fakeapi` target; both stand-in provider APIs, with `DEMO-BATIDO-VAINILLA` seeded so the drink half of a combo exists |
 
@@ -128,9 +130,15 @@ The `api` container seeds the kiosks, machines and combos it read from
 row references both a kiosk and a combo. That write is an upsert, so restarting
 is safe.
 
-`migrate` runs the files without a version table: the first `up` against a fresh
-volume succeeds, and a second `up` fails on the already applied DDL. Use
-`docker compose down -v` when you need to replay the schema.
+`migrate` is a Go program (`cmd/migrate`), not `psql` over a mounted directory: the
+`.sql` files are embedded in the binary, so the container applies exactly the
+files it was built with. It keeps `schema_migrations`, takes an advisory lock so
+two runners never migrate at once, and runs each pending file in one transaction
+together with its version row. A second `up` is a no-op (`el esquema ya está al
+día`) instead of failing on DDL that is already applied, and a broken file rolls
+back and exits non-zero, which keeps `api` from starting. A volume created before
+the runner existed has the tables but no `schema_migrations`: run
+`docker compose down -v` once.
 
 The fake's admin port (9403) is not published. The fake refuses to bind its admin
 surface outside loopback, and a process bound to `127.0.0.1` inside a container

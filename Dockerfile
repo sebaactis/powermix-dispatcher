@@ -9,9 +9,11 @@ RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
+COPY migrations ./migrations
 
 RUN go build -trimpath -ldflags "-s -w" -o /out/api ./cmd/api \
-    && go build -trimpath -ldflags "-s -w" -o /out/fakeapi ./cmd/fakeapi
+    && go build -trimpath -ldflags "-s -w" -o /out/fakeapi ./cmd/fakeapi \
+    && go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate
 
 FROM gcr.io/distroless/static:nonroot AS runtime
 
@@ -22,6 +24,14 @@ USER nonroot:nonroot
 EXPOSE 8080
 
 ENTRYPOINT ["/api"]
+
+FROM gcr.io/distroless/static:nonroot AS migrate
+
+COPY --from=build /out/migrate /migrate
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/migrate"]
 
 FROM gcr.io/distroless/static:nonroot AS fakeapi
 

@@ -23,8 +23,12 @@ git rm -q -f $(git ls-files '*_test.go')   # índice y archivo en un solo paso; 
 go run ./cmd/fakeapi                   # 9401 batidos, 9402 snacks, 9403 administración
 go run ./cmd/api -config config.local.json -combos combos.local.json
 
+# esquema: una vez por base, antes de arrancar la API con STORE=postgres
+DATABASE_URL="postgres://compras:compras@127.0.0.1:5432/compras?sslmode=disable" go run ./cmd/migrate
+
 # contenedor (requiere Docker Desktop corriendo)
 docker compose up -d --build           # db + migrate + api + fakeapi
+docker compose down -v                 # una vez si el volumen es anterior al runner: las tablas ya están y falta schema_migrations
 ```
 
 ## Tests: dónde viven y cómo se usan
@@ -45,6 +49,9 @@ docker compose up -d --build           # db + migrate + api + fakeapi
 | --- | --- | --- |
 | `cmd/api` | composition root: es el único que conoce a la vez proveedores y dominio | `main`, `newServer`, `openStore` |
 | `cmd/fakeapi` | levanta los dos sustitutos locales + siembra inicial + guardia de loopback | `main`, `requireLoopback` |
+| `migrations` | los `.sql` del esquema, **dentro del binario** (`//go:embed`) | `Files` |
+| `cmd/migrate` | aplica las migraciones pendientes y termina; es el paso previo del compose | `main`, `run` |
+| `internal/migrate` | qué archivos faltan, en una transacción por archivo, bajo un advisory lock | `Apply`, `versions`, `missing`, `applyOne` |
 | `internal/machine` | **vocabulario compartido**: la familia de máquina | `Kind`, `Batidos`, `Snacks` |
 | `internal/config` | topología del mueble desde JSON + secretos por entorno, validada al arrancar | `Load`, `Config`, `Kiosk`, `Machine`, `validate` |
 | `internal/catalog` | el menú: carga, valida y sirve combos | `Combo`, `Item`, `LoadFile`, `Memory` |
@@ -157,6 +164,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | por qué una venta se bloqueó | `internal/preflight/checker.go` + `internal/gate` |
 | la forma de la URL de aviso | `internal/httpapi/callback_url.go`, `BatidosCallbackURL` |
 | el mapeo de una columna SQL | `internal/store/postgres/postgres.go` y `migrations/` |
+| qué versión del esquema está aplicada | `internal/migrate` (`versions`, `missing`) y `migrations/embed.go` |
 | qué hace un proveedor paso a paso | `internal/dispenser/{batidos,snacks}/dispenser.go` |
 | cómo se arma el binario | `cmd/api/main.go` (orden de construcción) |
 
@@ -180,6 +188,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 
 - **`main` no tiene ni un test.** Los 42 archivos viven en `archive/tests`, así que `go test ./...` responde `[no test files]` en todos los paquetes y nada frena una regresión hasta que vuelvan.
 - **Nada del store de Postgres se ejecutó contra una base real.** Las migraciones `0004` y `0005` y los 14 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
+- **El runner de migraciones tampoco se ejecutó contra un Postgres real**: `cmd/migrate` compila y los `.sql` se aplican con la misma transacción por archivo, pero el advisory lock, el `CREATE TABLE IF NOT EXISTS` y el rollback de un archivo roto sólo se probaron hasta el borde (los tests se saltean sin `TEST_DATABASE_URL`). Un volumen anterior a este cambio necesita `docker compose down -v` una vez.
 - **`go test -race` no corre** en esta máquina. Casi toda la concurrencia se demuestra de forma determinista (copias viejas inyectadas); la excepción es el chequeo previo, que sí corre sus dos goroutines contra una barrera (`preflight/checker_parallel_test.go`), pero sin detector de carreras.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
 - Los webhooks de callback **no** se verificaron contra los proveedores reales: no hay credenciales ni sandbox.
@@ -192,11 +201,11 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | Hosting + `PUBLIC_BASE_URL` | sin definir; sin eso el callback de batidos nunca llega |
 | `store` importa `dispenser` por `LineState`/`MachineRef` | deuda anotada, próximo cambio de la revisión de código |
 | `machineIdentified` acepta cualquier identificador | una línea con `Kind: snacks` y `device_id` de batidos sigue siendo expresable |
+| Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
 | Avisos repetidos | `settleOrder` avisa cada vez que la orden está en duda; no hay dedupe por `(orden, tipo)` |
 | El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |
 | Store en memoria más permisivo que Postgres | acepta una línea sin familia; el `CHECK` de SQL es la última red |
 | Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |
-| `migrate` del compose sin tabla de versiones | repetir el esquema exige `docker compose down -v` |
 
 ## Convenciones
 

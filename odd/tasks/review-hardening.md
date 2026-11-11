@@ -15,7 +15,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **S5b** (paso 4, aceptado): «Usar `context.WithoutCancel(ctx)`» en el despacho de `ConfirmPayment` y «darle a cada línea su propio plazo con `context.WithTimeout`, igual al plazo de reclamo (2 min)».
 - **S5c** (paso 4, aceptado): «`sync.WaitGroup` de la biblioteca estándar, una goroutine por máquina, con un plazo total de 8 s». «Las dos llamadas de cada máquina siguen siendo secuenciales».
 - **S5d** (paso 4, opción 1 aceptada): «En `orders.go`, las dos relecturas de la orden después de `ConfirmPayment` usan `context.WithoutCancel(r.Context())`, igual que el despacho. Se mantiene `ReadTimeout`. Primero escribo un test que reproduzca el problema con un servidor real y un `ReadTimeout` corto». La regla queda escrita en el mapa. Se refuerza además el test del orden de razones del chequeo previo.
-- **S6** (paso 5): versionado de migraciones y tests de Postgres y `-race`. Pendiente de decisión.
+- **S6** (paso 5, M2 aceptada): versionado de migraciones con un runner propio. «`cmd/migrate`, sin dependencias nuevas»; «`migrations/embed.go`» con `//go:embed`; «`internal/migrate`»: crea `schema_migrations` si no existe, toma un *advisory lock*, «aplica cada archivo pendiente **dentro de una transacción** junto con su registro», e informa qué aplicó. Los `.sql` pierden su `BEGIN/COMMIT`. `migrate` del compose pasa a un tercer *target* del `Dockerfile`. La API **no** migra al arrancar. Sin compatibilidad para volúmenes viejos (`docker compose down -v` una vez). Los tests de Postgres y `-race` en CI quedan fuera mientras `main` no tenga tests.
 
 ## Tasks
 
@@ -32,7 +32,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T5c | S5c | worker | ver commit `fix(preflight)` |
 | T5d | S5d | worker | ver commit `test(preflight)` |
 | T5v | S5a-S5d | verify | 3a76ded/fe384e9/99e68c6 PASS; S5a+S5b rompen la invariante 12 → T5d |
-| T6 | S6 | pendiente | pendiente |
+| T6 | S6 | worker + verify | ver commit `feat(migrate)`; test en `archive/tests` `11b518c` |
 
 ## Corte de entrega
 
@@ -68,3 +68,6 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L14**: «Vamos con la B.» S5d pasa a: sin cambio en `httpapi/orders.go`; corregir `docs/comentarios-codigo.md` (la nota que dice que `WriteTimeout` es el límite que manda) y documentar que `ReadTimeout` no corre durante el handler; reforzar el test del orden de razones del chequeo previo con canales. Desde acá el usuario pide usar la skill golang-pro y recuerda: «yo tengo que entender mi proyecto». La regla del proyecto de no comentar el código sigue mandando sobre la sugerencia de comentarios de la skill.
 - **L15**: «Testea a fondo todo, pero todo lo que sea archivo test, no lo dejes en el proyecto por ahora. Borra todos los archivos de test, y despues vemos. Es decir, vos crea, testea, y borra cuando sea necesario.»
 - **L16**: «Me parece bien la opcion A.» Rama `archive/tests` creada en `8fc5761` con los 42 `*_test.go` y subida a `origin`. En `main` se borran los 42 archivos. Flujo desde acá: para cada cambio se recuperan los tests de `archive/tests`, se escribe el test nuevo, se corre la suite completa, y antes del commit en `main` los tests vuelven a borrarse; los tests nuevos se agregan a `archive/tests` en un commit propio para no perderlos.
+- **L17**: «Dale.» (arrancar el paso 5 con el versionado de migraciones).
+- **L18**: «1. No. Una vez en funcionamiento la API, va a ser raro migrar seguido. 2. Sin compatibilidad para volumenes viejos.» Se toma como aceptación de M2: migración como paso aparte, la API no migra al arrancar.
+- **L19**: Docker Desktop no responde (error 500 de la API del daemon) al empezar T6; los tests contra Postgres se escriben pero se saltean sin `TEST_DATABASE_URL`.

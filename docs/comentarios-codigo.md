@@ -1098,7 +1098,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### kiosk
 > Esquema inicial del sistema de combos en muebles expendedores.
 > 
-> PostgreSQL. Se aplica con: psql "$DATABASE_URL" -f migrations/0001_init.sql
+> PostgreSQL. Se aplica con el runner del repositorio: DATABASE_URL=… go run ./cmd/migrate (antes era a mano, psql "$DATABASE_URL" -f migrations/0001_init.sql; y el archivo ya no lleva BEGIN/COMMIT porque la transacción la abre el runner).
 > Las claves primarias son text porque las genera la aplicación.
 > El dinero se guarda como centavos enteros, nunca como punto flotante.
 
@@ -2054,6 +2054,90 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Agrega `orders.version` (`bigint NOT NULL DEFAULT 0`). Aditiva y sin backfill por el mismo motivo que `order_line.version` en `0004`: el `DEFAULT` deja las órdenes existentes en la versión correcta y el `NOT NULL` impide que una orden quede fuera del guardado condicional. No lleva índice porque la versión viaja en el `WHERE` junto con la clave primaria, que ya está indexada.
 
+## migrations/0001–0005 — sin `BEGIN;` / `COMMIT;`
+
+> Los cinco archivos perdieron su `BEGIN;` y su `COMMIT;` y nada más cambió. La transacción pasó a ser del runner (`internal/migrate/applyOne`), que abre una por archivo y confirma el cuerpo **junto con** el `INSERT` de la versión en `schema_migrations`.
+>
+> Si el archivo conservara sus `BEGIN`/`COMMIT`, el cuerpo se confirmaría dentro de la transacción del runner y un fallo posterior —el registro de la versión, por ejemplo— dejaría el esquema aplicado y sin constancia de que se aplicó, que es el estado del que después nadie sabe cómo salir. Con el `COMMIT` en el runner, un error en cualquier sentencia revierte el archivo entero y no queda ni una tabla a medio crear ni una versión registrada.
+
+## migrations/embed.go
+
+### (archivo)
+
+> Los `.sql` viajan **dentro del binario**. Antes los leía `psql` desde un volumen montado, así que el esquema que se aplicaba dependía de qué archivos hubiera en el disco del host y de qué versión de la imagen corriera el loop; ahora el binario `migrate` aplica exactamente los archivos con los que se compiló, y no puede aplicar otros.
+>
+> El paquete vive en la raíz del módulo (`compras-remotas/migrations`) y no bajo `internal/`: no tiene lógica, es el `embed` de la carpeta que el operador ya conoce, y `internal/migrate` lo importa como una dependencia más.
+
+### Files
+
+> `//go:embed *.sql` es la única línea del código que parece un comentario y no lo es: el compilador la exige, y sin ella el paquete compila igual con `Files` vacío, con lo cual el runner informaría «el esquema ya está al día» contra una base sin tablas. La regla del proyecto —cero comentarios en el código— sigue intacta; la explicación está acá.
+>
+> El tipo es `embed.FS`, pero lo que se pasa a `migrate.Apply` es la interfaz `fs.FS`: por eso los tests pueden entregar un `fstest.MapFS` en lugar del árbol real y probar orden, pendientes y rollback sin tocar los archivos de producción.
+
+## internal/migrate
+
+### (archivo)
+
+> El runner de migraciones, sin dependencias nuevas: `database/sql`, `io/fs` y el `stdlib` de `pgx` que ya usaba el store. El contrato es `Apply(ctx, db, files) ([]string, error)` y devuelve las versiones aplicadas **en orden**; vacío significa «no había nada pendiente», que es el caso normal del compose después del primer arranque. Ante un error se corta en el archivo que falló: las anteriores quedan aplicadas y registradas, y esa se revierte completa.
+
+### Apply
+
+> Toma **una** conexión del pool (`db.Conn`) y trabaja sobre ella de principio a fin. No es un detalle de estilo: el advisory lock de Postgres es de **sesión**, así que tiene que tomarse y soltarse en la misma conexión, y `database/sql` reparte las consultas de un `*sql.DB` entre conexiones distintas cuando le conviene.
+>
+> El orden es: listar versiones, tomar el lock, crear `schema_migrations` si falta, leer las aplicadas, aplicar las pendientes y soltar el lock. El lock va **antes** del `CREATE TABLE` aunque la spec lo pedía al revés: dos runners que arrancan juntos con la tabla ausente pueden chocar en un `CREATE TABLE IF NOT EXISTS` concurrente —Postgres puede responder con una clave duplicada del catálogo— y con el lock tomado primero esa creación es de uno solo. Sin la tabla, el lock no necesita nada: es un número.
+>
+> El unlock se manda con un contexto propio —`context.Background()` y 10 s de plazo (`releaseLock`), no el del llamador—. Si el contexto del llamador ya venció, una migración más lenta que el plazo del runner, el unlock tiene que salir igual: con el contexto muerto no saldría y la conexión volvería al pool con el lock puesto. Si aun así falla, el error se devuelve: el lock dura lo que dure la sesión, y esa sesión sigue viva en el pool, así que el próximo runner se quedaría esperando sin explicación visible.
+
+### versions / missing
+
+> La parte pura, la única que se prueba sin base. `versions` hace `fs.Glob(files, "*.sql")`, ordena alfabéticamente y devuelve el nombre sin la extensión. El nombre del archivo **es** la versión, y por eso el orden alfabético es el orden de aplicación: los prefijos `0001`…`0005` no son decorativos, son el contrato. Los archivos que no terminan en `.sql` no existen para el runner.
+>
+> `missing` es la resta contra las ya aplicadas y conserva el orden recibido. Está separada de la consulta SQL para poder probar el caso «se agregó un archivo nuevo» sin una base: la lista completa contra un mapa de aplicadas.
+
+### ensureTable / appliedVersions
+
+> `schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`. La clave primaria es lo que impide registrar dos veces la misma versión incluso si alguien saltea el lock; `applied_at` es para el operador, no lo lee el código. La tabla no es una migración más: es la que lleva la cuenta, así que se crea antes de leer y no depende de ningún archivo.
+>
+> `appliedVersions` trae sólo la columna `version` a un mapa: alcanza para decidir qué falta y no hay ninguna razón para leer la tabla completa.
+
+### applyOne
+
+> Una transacción por archivo: el cuerpo del `.sql`, el `INSERT` de su versión y el `COMMIT`, todo junto; `defer tx.Rollback()` cubre los dos caminos de error. Es el motivo por el que los archivos ya no llevan `BEGIN`/`COMMIT`.
+>
+> El cuerpo se manda en un solo `ExecContext` **sin parámetros**. Ahí está la diferencia que hace que esto funcione: `pgx` ejecuta sin parámetros por el protocolo simple, que acepta varias sentencias en una cadena, así que un archivo con dos `ALTER TABLE` corre bien. Con parámetros iría por el protocolo extendido, que no admite varias sentencias por consulta. Si algún día un archivo necesita parámetros, hay que partirlo sentencia por sentencia.
+>
+> Los errores se envuelven con `%w` y nombran el **archivo** (`0002_order_failed_status.sql`), no la versión: es lo que el operador tiene que abrir. El prefijo dice qué se estaba haciendo (`aplicar`, `registrar`, `confirmar`), porque un fallo al confirmar y un fallo al ejecutar se depuran distinto.
+
+## internal/migrate/migrate_test.go
+
+> Este archivo **no está en `main`**: vive en la rama `archive/tests` como el resto de los tests, y vuelve con el `git checkout` de `docs/mapa-del-proyecto.md`. Se documenta acá porque es el porqué del test, y viaja con él.
+>
+> Seis tests, dos sin base y cuatro contra Postgres. Los dos que corren siempre prueban la parte pura: el orden y el nombre de la versión a partir de un `fstest.MapFS` con un `.txt` colado, y la resta de `missing`.
+>
+> Los cuatro que necesitan base usan la misma idea de aislamiento: cada test crea un esquema propio (`mig_test_<base36 del reloj>`), abre su `*sql.DB` con `search_path` en el DSN —`search_path` viaja como parámetro de sesión de `pgx`, así que vale para todas las conexiones del pool, no sólo para la primera— y lo borra con `DROP SCHEMA … CASCADE` en la limpieza. `TEST_DATABASE_URL` es la misma variable que usa el paquete del store, y sin ella se saltean.
+>
+> - El esquema vacío aplica los cinco archivos reales (`migrations.Files`) en orden y deja cinco filas en `schema_migrations`: es la prueba de que los `.sql` sin `BEGIN`/`COMMIT` entran en la transacción del runner.
+> - La segunda corrida devuelve vacío y no toca nada.
+> - Un archivo agregado después es el único que se aplica: dos `MapFS` que difieren en un archivo, que es el caso real del próximo cambio de esquema.
+> - Un archivo roto (`CREATE TABLE` y después basura) revierte las dos cosas: ni la tabla ni la fila de versión quedan, el error nombra el archivo y las versiones anteriores siguen aplicadas.
+> - Dos `Apply` a la vez sobre el mismo esquema terminan con cada versión aplicada **una** vez: es el test del advisory lock, y el que se cae si alguien lo saca o lo toma sobre `*sql.DB` en vez de sobre una conexión.
+
+## cmd/migrate/main.go
+
+### (archivo)
+
+> El paso de esquema del compose, como programa propio: lee `DATABASE_URL`, aplica lo pendiente e informa qué aplicó. La API **no** migra al arrancar (S6/L18): arrancar el servidor y cambiar el esquema son dos cosas distintas, y una API que migra al arrancar migra tantas veces como réplicas haya.
+
+### main
+
+> Sin `DATABASE_URL` no hay nada que hacer y el error es explícito —el nombre de la variable, no un «no se pudo conectar»— y la salida es 1: en el compose eso corta el arranque de `api`, que espera `service_completed_successfully`. Los mensajes son los de siempre, español y capitalizados por `internal/logging`.
+
+### run
+
+> `applyTimeout` (60 s) es el plazo de todo el proceso: conectar y aplicar. Es un número elegido para que un Postgres que no responde falle rápido en vez de dejar el `up` colgado; una migración de más de un minuto es un cambio de esquema que hay que mirar, no un caso normal. El `Ping` antes de migrar es el mismo criterio que `postgres.Open`: un DSN equivocado tiene que fallar acá y no en la primera sentencia.
+>
+> Se informa una versión por línea (`migración aplicada`, `version=0003_line_reconcile_until`) o una sola (`el esquema ya está al día`) cuando no había nada pendiente. No hay una tercera rama: o aplicó algo o no.
+
 ## internal/config — Store / DatabaseURL: config.go y validate.go
 
 > El proceso tenía un solo store cableado y ninguna forma de elegir otro. `store` (`memory` por defecto) y `database_url` son la perilla: el archivo elige el motor y el entorno puede pisarlo con `STORE` y `DATABASE_URL`, igual que ya pasa con los secretos. `STORE` existe porque el compose declara el store por entorno, no editando el JSON.
@@ -2088,15 +2172,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Dos etapas para no llevar compilador a producción: `golang:1.23` compila con `CGO_ENABLED=0` y la imagen final es `gcr.io/distroless/static:nonroot`, sin shell, sin gestor de paquetes y con usuario no root. `-trimpath` y `-ldflags "-s -w"` sacan rutas locales y símbolos de depuración del binario.
 >
-> Hay dos etapas finales, `runtime` y `fakeapi`, porque el compose necesita el binario de los proveedores falsos con la misma receta de compilación. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`) y no `COPY . .`: así el contexto no arrastra `.git`, `design/` ni los documentos de terceros, y con BuildKit ni siquiera se envían.
+> Hay tres etapas finales, `runtime`, `migrate` y `fakeapi`, porque el compose necesita tres binarios con la misma receta de compilación: la API, el runner de esquema y los proveedores falsos. `migrate` es el más chico de los tres: un proceso que corre una vez, aplica lo pendiente y termina, así que la etapa final no expone puerto ni necesita shell. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`, `migrations`) y no `COPY . .`: así el contexto no arrastra `.git`, `design/` ni los documentos de terceros, y con BuildKit ni siquiera se envían. `migrations` tiene que estar en esa lista porque los `.sql` se compilan adentro (`//go:embed`), no se montan en tiempo de ejecución.
 >
 > La imagen no lleva secretos: todo entra por variables de entorno en tiempo de ejecución.
 
 ## docker-compose.yml
 
-> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` usa la misma imagen, monta `./migrations` y aplica los `.sql` en orden alfabético con `psql`; corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien, y `fakeapi` levanta los dos proveedores falsos.
+> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` construye el *target* `migrate` del `Dockerfile`, apunta `DATABASE_URL` a `db`, corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien (`service_completed_successfully`), y `fakeapi` levanta los dos proveedores falsos.
 >
-> `migrate` no lleva tabla de versiones: es un `psql` sobre los archivos, como se pedía. La consecuencia es que el primer `up` sobre un volumen nuevo funciona y el segundo falla en el DDL ya aplicado; para repetir el esquema hay que bajar el volumen (`docker compose down -v`). Una tabla de control sería otra decisión y otro diff.
+> `migrate` ya no usa la imagen de Postgres ni monta `./migrations`: los `.sql` viajan dentro del binario y la versión aplicada queda en `schema_migrations`, así que el segundo `up` es un no-op y no un fallo de DDL repetido. Un volumen anterior a este cambio tiene las tablas y no tiene la tabla de control: el runner intentaría aplicarlos de nuevo y fallaría en la primera sentencia, así que ese caso se resuelve una sola vez con `docker compose down -v` (S6/L18: no hay compatibilidad con volúmenes viejos). `restart: "no"` es lo que hace que el `up` siga y que un fallo se vea en el estado del servicio en vez de reintentarse para siempre.
 >
 > `fakeapi` recibe `-batidos-addr 0.0.0.0:9401` y `-snacks-addr 0.0.0.0:9402` porque un proceso atado a `127.0.0.1` dentro del contenedor no es alcanzable ni por el servicio `api` ni por un puerto publicado. El puerto de administración (9403) **no** se publica: el falso se niega a escuchar su administración fuera de loopback, y esa defensa es correcta; publicarlo daría un puerto muerto. Los dos puertos de proveedor se publican sólo en `127.0.0.1` del host, igual que el arranque local.
 >

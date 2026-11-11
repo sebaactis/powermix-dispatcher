@@ -15,22 +15,14 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: postgres:16
+    build:
+      context: .
+      target: migrate
     depends_on:
       db:
         condition: service_healthy
     environment:
-      PGPASSWORD: compras
-    volumes:
-      - ./migrations:/migrations:ro
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        for file in $$(ls /migrations/*.sql | sort); do
-          echo "aplicando $$file"
-          psql -v ON_ERROR_STOP=1 -q -h db -U compras -d compras -f "$$file"
-        done
+      DATABASE_URL: postgres://compras:compras@db:5432/compras?sslmode=disable
     restart: "no"
 
   api:
