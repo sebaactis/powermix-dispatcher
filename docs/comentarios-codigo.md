@@ -1009,8 +1009,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Package machine declara los tipos compartidos de la máquina: la familia
 > (`Kind`) y la referencia a una máquina concreta (`Ref`). No importa nada del
-> proyecto y no tiene funciones ni métodos: es vocabulario compartido, no
-> comportamiento.
+> proyecto, sólo la biblioteca estándar, y su único comportamiento es la
+> validación de identidad de `Ref`: la regla es del tipo, no del borrador que lo
+> usa.
 
 ### Kind
 
@@ -1058,6 +1059,23 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### Ref
 
 > Snacks
+
+### Validate
+
+> Devuelve error cuando a la `Ref` le faltan los identificadores que su `Kind`
+> necesita: batidos exige `device_id`, `device_no` y `device_type_id`; snacks
+> exige `mid`; un `Kind` desconocido también es error, para que una familia
+> nueva no se cuele por omisión en el `default`.
+>
+> No rechaza los campos de la otra familia: la regla es «los propios, todos los
+> propios», no «sólo los propios». Es la misma que aplican `config.validate` y el
+> `CHECK` de la tabla `machine`, así que una `Ref` con la identidad completa de
+> las dos familias se acepta en los tres lados.
+>
+> La regla queda duplicada a propósito en `config`: allí se valida el archivo del
+> catálogo —otro tipo, `config.Machine`, con problemas acumulados y mensajes con
+> el mueble adentro— y unificarlas obligaría a cambiar esos mensajes, que nadie
+> pidió cambiar.
 
 ## internal/notify/notify.go
 
@@ -1517,7 +1535,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `validateDraft` exige que `item.Machine.Kind` no esté vacío y que ese tipo exista en el mapa de drivers, que es el mismo mapa con el que `dispatchLine` busca la máquina después: lo que se valida en el alta y lo que se usa en el despacho es la misma fuente, así que un borrador aceptado no puede terminar en «no hay una máquina configurada para el tipo».
 >
-> Riesgo residual anotado: `machineIdentified` sigue aceptando **algún** identificador, así que `Machine.Kind: snacks` con un `DeviceID` de batidos es expresable. Ya no hay dos fuentes de tipo, pero la identidad no se valida contra el tipo.
+> La identidad se valida contra el tipo: `validateDraft` delega en `machine.Ref.Validate`, que exige los identificadores propios de la familia —`device_id`, `device_no` y `device_type_id` en batidos; `mid` en snacks— y no rechaza los de la otra. Antes alcanzaba con que hubiera **algún** identificador, así que un ítem de snacks con sólo el `device_id` de batidos pasaba el alta y el motor le mandaba al proveedor de snacks una identidad que no era la suya. El error del ítem conserva el prefijo «ítem N:» y suma el motivo: cuál máquina y qué le falta.
 >
 > No se agregó ninguna validación nueva en el store. `validateDraft` ya rechaza un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` es la última red; sumar un chequeo en memoria duplicaría esa regla en un tercer lugar. El store en memoria queda más permisivo que Postgres —acepta una línea sin familia— y es una asimetría conocida y aceptada, no un olvido.
 

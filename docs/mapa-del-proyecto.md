@@ -200,7 +200,6 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | --- | --- |
 | Decisiones de dinero (proveedor de pago, política de devolución, quién asume la pérdida) | **abiertas**, son del dueño del producto; el código ya tiene los ganchos |
 | Hosting + `PUBLIC_BASE_URL` | sin definir; sin eso el callback de batidos nunca llega |
-| `machineIdentified` acepta cualquier identificador | una línea con `Kind: snacks` y `device_id` de batidos sigue siendo expresable |
 | Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
 | Avisos repetidos | `settleOrder` avisa cada vez que la orden está en duda; no hay dedupe por `(orden, tipo)` |
 | El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |

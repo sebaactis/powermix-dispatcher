@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"compras-remotas/internal/linestate"
-	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
 
@@ -96,8 +95,8 @@ func (e *Engine) validateDraft(draft Draft) error {
 			return fmt.Errorf("ítem %d: falta el SKU", position)
 		}
 
-		if !machineIdentified(item.Machine) {
-			return fmt.Errorf("ítem %d: falta el identificador de la máquina", position)
+		if err := item.Machine.Validate(); err != nil {
+			return fmt.Errorf("ítem %d: %w", position, err)
 		}
 
 		if item.AmountCents < 0 {
@@ -106,8 +105,4 @@ func (e *Engine) validateDraft(draft Draft) error {
 	}
 
 	return nil
-}
-
-func machineIdentified(machine machine.Ref) bool {
-	return machine.DeviceID != "" || machine.DeviceNo != "" || machine.MID != ""
 }
