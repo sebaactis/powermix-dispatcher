@@ -898,3 +898,289 @@ func TestNotificationsReturnNotFoundForAnUnknownOrder(t *testing.T) {
 		t.Fatalf("RecordNotification devolvió %v, se esperaba %v", err, store.ErrNotFound)
 	}
 }
+
+func TestCreateOrderRejectsLinesThatSQLRejects(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		orderID string
+		mutate  func(*store.Line)
+		want    error
+	}{
+		{
+			name:    "una línea con una familia de máquina desconocida",
+			orderID: "order-kind-unknown",
+			mutate: func(line *store.Line) {
+				line.Machine.Kind = "express"
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "una línea sin familia de máquina",
+			orderID: "order-kind-empty",
+			mutate: func(line *store.Line) {
+				line.Machine.Kind = ""
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "una línea con importe negativo",
+			orderID: "order-line-negative",
+			mutate: func(line *store.Line) {
+				line.AmountCents = -1
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "una línea con un estado que el esquema no conoce",
+			orderID: "order-state-unknown",
+			mutate: func(line *store.Line) {
+				line.State = "cancelled"
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "dos líneas en la misma posición",
+			orderID: "order-position-taken",
+			mutate: func(line *store.Line) {
+				line.Position = 1
+			},
+			want: store.ErrAlreadyExists,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			order := sampleOrder(tc.orderID, "")
+			tc.mutate(&order.Lines[1])
+
+			if err := st.CreateOrder(ctx, order); !errors.Is(err, tc.want) {
+				t.Fatalf("CreateOrder devolvió %v, se esperaba %v", err, tc.want)
+			}
+
+			if _, err := st.LoadOrder(ctx, tc.orderID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("una orden rechazada no puede quedar guardada: LoadOrder devolvió %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateOrderRejectsHeadersThatSQLRejects(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		orderID string
+		mutate  func(*store.Order)
+	}{
+		{
+			name:    "una orden con importe negativo",
+			orderID: "order-header-negative",
+			mutate: func(order *store.Order) {
+				order.AmountCents = -1
+			},
+		},
+		{
+			name:    "una orden con un estado que el esquema no conoce",
+			orderID: "order-header-unknown",
+			mutate: func(order *store.Order) {
+				order.Status = "cart"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			order := sampleOrder(tc.orderID, "")
+			tc.mutate(&order)
+
+			if err := st.CreateOrder(ctx, order); !errors.Is(err, store.ErrInvalidOrder) {
+				t.Fatalf("CreateOrder devolvió %v, se esperaba %v", err, store.ErrInvalidOrder)
+			}
+
+			if _, err := st.LoadOrder(ctx, tc.orderID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("una orden rechazada no puede quedar guardada: LoadOrder devolvió %v", err)
+			}
+		})
+	}
+}
+
+func TestSaveLineRejectsLinesThatSQLRejects(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		orderID string
+		mutate  func(*store.Line)
+		want    error
+	}{
+		{
+			name:    "una familia de máquina desconocida",
+			orderID: "order-save-kind-unknown",
+			mutate: func(line *store.Line) {
+				line.Machine.Kind = "express"
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "una línea sin familia de máquina",
+			orderID: "order-save-kind-empty",
+			mutate: func(line *store.Line) {
+				line.Machine.Kind = ""
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "un importe negativo",
+			orderID: "order-save-negative",
+			mutate: func(line *store.Line) {
+				line.AmountCents = -1
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "un estado que el esquema no conoce",
+			orderID: "order-save-state-unknown",
+			mutate: func(line *store.Line) {
+				line.State = "cancelled"
+			},
+			want: store.ErrInvalidLine,
+		},
+		{
+			name:    "una posición que ya usa otra línea de la orden",
+			orderID: "order-save-position-taken",
+			mutate: func(line *store.Line) {
+				line.Position = 2
+			},
+			want: store.ErrAlreadyExists,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mustCreateOrder(t, st, sampleOrder(tc.orderID, ""))
+
+			before := lineByID(t, mustLoadOrder(t, st, tc.orderID), tc.orderID+"-batidos")
+
+			changed := before
+			tc.mutate(&changed)
+
+			if _, err := st.SaveLine(ctx, changed); !errors.Is(err, tc.want) {
+				t.Fatalf("SaveLine devolvió %v, se esperaba %v", err, tc.want)
+			}
+
+			after := lineByID(t, mustLoadOrder(t, st, tc.orderID), before.ID)
+			if after != before {
+				t.Fatalf("una línea rechazada no puede quedar guardada: %+v, se esperaba %+v", after, before)
+			}
+		})
+	}
+}
+
+func TestSaveOrderRejectsHeadersThatSQLRejects(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		orderID string
+		mutate  func(*store.Order)
+	}{
+		{
+			name:    "un importe negativo",
+			orderID: "order-save-header-negative",
+			mutate: func(order *store.Order) {
+				order.AmountCents = -1
+			},
+		},
+		{
+			name:    "un estado que el esquema no conoce",
+			orderID: "order-save-header-unknown",
+			mutate: func(order *store.Order) {
+				order.Status = "cart"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mustCreateOrder(t, st, sampleOrder(tc.orderID, ""))
+
+			before := mustLoadOrder(t, st, tc.orderID)
+
+			changed := before
+			tc.mutate(&changed)
+
+			if _, err := st.SaveOrder(ctx, changed); !errors.Is(err, store.ErrInvalidOrder) {
+				t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrInvalidOrder)
+			}
+
+			after := mustLoadOrder(t, st, tc.orderID)
+			if after.Status != before.Status || after.AmountCents != before.AmountCents || after.Version != before.Version {
+				t.Fatalf("una orden rechazada no puede quedar guardada: %+v, se esperaba %+v", after, before)
+			}
+		})
+	}
+}
+
+func TestAcceptsTheValuesSQLAccepts(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	order := sampleOrder("order-limites", "")
+	order.AmountCents = 0
+	order.Lines[0].AmountCents = 0
+	order.Lines[0].State = linestate.State("refunded")
+	order.Lines[0].Machine = machine.Ref{KioskID: kioskID, Kind: "batidos", Name: "Batidos Powermix"}
+
+	mustCreateOrder(t, st, order)
+
+	got := lineByID(t, mustLoadOrder(t, st, "order-limites"), "order-limites-batidos")
+	if got.State != linestate.State("refunded") || got.AmountCents != 0 {
+		t.Fatalf("el estado refunded y el importe cero son legales en el esquema: %+v", got)
+	}
+	if got.Machine.DeviceID != "" || got.Machine.DeviceNo != "" || got.Machine.DeviceTypeID != "" {
+		t.Fatalf("la línea no lleva los identificadores en la tabla y no tiene por qué traerlos: %+v", got.Machine)
+	}
+
+	got.Attempts = 1
+	if _, err := st.SaveLine(ctx, got); err != nil {
+		t.Fatalf("una línea de batidos sin identificadores es legal en el esquema: %v", err)
+	}
+}
+
+func TestChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOrder(t, st, sampleOrder("order-precedencia", ""))
+
+	repeated := sampleOrder("order-precedencia", "")
+	repeated.AmountCents = -1
+
+	if err := st.CreateOrder(ctx, repeated); !errors.Is(err, store.ErrInvalidOrder) {
+		t.Fatalf("una orden repetida y además inválida devolvió %v, se esperaba %v: el CHECK va antes que la clave", err, store.ErrInvalidOrder)
+	}
+
+	before := mustLoadOrder(t, st, "order-precedencia")
+
+	staleLine := before.Lines[0]
+	staleLine.Version = 7
+	staleLine.State = "cancelled"
+
+	if _, err := st.SaveLine(ctx, staleLine); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("una línea con la versión vieja y un estado inválido devolvió %v, se esperaba %v: la versión va antes que el CHECK", err, store.ErrStale)
+	}
+
+	staleOrder := before
+	staleOrder.Version = 7
+	staleOrder.Status = "cart"
+
+	if _, err := st.SaveOrder(ctx, staleOrder); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("una orden con la versión vieja y un estado inválido devolvió %v, se esperaba %v: la versión va antes que el CHECK", err, store.ErrStale)
+	}
+}
