@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -15,8 +13,10 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/migrate"
 	"compras-remotas/internal/store"
 	"compras-remotas/internal/store/postgres"
+	"compras-remotas/migrations"
 )
 
 const (
@@ -45,28 +45,14 @@ func dsn(t *testing.T) string {
 }
 
 func applyMigrations(target string) error {
-	files, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.sql"))
-	if err != nil {
-		return fmt.Errorf("no se pudo listar las migraciones: %w", err)
-	}
-
-	sort.Strings(files)
-
 	db, err := sql.Open("pgx", target)
 	if err != nil {
 		return fmt.Errorf("no se pudo abrir la base para migrar: %w", err)
 	}
 	defer db.Close()
 
-	for _, file := range files {
-		statements, err := os.ReadFile(file)
-		if err != nil {
-			return fmt.Errorf("no se pudo leer la migración %s: %w", filepath.Base(file), err)
-		}
-
-		if _, err := db.Exec(string(statements)); err != nil {
-			return fmt.Errorf("no se pudo aplicar la migración %s: %w", filepath.Base(file), err)
-		}
+	if _, err := migrate.Apply(context.Background(), db, migrations.Files); err != nil {
+		return fmt.Errorf("no se pudieron aplicar las migraciones: %w", err)
 	}
 
 	return nil
