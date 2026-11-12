@@ -38,7 +38,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T6 | S6 | worker + verify | `6e2d36d` hecho, verify PASS con Postgres; test en `archive/tests` `11b518c`; arreglo del test del store `575c7b0` en `archive/tests` |
 | T7 | S7 | worker | `5099f2d` hecho; tests en `archive/tests` |
 | T8 | S8 | worker | `1a73e71` hecho; tests en `archive/tests` `652c250` |
-| T9 | S9 | worker | pendiente |
+| T9 | S9 | worker | `1adda20` hecho, verify PASS con Postgres; tests en `archive/tests` `7607933` |
 
 ## Corte de entrega
 
@@ -87,3 +87,4 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L27** (T8): `machine.Ref.Validate` exige los identificadores de su familia y no rechaza los de la otra; `validateDraft` lo envuelve con «ítem N:» y `machineIdentified` desaparece. RED: `Validate` sin definir en `internal/machine`, y en `internal/order` un `Place` con un ítem de snacks que sólo trae el `device_id` de batidos se aceptaba. GREEN: los dos paquetes y la suite completa sin base pasan; `go vet` limpio. Sin corrida contra Postgres (Docker apagado; el store no cambia). Commit `1a73e71` en `fix/machine-ref-identity`; tests nuevos (`internal/machine/machine_test.go`, 12 casos, y uno en `internal/order/place_test.go`) en `archive/tests` `652c250`. `odd/tasks/combos-remotos.md:395` sigue nombrando la deuda como abierta: es registro histórico y no se edita.
 - **L28**: «Si» (paso 7 fusionado y subido: `ae3a39a`, `652c250`). «Si» a la deuda «Avisos repetidos».
 - **L29**: «Vamos con la B».
+- **L30**: «Listo» (Docker iniciado). Con un Postgres descartable y esquema vacío: los 3 tests nuevos del store, el runner con 6 versiones y la suite completa con `TEST_DATABASE_URL` pasan. En el compose, `migrate` aplica sólo `0006_notification_sent` sobre la base existente y la segunda corrida informa «El esquema ya está al día». Verificación independiente (Risk: item 1): V1-V5 PASS, con inserts reales: la clave `(order_id, kind)` rechaza el duplicado y borrar la orden borra sus avisos en cascada. Diferencia menor sin efecto observable: al registrar dos veces, memoria pisa `sent_at` y Postgres conserva el primero. Se corrige la sección «Qué NO está verificado» del mapa, que seguía diciendo que el store y el runner nunca corrieron contra una base real. Tests en `archive/tests` `7607933`.
