@@ -1,7 +1,7 @@
 # Endurecimiento tras la revisión
 
 Correcciones surgidas de la revisión de buenas prácticas, en el orden recomendado, un paso por vez.
-Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4). Cada paso espera la decisión del usuario cuando es estructural.
+Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4) y `refactor/store-dispenser-decoupling` (paso 6). Cada paso espera la decisión del usuario cuando es estructural.
 
 ## Specs
 
@@ -16,6 +16,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **S5c** (paso 4, aceptado): «`sync.WaitGroup` de la biblioteca estándar, una goroutine por máquina, con un plazo total de 8 s». «Las dos llamadas de cada máquina siguen siendo secuenciales».
 - **S5d** (paso 4, opción 1 aceptada): «En `orders.go`, las dos relecturas de la orden después de `ConfirmPayment` usan `context.WithoutCancel(r.Context())`, igual que el despacho. Se mantiene `ReadTimeout`. Primero escribo un test que reproduzca el problema con un servidor real y un `ReadTimeout` corto». La regla queda escrita en el mapa. Se refuerza además el test del orden de razones del chequeo previo.
 - **S6** (paso 5, M2 aceptada): versionado de migraciones con un runner propio. «`cmd/migrate`, sin dependencias nuevas»; «`migrations/embed.go`» con `//go:embed`; «`internal/migrate`»: crea `schema_migrations` si no existe, toma un *advisory lock*, «aplica cada archivo pendiente **dentro de una transacción** junto con su registro», e informa qué aplicó. Los `.sql` pierden su `BEGIN/COMMIT`. `migrate` del compose pasa a un tercer *target* del `Dockerfile`. La API **no** migra al arrancar. Sin compatibilidad para volúmenes viejos (`docker compose down -v` una vez). Los tests de Postgres y `-race` en CI quedan fuera mientras `main` no tenga tests.
+- **S7** (paso 6, opción A aceptada): cortar la dependencia de `store` hacia `dispenser` moviendo los dos tipos según lo que son. «`MachineRef` pasa a `machine.Ref`»; «`LineState` pasa al paquete nuevo `internal/linestate` como `linestate.State` con sus constantes (`linestate.Pending`, `linestate.Sent`, etc.)», con import sin alias en todos lados. Sin alias de tipo: «la deuda queda escondida en lugar de resuelta». «Los JSON de la API, el `CHECK` de la base y las cadenas `'pending'`, `'sent'`, etc. **no cambian**», sin migración. `internal/store` e `internal/store/postgres` dejan de importar `internal/dispenser`. Los tests de `archive/tests` se ajustan al cambio; el mapa y los comentarios del código se actualizan. Reemplaza al «`internal/line`» original (L24).
 
 ## Tasks
 
@@ -33,6 +34,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T5d | S5d | worker | ver commit `test(preflight)` |
 | T5v | S5a-S5d | verify | 3a76ded/fe384e9/99e68c6 PASS; S5a+S5b rompen la invariante 12 → T5d |
 | T6 | S6 | worker + verify | `6e2d36d` hecho, verify PASS con Postgres; test en `archive/tests` `11b518c`; arreglo del test del store `575c7b0` en `archive/tests` |
+| T7 | S7 | worker | `5099f2d` hecho; tests en `archive/tests` |
 
 ## Corte de entrega
 
@@ -74,3 +76,5 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L20**: «Ya está iniciado. Intentemos probar el paso 5 para cerrarlo antes del 6.»
 - **L21** (verificación de T6 con Docker 27.1.1 y `postgres:16`): `go build`, `go vet` y la suite completa sin base pasan. Con `TEST_DATABASE_URL` sobre un Postgres descartable: los 7 tests de `internal/migrate` pasan (incluido el de dos llamadas a la vez). `go run ./cmd/migrate` aplica 0001 a 0005; la segunda corrida informa «El esquema ya está al día»; `schema_migrations` queda con 5 filas. Compose de punta a punta tras `docker compose down -v`: `migrate` aplica las 5 y termina con código 0, `api` arranca con `store=postgres`; un segundo `docker compose run --rm migrate` no aplica nada. Hallazgo: los tests del store de Postgres (`internal/store/postgres/postgres_test.go:48`, en `archive/tests`) buscan las migraciones en `filepath.Join("..", "..", "migrations")`, que desde ese paquete apunta a `internal/migrations`; `filepath.Glob` sin coincidencias no da error, así que nunca aplicaron el esquema y nunca habían corrido contra una base real (origen `b8f250c`). Con el esquema aplicado por `cmd/migrate`, todos pasan: primera ejecución real de los casos de T3b y T4b.
 - **L22**: «Si. Arreglalo asi y despues vamos al 6.» (aceptada la opción de migrar con el runner). `applyMigrations` de `internal/store/postgres/postgres_test.go` pasa a `migrate.Apply(ctx, db, migrations.Files)`; sin lectura de disco ni ruta relativa. RED sobre esquema vacío: 16 tests fallan con `relation "webhook_event" does not exist`; GREEN: el paquete pasa sobre esquema vacío y de nuevo sin vaciarlo, con `schema_migrations` en 5 filas. Suite completa con `TEST_DATABASE_URL` y `-p 1`: pasa. Commit `575c7b0` en `archive/tests`, armado con un índice temporal sin cambiar de rama; los tests vuelven a salir de `main`. El verificador independiente dejó V2 y V3 sin ejecutar porque el hook de seguridad le bloqueó restaurar los tests; quedaron cubiertos por esta corrida.
+- **L23**: «Decision A.» (paso 6: `machine.Ref` + `internal/line`; descartadas B, que hace depender a los adaptadores de la persistencia, y C, que duplica la máquina de estados).
+- **L24**: con `internal/line`, la variable local `line` (`for _, line := range lines`) tapaba al paquete y hacía falta el alias `linestate` en 14 archivos. «Renombralo a linestate»: paquete `internal/linestate`, import sin alias en todos lados. Verificación: `go build`, `go vet`, `go list -deps -test ./internal/store/...` sin `dispenser`, sin restos de `internal/line` ni alias, y la suite completa con `TEST_DATABASE_URL` y `-p 1` contra Postgres real pasa. Commit `5099f2d` en `refactor/store-dispenser-decoupling` (+202/−170); los 15 tests ajustados se archivan en `archive/tests` y vuelven a salir del árbol de trabajo.
