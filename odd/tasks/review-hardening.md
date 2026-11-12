@@ -32,7 +32,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T5c | S5c | worker | ver commit `fix(preflight)` |
 | T5d | S5d | worker | ver commit `test(preflight)` |
 | T5v | S5a-S5d | verify | 3a76ded/fe384e9/99e68c6 PASS; S5a+S5b rompen la invariante 12 → T5d |
-| T6 | S6 | worker + verify | ver commit `feat(migrate)`; test en `archive/tests` `11b518c` |
+| T6 | S6 | worker + verify | `6e2d36d` hecho, verify PASS con Postgres; test en `archive/tests` `11b518c` |
 
 ## Corte de entrega
 
@@ -71,3 +71,5 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L17**: «Dale.» (arrancar el paso 5 con el versionado de migraciones).
 - **L18**: «1. No. Una vez en funcionamiento la API, va a ser raro migrar seguido. 2. Sin compatibilidad para volumenes viejos.» Se toma como aceptación de M2: migración como paso aparte, la API no migra al arrancar.
 - **L19**: Docker Desktop no responde (error 500 de la API del daemon) al empezar T6; los tests contra Postgres se escriben pero se saltean sin `TEST_DATABASE_URL`.
+- **L20**: «Ya está iniciado. Intentemos probar el paso 5 para cerrarlo antes del 6.»
+- **L21** (verificación de T6 con Docker 27.1.1 y `postgres:16`): `go build`, `go vet` y la suite completa sin base pasan. Con `TEST_DATABASE_URL` sobre un Postgres descartable: los 7 tests de `internal/migrate` pasan (incluido el de dos llamadas a la vez). `go run ./cmd/migrate` aplica 0001 a 0005; la segunda corrida informa «El esquema ya está al día»; `schema_migrations` queda con 5 filas. Compose de punta a punta tras `docker compose down -v`: `migrate` aplica las 5 y termina con código 0, `api` arranca con `store=postgres`; un segundo `docker compose run --rm migrate` no aplica nada. Hallazgo: los tests del store de Postgres (`internal/store/postgres/postgres_test.go:48`, en `archive/tests`) buscan las migraciones en `filepath.Join("..", "..", "migrations")`, que desde ese paquete apunta a `internal/migrations`; `filepath.Glob` sin coincidencias no da error, así que nunca aplicaron el esquema y nunca habían corrido contra una base real (origen `b8f250c`). Con el esquema aplicado por `cmd/migrate`, todos pasan: primera ejecución real de los casos de T3b y T4b.
