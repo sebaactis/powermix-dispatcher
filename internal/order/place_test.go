@@ -2,6 +2,7 @@ package order_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -91,6 +92,7 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 		name         string
 		mutate       func(*order.Draft)
 		wantPosition string
+		wantMessage  string
 	}{
 		{
 			name:   "sin ítems",
@@ -117,6 +119,7 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 				draft.Items[0].Machine = machine.Ref{KioskID: "kiosk-1", Kind: "batidos"}
 			},
 			wantPosition: "ítem 1",
+			wantMessage:  "la máquina de batidos necesita device_id, device_no y device_type_id",
 		},
 		{
 			name:   "con importe de orden negativo",
@@ -151,6 +154,9 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 			}
 			if tc.wantPosition != "" && !strings.Contains(err.Error(), tc.wantPosition) {
 				t.Fatalf("el error %q no nombra %q", err.Error(), tc.wantPosition)
+			}
+			if tc.wantMessage != "" && !strings.Contains(err.Error(), tc.wantMessage) {
+				t.Fatalf("el error %q no contiene %q", err.Error(), tc.wantMessage)
 			}
 
 			if created := st.createdIDs(); len(created) != 0 {
@@ -198,6 +204,43 @@ func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 				t.Fatalf("Place creó %v con un ítem sin tipo de máquina válido", created)
 			}
 		})
+	}
+}
+
+func TestEnginePlaceRejectsAnItemWithOnlyTheIdentifierOfAnotherMachineType(t *testing.T) {
+	st := store.NewMemory()
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	draft := comboDraft()
+	draft.ClientKey = "tap-snacks-con-device-id-de-batidos"
+	draft.Items[1].Machine = machine.Ref{
+		KioskID:  "kiosk-1",
+		Kind:     "snacks",
+		Name:     "Snacks Powermix",
+		DeviceID: draft.Items[0].Machine.DeviceID,
+	}
+
+	placed, err := engine.Place(context.Background(), draft)
+	if err == nil {
+		t.Fatalf("Place aceptó un ítem de snacks con el device_id de batidos y devolvió %+v", placed)
+	}
+	if !reflect.DeepEqual(placed, store.Order{}) {
+		t.Fatalf("Place devolvió %+v junto al error", placed)
+	}
+	if !strings.Contains(err.Error(), "ítem 2:") {
+		t.Fatalf("el error %q no nombra el ítem 2", err.Error())
+	}
+	if !strings.Contains(err.Error(), "la máquina de snacks necesita mid") {
+		t.Fatalf("el error %q no explica qué identificador falta", err.Error())
+	}
+
+	if _, loadErr := st.OrderByClientKey(context.Background(), draft.ClientKey); !errors.Is(loadErr, store.ErrNotFound) {
+		t.Fatalf("el store devolvió %v, se esperaba %v: la orden no debía guardarse", loadErr, store.ErrNotFound)
 	}
 }
 
