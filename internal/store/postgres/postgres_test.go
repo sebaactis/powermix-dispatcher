@@ -68,7 +68,7 @@ func resetDatabase(t *testing.T, target string) {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`TRUNCATE webhook_event, dispatch_attempt, order_line, orders, payment_intent,
+	if _, err := db.Exec(`TRUNCATE notification_sent, webhook_event, dispatch_attempt, order_line, orders, payment_intent,
 		catalog_snapshot, combo_item, combo, machine, kiosk RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("no se pudieron vaciar las tablas: %v", err)
 	}
@@ -809,5 +809,92 @@ func TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Fatalf("no hay líneas trabadas antes del corte y volvieron %d", len(none))
+	}
+}
+
+func TestNotificationSentStartsFalseAndThenStaysTrue(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOrder(t, st, sampleOrder("order-notice", ""))
+
+	sent, err := st.NotificationSent(ctx, "order-notice", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("no se pudo preguntar por el aviso: %v", err)
+	}
+	if sent {
+		t.Fatal("una orden recién creada informa un aviso enviado")
+	}
+
+	if err := st.RecordNotification(ctx, "order-notice", "order_in_doubt", moment()); err != nil {
+		t.Fatalf("no se pudo registrar el aviso: %v", err)
+	}
+
+	sent, err = st.NotificationSent(ctx, "order-notice", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("no se pudo preguntar por el aviso: %v", err)
+	}
+	if !sent {
+		t.Fatal("el aviso grabado no se informa como enviado")
+	}
+
+	if err := st.RecordNotification(ctx, "order-notice", "order_in_doubt", moment().Add(time.Minute)); err != nil {
+		t.Fatalf("grabar dos veces el mismo aviso devolvió error: %v", err)
+	}
+
+	sent, err = st.NotificationSent(ctx, "order-notice", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("no se pudo preguntar por el aviso: %v", err)
+	}
+	if !sent {
+		t.Fatal("la segunda grabación borró el aviso")
+	}
+}
+
+func TestNotificationSentKeepsTheKindsAndOrdersIndependent(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOrder(t, st, sampleOrder("order-uno", ""))
+	mustCreateOrder(t, st, sampleOrder("order-dos", ""))
+
+	if err := st.RecordNotification(ctx, "order-uno", "order_in_doubt", moment()); err != nil {
+		t.Fatalf("no se pudo registrar el aviso: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		orderID string
+		kind    string
+		want    bool
+	}{
+		{name: "el aviso grabado está enviado", orderID: "order-uno", kind: "order_in_doubt", want: true},
+		{name: "el otro tipo de aviso sigue pendiente", orderID: "order-uno", kind: "order_failed", want: false},
+		{name: "el aviso de la otra orden sigue pendiente", orderID: "order-dos", kind: "order_in_doubt", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sent, err := st.NotificationSent(ctx, tc.orderID, tc.kind)
+			if err != nil {
+				t.Fatalf("no se pudo preguntar por el aviso: %v", err)
+			}
+			if sent != tc.want {
+				t.Fatalf("NotificationSent(%q, %q)=%v, se esperaba %v", tc.orderID, tc.kind, sent, tc.want)
+			}
+		})
+	}
+}
+
+func TestNotificationsReturnNotFoundForAnUnknownOrder(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	if _, err := st.NotificationSent(ctx, "order-fantasma", "order_in_doubt"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("NotificationSent devolvió %v, se esperaba %v", err, store.ErrNotFound)
+	}
+
+	if err := st.RecordNotification(ctx, "order-fantasma", "order_in_doubt", moment()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("RecordNotification devolvió %v, se esperaba %v", err, store.ErrNotFound)
 	}
 }

@@ -1089,3 +1089,125 @@ func TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders(t *testing.T
 		t.Fatalf("StalledLines devolvió %v antes del corte, se esperaba nada", lineIDs(none))
 	}
 }
+
+func TestMemoryNotificationSentStartsFalseAndThenStaysTrue(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+
+	sent, err := m.NotificationSent(ctx, "order-1", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("NotificationSent: %v", err)
+	}
+	if sent {
+		t.Fatal("una orden recién creada informa un aviso enviado")
+	}
+
+	if err := m.RecordNotification(ctx, "order-1", "order_in_doubt", baseTime); err != nil {
+		t.Fatalf("RecordNotification: %v", err)
+	}
+
+	sent, err = m.NotificationSent(ctx, "order-1", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("NotificationSent: %v", err)
+	}
+	if !sent {
+		t.Fatal("el aviso grabado no se informa como enviado")
+	}
+
+	if err := m.RecordNotification(ctx, "order-1", "order_in_doubt", baseTime.Add(time.Minute)); err != nil {
+		t.Fatalf("grabar dos veces el mismo aviso devolvió error: %v", err)
+	}
+
+	sent, err = m.NotificationSent(ctx, "order-1", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("NotificationSent: %v", err)
+	}
+	if !sent {
+		t.Fatal("la segunda grabación borró el aviso")
+	}
+}
+
+func TestMemoryNotificationSentKeepsTheKindsIndependent(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+
+	if err := m.RecordNotification(ctx, "order-1", "order_in_doubt", baseTime); err != nil {
+		t.Fatalf("RecordNotification: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		kind string
+		want bool
+	}{
+		{name: "el aviso grabado está enviado", kind: "order_in_doubt", want: true},
+		{name: "el otro tipo de aviso sigue pendiente", kind: "order_failed", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sent, err := m.NotificationSent(ctx, "order-1", tc.kind)
+			if err != nil {
+				t.Fatalf("NotificationSent(%q): %v", tc.kind, err)
+			}
+			if sent != tc.want {
+				t.Fatalf("NotificationSent(%q)=%v, se esperaba %v", tc.kind, sent, tc.want)
+			}
+		})
+	}
+}
+
+func TestMemoryNotificationSentKeepsTheOrdersIndependent(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+	mustCreate(t, m, store.Order{ID: "order-2", KioskID: "kiosk-1", ComboID: "combo-1", Status: store.OrderPaid, CreatedAt: baseTime})
+
+	if err := m.RecordNotification(ctx, "order-1", "order_in_doubt", baseTime); err != nil {
+		t.Fatalf("RecordNotification: %v", err)
+	}
+
+	sent, err := m.NotificationSent(ctx, "order-2", "order_in_doubt")
+	if err != nil {
+		t.Fatalf("NotificationSent: %v", err)
+	}
+	if sent {
+		t.Fatal("el aviso de una orden se informó como enviado en otra")
+	}
+}
+
+func TestMemoryNotificationsReturnNotFoundForAnUnknownOrder(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "preguntar por un aviso de una orden que no existe",
+			call: func() error {
+				_, err := m.NotificationSent(ctx, "order-fantasma", "order_in_doubt")
+
+				return err
+			},
+		},
+		{
+			name: "grabar un aviso de una orden que no existe",
+			call: func() error {
+				return m.RecordNotification(ctx, "order-fantasma", "order_in_doubt", baseTime)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("err=%v, se esperaba %v", err, store.ErrNotFound)
+			}
+		})
+	}
+}

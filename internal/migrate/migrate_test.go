@@ -65,6 +65,7 @@ func TestApplyRunsEveryMigrationInOrder(t *testing.T) {
 		"0003_line_reconcile_until",
 		"0004_store_postgres",
 		"0005_order_version",
+		"0006_notification_sent",
 	}
 
 	if !slices.Equal(applied, want) {

@@ -480,17 +480,48 @@ func (m *reconcileMachine) onlyReconcile(t *testing.T) dispenser.Request {
 }
 
 type recordingNotifier struct {
-	mu     sync.Mutex
-	events []notify.Event
+	mu      sync.Mutex
+	events  []notify.Event
+	failure error
 }
 
 func (n *recordingNotifier) Notify(ctx context.Context, ev notify.Event) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	if n.failure != nil {
+		return n.failure
+	}
+
 	n.events = append(n.events, ev)
 
 	return nil
+}
+
+func (n *recordingNotifier) failWith(err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.failure = err
+}
+
+func (n *recordingNotifier) deliver() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.failure = nil
+}
+
+func (n *recordingNotifier) kinds() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	kinds := make([]string, 0, len(n.events))
+	for _, ev := range n.events {
+		kinds = append(kinds, string(ev.Kind))
+	}
+
+	return kinds
 }
 
 func (n *recordingNotifier) count() int {
