@@ -12,7 +12,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/migrate"
 	"compras-remotas/internal/store"
 	"compras-remotas/internal/store/postgres"
@@ -132,7 +133,7 @@ func sampleOrder(orderID, clientKey string) store.Order {
 				ID:       orderID + "-batidos",
 				OrderID:  orderID,
 				Position: 1,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID:      kioskID,
 					Kind:         "batidos",
 					Name:         "Batidos Powermix",
@@ -142,14 +143,14 @@ func sampleOrder(orderID, clientKey string) store.Order {
 				},
 				SKU:         "batido-frutilla",
 				AmountCents: 70000,
-				State:       dispenser.LinePending,
+				State:       linestate.Pending,
 				Version:     7,
 			},
 			{
 				ID:       orderID + "-snacks",
 				OrderID:  orderID,
 				Position: 2,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID: kioskID,
 					Kind:    "snacks",
 					Name:    "Snacks Powermix",
@@ -157,7 +158,7 @@ func sampleOrder(orderID, clientKey string) store.Order {
 				},
 				SKU:            "snack-mixto",
 				AmountCents:    80000,
-				State:          dispenser.LinePending,
+				State:          linestate.Pending,
 				Ref:            "SO-1",
 				DeadlineAt:     moment().Add(2 * time.Minute),
 				ReconcileUntil: moment().Add(4 * time.Minute),
@@ -178,9 +179,9 @@ func orderWithDeadline(orderID string, deadline time.Time) store.Order {
 				ID:         orderID + "-line",
 				OrderID:    orderID,
 				Position:   1,
-				Machine:    dispenser.MachineRef{Kind: "snacks", MID: "mid-1"},
+				Machine:    machine.Ref{Kind: "snacks", MID: "mid-1"},
 				SKU:        "snack-mixto",
-				State:      dispenser.LineSent,
+				State:      linestate.Sent,
 				DeadlineAt: deadline,
 			},
 		},
@@ -260,7 +261,7 @@ func TestCreateOrderStoresTheHeaderAndTheLines(t *testing.T) {
 		batidos.Machine.KioskID != kioskID || batidos.Machine.Kind != "batidos" {
 		t.Fatalf("la identidad de la máquina de batidos volvió incompleta: %+v", batidos.Machine)
 	}
-	if batidos.State != dispenser.LinePending || batidos.SKU != "batido-frutilla" || batidos.AmountCents != 70000 {
+	if batidos.State != linestate.Pending || batidos.SKU != "batido-frutilla" || batidos.AmountCents != 70000 {
 		t.Fatalf("la primera línea volvió distinta: %+v", batidos)
 	}
 	if !batidos.DeadlineAt.IsZero() || !batidos.ReconcileUntil.IsZero() || batidos.Ref != "" || batidos.LastError != "" {
@@ -343,7 +344,7 @@ func TestSaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	got.Status = store.OrderPaid
 	got.PaidAt = moment().Add(time.Minute)
 	got.AmountCents = 175000
-	got.Lines[0].State = dispenser.LineDelivered
+	got.Lines[0].State = linestate.Delivered
 	got.Lines[0].Ref = "no-se-guarda"
 	got.Lines = nil
 
@@ -366,7 +367,7 @@ func TestSaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	}
 
 	batidos := lineByID(t, saved, "order-1-batidos")
-	if batidos.State != dispenser.LinePending {
+	if batidos.State != linestate.Pending {
 		t.Fatalf("el estado de la línea tenía que quedar intacto y quedó %q", batidos.State)
 	}
 	if batidos.Ref != "" {
@@ -464,7 +465,7 @@ func TestSaveLineBumpsTheVersion(t *testing.T) {
 	mustCreateOrder(t, st, sampleOrder("order-1", ""))
 	line := lineByID(t, mustLoadOrder(t, st, "order-1"), "order-1-batidos")
 
-	line.State = dispenser.LineSent
+	line.State = linestate.Sent
 	line.Attempts = 1
 	line.DeadlineAt = moment().Add(2 * time.Minute)
 	line.Machine.Name = "Batidos Powermix renombrada"
@@ -476,12 +477,12 @@ func TestSaveLineBumpsTheVersion(t *testing.T) {
 	if saved.Version != 1 {
 		t.Fatalf("la línea guardada tenía que volver en versión 1 y volvió en %d", saved.Version)
 	}
-	if saved.State != dispenser.LineSent || saved.Attempts != 1 {
+	if saved.State != linestate.Sent || saved.Attempts != 1 {
 		t.Fatalf("la línea devuelta no trae lo guardado: %+v", saved)
 	}
 
 	reloaded := lineByID(t, mustLoadOrder(t, st, "order-1"), "order-1-batidos")
-	if reloaded.Version != 1 || reloaded.State != dispenser.LineSent || reloaded.Attempts != 1 {
+	if reloaded.Version != 1 || reloaded.State != linestate.Sent || reloaded.Attempts != 1 {
 		t.Fatalf("la línea persistida no coincide con lo devuelto: %+v", reloaded)
 	}
 	if !reloaded.DeadlineAt.Equal(moment().Add(2 * time.Minute)) {
@@ -509,13 +510,13 @@ func TestSaveLineRejectsAStaleVersion(t *testing.T) {
 
 	first := stale
 	first.Ref = "PRIMERO"
-	first.State = dispenser.LineDelivered
+	first.State = linestate.Delivered
 	if _, err := st.SaveLine(ctx, first); err != nil {
 		t.Fatalf("el primer guardado tenía que aceptarse: %v", err)
 	}
 
 	stale.Ref = "SEGUNDO"
-	stale.State = dispenser.LineFailed
+	stale.State = linestate.Failed
 	if _, err := st.SaveLine(ctx, stale); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("una versión vieja tenía que devolver ErrStale y devolvió: %v", err)
 	}
@@ -524,7 +525,7 @@ func TestSaveLineRejectsAStaleVersion(t *testing.T) {
 	if reloaded.Version != 1 {
 		t.Fatalf("la línea rechazada no puede haber escrito la versión: está en %d", reloaded.Version)
 	}
-	if reloaded.Ref != "PRIMERO" || reloaded.State != dispenser.LineDelivered {
+	if reloaded.Ref != "PRIMERO" || reloaded.State != linestate.Delivered {
 		t.Fatalf("la línea rechazada pisó la fila: %+v", reloaded)
 	}
 }
@@ -536,9 +537,9 @@ func TestSaveLineOnAMissingLine(t *testing.T) {
 		ID:       "linea-que-no-existe",
 		OrderID:  "orden-que-no-existe",
 		Position: 1,
-		Machine:  dispenser.MachineRef{Kind: "batidos"},
+		Machine:  machine.Ref{Kind: "batidos"},
 		SKU:      "batido-frutilla",
-		State:    dispenser.LineSent,
+		State:    linestate.Sent,
 	})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("se esperaba ErrNotFound y se obtuvo: %v", err)
@@ -626,7 +627,7 @@ func TestSaveAttemptClosesAKnownAttemptOnly(t *testing.T) {
 	}
 
 	reloaded := lineByID(t, mustLoadOrder(t, st, "order-1"), lineID)
-	if reloaded.Version != 0 || reloaded.State != dispenser.LinePending {
+	if reloaded.Version != 0 || reloaded.State != linestate.Pending {
 		t.Fatalf("cerrar un intento no puede tocar la línea: %+v", reloaded)
 	}
 
@@ -698,7 +699,7 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 	if due[0].ID != "order-pronto-line" || due[1].ID != "order-media-line" {
 		t.Fatalf("las líneas no salieron ordenadas por plazo: %q, %q", due[0].ID, due[1].ID)
 	}
-	if due[0].OrderID != "order-pronto" || due[0].Machine.Kind != "snacks" || due[0].State != dispenser.LineSent {
+	if due[0].OrderID != "order-pronto" || due[0].Machine.Kind != "snacks" || due[0].State != linestate.Sent {
 		t.Fatalf("la línea vencida volvió incompleta: %+v", due[0])
 	}
 
@@ -719,11 +720,11 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 	}
 }
 
-func storedLine(lineID string, position int, state dispenser.LineState, deadline time.Time) store.Line {
+func storedLine(lineID string, position int, state linestate.State, deadline time.Time) store.Line {
 	return store.Line{
 		ID:         lineID,
 		Position:   position,
-		Machine:    dispenser.MachineRef{Kind: "snacks", MID: "mid-1"},
+		Machine:    machine.Ref{Kind: "snacks", MID: "mid-1"},
 		SKU:        "snack-mixto",
 		State:      state,
 		DeadlineAt: deadline,
@@ -751,9 +752,9 @@ func TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T)
 	now := moment().Add(5 * time.Minute)
 
 	mustCreateOrder(t, st, orderWithLine("order-reclamada", store.OrderDispatching, moment(),
-		storedLine("line-reclamada", 1, dispenser.LinePending, moment().Add(time.Minute))))
+		storedLine("line-reclamada", 1, linestate.Pending, moment().Add(time.Minute))))
 	mustCreateOrder(t, st, orderWithLine("order-sin-plazo", store.OrderDispatching, moment(),
-		storedLine("line-sin-plazo", 1, dispenser.LinePending, time.Time{})))
+		storedLine("line-sin-plazo", 1, linestate.Pending, time.Time{})))
 
 	due, err := st.DueLines(ctx, now, 10)
 	if err != nil {
@@ -762,8 +763,8 @@ func TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T)
 	if len(due) != 1 || due[0].ID != "line-reclamada" {
 		t.Fatalf("DueLines devolvió %d líneas, se esperaba sólo la pendiente con plazo vencido: %+v", len(due), due)
 	}
-	if due[0].State != dispenser.LinePending {
-		t.Fatalf("la línea reclamada volvió en %q, se esperaba %q", due[0].State, dispenser.LinePending)
+	if due[0].State != linestate.Pending {
+		t.Fatalf("la línea reclamada volvió en %q, se esperaba %q", due[0].State, linestate.Pending)
 	}
 }
 
@@ -774,17 +775,17 @@ func TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders(t *testing.T) {
 	cut := moment().Add(5 * time.Minute)
 
 	mustCreateOrder(t, st, orderWithLine("order-paga", store.OrderPaid, moment(),
-		storedLine("line-paga", 1, dispenser.LinePending, time.Time{})))
+		storedLine("line-paga", 1, linestate.Pending, time.Time{})))
 	mustCreateOrder(t, st, orderWithLine("order-despachando", store.OrderDispatching, moment().Add(time.Minute),
-		storedLine("line-despachando", 1, dispenser.LinePending, time.Time{})))
+		storedLine("line-despachando", 1, linestate.Pending, time.Time{})))
 	mustCreateOrder(t, st, orderWithLine("order-reclamada", store.OrderPaid, moment(),
-		storedLine("line-reclamada", 1, dispenser.LinePending, moment().Add(time.Minute))))
+		storedLine("line-reclamada", 1, linestate.Pending, moment().Add(time.Minute))))
 	mustCreateOrder(t, st, orderWithLine("order-reciente", store.OrderPaid, moment().Add(10*time.Minute),
-		storedLine("line-reciente", 1, dispenser.LinePending, time.Time{})))
+		storedLine("line-reciente", 1, linestate.Pending, time.Time{})))
 	mustCreateOrder(t, st, orderWithLine("order-sin-pago", store.OrderPendingPayment, time.Time{},
-		storedLine("line-sin-pago", 1, dispenser.LinePending, time.Time{})))
+		storedLine("line-sin-pago", 1, linestate.Pending, time.Time{})))
 	mustCreateOrder(t, st, orderWithLine("order-entregada", store.OrderDelivered, moment(),
-		storedLine("line-entregada", 1, dispenser.LinePending, time.Time{})))
+		storedLine("line-entregada", 1, linestate.Pending, time.Time{})))
 
 	stalled, err := st.StalledLines(ctx, cut, 10)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/notify"
 	"compras-remotas/internal/order"
@@ -41,7 +42,7 @@ type stubMachine struct {
 	err     error
 }
 
-func (s *stubMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (s *stubMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -84,7 +85,7 @@ type flakyMachine struct {
 	attempt    dispenser.DispatchResult
 }
 
-func (s *flakyMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (s *flakyMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -114,7 +115,7 @@ func (s *flakyMachine) callCount() int {
 
 type recordedEvent struct {
 	Kind     string
-	State    dispenser.LineState
+	State    linestate.State
 	Deadline time.Time
 	Until    time.Time
 }
@@ -218,11 +219,11 @@ func (r *recordingStore) savedLinesFor(lineID string) []store.Line {
 	return lines
 }
 
-func (r *recordingStore) lineStatesFor(lineID string) []dispenser.LineState {
+func (r *recordingStore) lineStatesFor(lineID string) []linestate.State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	var states []dispenser.LineState
+	var states []linestate.State
 	for _, line := range r.savedLines {
 		if line.ID == lineID {
 			states = append(states, line.State)
@@ -299,7 +300,7 @@ func comboDraft() order.Draft {
 			{
 				SKU:         "sku-batido",
 				AmountCents: 1500,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID:      "kiosk-1",
 					Kind:         "batidos",
 					Name:         "Batidos Powermix",
@@ -311,7 +312,7 @@ func comboDraft() order.Draft {
 			{
 				SKU:         "sku-snack",
 				AmountCents: 1000,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID: "kiosk-1",
 					Kind:    "snacks",
 					Name:    "Snacks Powermix",
@@ -374,7 +375,7 @@ type closingOnDispatchMachine struct {
 	dispatches int
 }
 
-func (m *closingOnDispatchMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (m *closingOnDispatchMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -430,7 +431,7 @@ type reconcileMachine struct {
 	reconcileErr error
 }
 
-func (m *reconcileMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (m *reconcileMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -541,7 +542,7 @@ func newReconcileFixture(t *testing.T, driver dispenser.Dispenser, opts ...order
 	fixture := &reconcileFixture{engine: engine, store: st, clock: clock, placed: mustOrder(t, st, placed.ID)}
 
 	armed := fixture.line(t)
-	if armed.State != dispenser.LineSent || armed.DeadlineAt.IsZero() || armed.ReconcileUntil.IsZero() {
+	if armed.State != linestate.Sent || armed.DeadlineAt.IsZero() || armed.ReconcileUntil.IsZero() {
 		t.Fatalf("el fixture necesita una línea despachada con plazo y ventana armados: %+v", armed)
 	}
 

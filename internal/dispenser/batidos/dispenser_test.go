@@ -15,6 +15,8 @@ import (
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/dispenser/batidos"
 	"compras-remotas/internal/fakeapi"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
 
 const (
@@ -28,8 +30,8 @@ const (
 
 var sixDigitCode = regexp.MustCompile(`^\d{6}$`)
 
-func newMachineRef() dispenser.MachineRef {
-	return dispenser.MachineRef{
+func newRef() machine.Ref {
+	return machine.Ref{
 		KioskID:      "kiosk-1",
 		Kind:         "batidos",
 		Name:         "Batidos Powermix",
@@ -44,7 +46,7 @@ func newRequest() dispenser.Request {
 	return dispenser.Request{
 		OrderID:     "order-1",
 		LineID:      "line-1",
-		Machine:     newMachineRef(),
+		Machine:     newRef(),
 		SKU:         dispatchSKU,
 		AmountCents: 150000,
 	}
@@ -71,7 +73,7 @@ func newDispenserWithFake(t *testing.T) (*batidos.Dispenser, *fakeapi.Batidos, *
 func TestDispenserCheckReportsHealthyMachineAsAvailable(t *testing.T) {
 	d, _, _ := newDispenserWithFake(t)
 
-	availability, err := d.Check(context.Background(), newMachineRef())
+	availability, err := d.Check(context.Background(), newRef())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -127,7 +129,7 @@ func TestDispenserCheckNamesTheFailingAxis(t *testing.T) {
 			d, fake, _ := newDispenserWithFake(t)
 			tc.broken(fake)
 
-			availability, err := d.Check(context.Background(), newMachineRef())
+			availability, err := d.Check(context.Background(), newRef())
 			if err != nil {
 				t.Fatalf("Check: %v", err)
 			}
@@ -256,8 +258,8 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile (en preparación): %v", err)
 	}
-	if status.State != dispenser.LineBrewing {
-		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineBrewing)
+	if status.State != linestate.Brewing {
+		t.Fatalf("State = %q, se esperaba %q", status.State, linestate.Brewing)
 	}
 	if status.ProviderOrderNo == "" {
 		t.Fatalf("Reconcile volvió sin el orderNo del proveedor: %+v", status)
@@ -270,8 +272,8 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile (completado): %v", err)
 	}
-	if status.State != dispenser.LineDelivered {
-		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineDelivered)
+	if status.State != linestate.Delivered {
+		t.Fatalf("State = %q, se esperaba %q", status.State, linestate.Delivered)
 	}
 	if status.ProviderOrderNo != orderNo {
 		t.Fatalf("ProviderOrderNo = %q, se esperaba %q", status.ProviderOrderNo, orderNo)
@@ -283,8 +285,8 @@ func TestDispenserReconcileFollowsTheDrinkToItsFinalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile (falló): %v", err)
 	}
-	if status.State != dispenser.LineFailed {
-		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineFailed)
+	if status.State != linestate.Failed {
+		t.Fatalf("State = %q, se esperaba %q", status.State, linestate.Failed)
 	}
 	if status.ProviderOrderNo != orderNo {
 		t.Fatalf("ProviderOrderNo = %q, se esperaba %q", status.ProviderOrderNo, orderNo)
@@ -334,8 +336,8 @@ func TestDispenserReconcileReportsUnknownProviderStatusAsInDoubt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if status.State != dispenser.LineInDoubt {
-		t.Fatalf("State = %q, se esperaba %q: un estado desconocido no se declara fallido", status.State, dispenser.LineInDoubt)
+	if status.State != linestate.InDoubt {
+		t.Fatalf("State = %q, se esperaba %q: un estado desconocido no se declara fallido", status.State, linestate.InDoubt)
 	}
 	if !strings.Contains(status.Reason, "7") {
 		t.Fatalf("Reason = %q, se esperaba que nombre el estado desconocido 7", status.Reason)

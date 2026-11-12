@@ -7,7 +7,7 @@ import (
 
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 	"compras-remotas/internal/store/postgres"
@@ -127,7 +127,7 @@ func TestSeedWritesTheTopologyThatAnOrderNeeds(t *testing.T) {
 			{
 				ID:       "order-docker-batidos",
 				Position: 1,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID:      "kiosk-docker",
 					Kind:         "batidos",
 					Name:         "Batidos Powermix",
@@ -137,7 +137,7 @@ func TestSeedWritesTheTopologyThatAnOrderNeeds(t *testing.T) {
 				},
 				SKU:         "DEMO-BATIDO-VAINILLA",
 				AmountCents: 210000,
-				State:       dispenser.LinePending,
+				State:       linestate.Pending,
 			},
 		},
 	}

@@ -13,6 +13,8 @@ import (
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/dispenser/snacks"
 	"compras-remotas/internal/fakeapi"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
 
 const (
@@ -20,8 +22,8 @@ const (
 	dispenserSKU        = "prod_snack_1"
 )
 
-func newDispenserMachine() dispenser.MachineRef {
-	return dispenser.MachineRef{
+func newDispenserMachine() machine.Ref {
+	return machine.Ref{
 		KioskID: "kiosk-1",
 		Kind:    "snacks",
 		Name:    "Snacks Powermix",
@@ -278,8 +280,8 @@ func TestDispenserReconcileReportsAnUnknownOrderAsInDoubt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if status.State != dispenser.LineInDoubt {
-		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineInDoubt)
+	if status.State != linestate.InDoubt {
+		t.Fatalf("State = %q, se esperaba %q", status.State, linestate.InDoubt)
 	}
 	if status.Reason == "" {
 		t.Fatalf("un pedido que el proveedor no informa necesita un motivo: %+v", status)
@@ -299,10 +301,10 @@ func TestDispenserReconcileNeverDeclaresDeliveredForASnack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if status.State != dispenser.LineInDoubt {
-		t.Fatalf("State = %q, se esperaba %q: el estado del pedido no es el resultado del despacho", status.State, dispenser.LineInDoubt)
+	if status.State != linestate.InDoubt {
+		t.Fatalf("State = %q, se esperaba %q: el estado del pedido no es el resultado del despacho", status.State, linestate.InDoubt)
 	}
-	if status.State == dispenser.LineDelivered || status.State == dispenser.LineFailed {
+	if status.State == linestate.Delivered || status.State == linestate.Failed {
 		t.Fatalf("Reconcile inventó un veredicto: %+v", status)
 	}
 	if !strings.Contains(status.Reason, "10") {
@@ -329,8 +331,8 @@ func TestDispenserReconcileFallsBackToTheOrderID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if status.State != dispenser.LineInDoubt {
-		t.Fatalf("State = %q, se esperaba %q", status.State, dispenser.LineInDoubt)
+	if status.State != linestate.InDoubt {
+		t.Fatalf("State = %q, se esperaba %q", status.State, linestate.InDoubt)
 	}
 	if !strings.Contains(status.Reason, "cancelado") {
 		t.Fatalf("Reason = %q, se esperaba el estado del proveedor por OrderID", status.Reason)

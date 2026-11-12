@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -20,7 +21,7 @@ type reconcileStub struct {
 	calls []dispenser.Request
 }
 
-func (s *reconcileStub) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (s *reconcileStub) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -62,7 +63,7 @@ func twoSnackLinesDraft() order.Draft {
 		{
 			SKU:         "sku-snack-2",
 			AmountCents: 1000,
-			Machine: dispenser.MachineRef{
+			Machine: machine.Ref{
 				KioskID: "kiosk-1",
 				Kind:    "snacks",
 				Name:    "Snacks Powermix",
@@ -111,7 +112,7 @@ type reconcilingMachine struct {
 	reconcile dispenser.Dispenser
 }
 
-func (m reconcilingMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (m reconcilingMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return m.dispatch.Check(ctx, machine)
 }
 
@@ -144,7 +145,7 @@ func TestCloseFromCallbackDeliversTheLine(t *testing.T) {
 	loaded := mustOrder(t, fx.orders, fx.orderID)
 	snacks := lineFor(t, loaded, "snacks")
 
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("la línea de snacks debía quedar entregada y quedó %q", snacks.State)
 	}
 
@@ -153,7 +154,7 @@ func TestCloseFromCallbackDeliversTheLine(t *testing.T) {
 	}
 
 	batidos := lineFor(t, loaded, "batidos")
-	if batidos.State == dispenser.LineDelivered {
+	if batidos.State == linestate.Delivered {
 		t.Fatalf("la línea de batidos no recibió callback y no debe cerrarse")
 	}
 
@@ -203,7 +204,7 @@ func TestCloseFromCallbackMarksTheLineFailedWithTheProviderReason(t *testing.T) 
 	loaded := mustOrder(t, fx.orders, fx.orderID)
 	snacks := lineFor(t, loaded, "snacks")
 
-	if snacks.State != dispenser.LineFailed {
+	if snacks.State != linestate.Failed {
 		t.Fatalf("la línea debía quedar fallida y quedó %q", snacks.State)
 	}
 
@@ -241,7 +242,7 @@ func TestCloseFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	}
 
 	snacks := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("el reintento no debe cambiar el estado ya resuelto y quedó %q", snacks.State)
 	}
 
@@ -270,7 +271,7 @@ func TestCloseFromCallbackRejectsAReferenceThatIsNotInTheOrder(t *testing.T) {
 	}
 
 	snacks := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
-	if snacks.State == dispenser.LineDelivered {
+	if snacks.State == linestate.Delivered {
 		t.Fatalf("una referencia desconocida no debe cerrar ninguna línea")
 	}
 }
@@ -321,7 +322,7 @@ func TestCloseFromCallbackRejectsAnUnknownOrder(t *testing.T) {
 func TestConfirmFromCallbackAsksTheProviderInsteadOfTrustingTheCallback(t *testing.T) {
 	fx := dispatched(t)
 
-	fx.reconcile["batidos"].status = dispenser.Status{State: dispenser.LineDelivered}
+	fx.reconcile["batidos"].status = dispenser.Status{State: linestate.Delivered}
 
 	duplicate, err := fx.engine.ConfirmFromCallback(context.Background(), order.Callback{
 		Source:    "batidos",
@@ -349,7 +350,7 @@ func TestConfirmFromCallbackAsksTheProviderInsteadOfTrustingTheCallback(t *testi
 	}
 
 	batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
-	if batidos.State != dispenser.LineDelivered {
+	if batidos.State != linestate.Delivered {
 		t.Fatalf("el resultado lo decide el proveedor: debía quedar entregada y quedó %q", batidos.State)
 	}
 
@@ -361,7 +362,7 @@ func TestConfirmFromCallbackAsksTheProviderInsteadOfTrustingTheCallback(t *testi
 func TestConfirmFromCallbackKeepsWaitingWhenTheProviderIsStillWorking(t *testing.T) {
 	fx := dispatched(t)
 
-	fx.reconcile["batidos"].status = dispenser.Status{State: dispenser.LineBrewing, Reason: "todavía preparando"}
+	fx.reconcile["batidos"].status = dispenser.Status{State: linestate.Brewing, Reason: "todavía preparando"}
 
 	duplicate, err := fx.engine.ConfirmFromCallback(context.Background(), order.Callback{
 		Source:    "batidos",
@@ -381,7 +382,7 @@ func TestConfirmFromCallbackKeepsWaitingWhenTheProviderIsStillWorking(t *testing
 	loaded := mustOrder(t, fx.orders, fx.orderID)
 	batidos := lineFor(t, loaded, "batidos")
 
-	if batidos.State != dispenser.LineBrewing {
+	if batidos.State != linestate.Brewing {
 		t.Fatalf("mientras el proveedor prepara la línea queda en elaboración y quedó %q", batidos.State)
 	}
 
@@ -420,7 +421,7 @@ func TestCloseFromCallbackDoesNotTouchAClosedLine(t *testing.T) {
 
 	snacks := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
 
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("una línea cerrada no se reabre ni se degrada y quedó %q", snacks.State)
 	}
 
@@ -453,7 +454,7 @@ func TestConfirmFromCallbackDoesNotReopenAClosedLine(t *testing.T) {
 	}
 
 	batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
-	if batidos.State != dispenser.LineDelivered {
+	if batidos.State != linestate.Delivered {
 		t.Fatalf("una línea entregada no debe volver a elaboración y quedó %q", batidos.State)
 	}
 
@@ -509,11 +510,11 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 	}{
 		{
 			name:   "el worker traía un cierre fallido",
-			status: dispenser.Status{State: dispenser.LineFailed, Reason: "la máquina informó que no entregó"},
+			status: dispenser.Status{State: linestate.Failed, Reason: "la máquina informó que no entregó"},
 		},
 		{
 			name:   "el worker traía una entrega",
-			status: dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "order-no-1"},
+			status: dispenser.Status{State: linestate.Delivered, ProviderOrderNo: "order-no-1"},
 		},
 		{
 			name:   "el worker traía un aplazo de la consulta",
@@ -545,7 +546,7 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 			clock.set(engineNow.Add(2 * time.Minute))
 			copied := orders.copyDueLines(t, engineNow.Add(2*time.Minute))
 
-			if copied[0].State != dispenser.LineSent {
+			if copied[0].State != linestate.Sent {
 				t.Fatalf("el worker debía copiar una línea abierta y copió %q", copied[0].State)
 			}
 
@@ -565,7 +566,7 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 			}
 
 			closed := lineFor(t, mustOrder(t, orders, placed.ID), "batidos")
-			if closed.State != dispenser.LineDelivered || closed.Ref != "code-adoptado" {
+			if closed.State != linestate.Delivered || closed.Ref != "code-adoptado" {
 				t.Fatalf("el callback debía dejar la línea entregada con su referencia y quedó %+v", closed)
 			}
 
@@ -580,7 +581,7 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 			stored := mustOrder(t, orders, placed.ID)
 			line := lineFor(t, stored, "batidos")
 
-			if line.State != dispenser.LineDelivered {
+			if line.State != linestate.Delivered {
 				t.Fatalf("el worker revirtió una línea cerrada por el callback: State=%q", line.State)
 			}
 			if line.Ref != "code-adoptado" {
@@ -659,19 +660,19 @@ func TestCloseFromCallbackRetriesOnceWhenAnotherWriterTookTheLine(t *testing.T) 
 	cases := []struct {
 		name      string
 		competing int
-		wantState dispenser.LineState
+		wantState linestate.State
 		wantCalls int
 	}{
 		{
 			name:      "un solo escritor adelantado: se reintenta una vez y el cierre entra",
 			competing: 1,
-			wantState: dispenser.LineDelivered,
+			wantState: linestate.Delivered,
 			wantCalls: 2,
 		},
 		{
 			name:      "dos escritores adelantados: no se reintenta dos veces",
 			competing: 2,
-			wantState: dispenser.LineSent,
+			wantState: linestate.Sent,
 			wantCalls: 2,
 		},
 	}
@@ -930,7 +931,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 	}
 
 	snacksLine := lineFor(t, mustOrder(t, orders, placed.ID), "snacks")
-	if snacksLine.State != dispenser.LineDelivered {
+	if snacksLine.State != linestate.Delivered {
 		t.Fatalf("la línea debía quedar entregada en el reintento y quedó %q", snacksLine.State)
 	}
 }
@@ -938,7 +939,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 func TestConfirmFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	fx := dispatched(t)
 
-	fx.reconcile["batidos"].status = dispenser.Status{State: dispenser.LineDelivered}
+	fx.reconcile["batidos"].status = dispenser.Status{State: linestate.Delivered}
 
 	event := order.Callback{
 		Source:    "batidos",
@@ -992,7 +993,7 @@ func TestCloseFromCallbackResolvesTheLineByThirdOrderNo(t *testing.T) {
 	}
 
 	snacks := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("el ThirdOrderNo identifica la línea y debía quedar entregada, pero quedó %q", snacks.State)
 	}
 
@@ -1000,7 +1001,7 @@ func TestCloseFromCallbackResolvesTheLineByThirdOrderNo(t *testing.T) {
 		t.Fatalf("la línea debía adoptar la referencia del callback y quedó %q", snacks.Ref)
 	}
 
-	if batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos"); batidos.State == dispenser.LineDelivered {
+	if batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos"); batidos.State == linestate.Delivered {
 		t.Fatalf("el callback de snacks no debe cerrar la línea de batidos")
 	}
 }
@@ -1034,7 +1035,7 @@ func TestCloseFromCallbackAdoptedRefWinsOnTheNextEvent(t *testing.T) {
 	}
 
 	snacks := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("una línea cerrada no se reabre y quedó %q", snacks.State)
 	}
 
@@ -1063,7 +1064,7 @@ func TestCloseFromCallbackClosesTheOnlyLineWithoutRef(t *testing.T) {
 	}
 
 	snacks := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("la única línea de esa máquina sin referencia debía cerrarse y quedó %q", snacks.State)
 	}
 
@@ -1092,7 +1093,7 @@ func TestCloseFromCallbackRefusesToGuessBetweenTwoLines(t *testing.T) {
 	}
 
 	for _, line := range mustOrder(t, fx.orders, fx.orderID).Lines {
-		if line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed {
+		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("un callback ambiguo no debe cerrar ninguna línea: %+v", line)
 		}
 	}
@@ -1119,12 +1120,12 @@ func TestCloseFromCallbackDoesNotAdoptTheOtherMachineLineWithoutRef(t *testing.T
 	loaded := mustOrder(t, fx.orders, fx.orderID)
 
 	snacks := lineFor(t, loaded, "snacks")
-	if snacks.State != dispenser.LineDelivered {
+	if snacks.State != linestate.Delivered {
 		t.Fatalf("la línea de snacks debía cerrarse y quedó %q", snacks.State)
 	}
 
 	batidos := lineFor(t, loaded, "batidos")
-	if batidos.State == dispenser.LineDelivered || batidos.State == dispenser.LineFailed {
+	if batidos.State == linestate.Delivered || batidos.State == linestate.Failed {
 		t.Fatalf("una línea de la otra máquina no debe cerrarse: %+v", batidos)
 	}
 
@@ -1153,7 +1154,7 @@ func TestCloseFromCallbackDoesNotGuessWithoutTheMachineType(t *testing.T) {
 	}
 
 	for _, line := range mustOrder(t, fx.orders, fx.orderID).Lines {
-		if line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed {
+		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("sin tipo de máquina no se debe cerrar ninguna línea: %+v", line)
 		}
 	}
@@ -1215,7 +1216,7 @@ func TestCloseFromCallbackDoesNotCloseAnotherSnackLineWhenTheRefDoesNotMatch(t *
 	}
 
 	for _, line := range mustOrder(t, fx.orders, fx.orderID).Lines {
-		if line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed {
+		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("una referencia que no coincide no debe cerrar ninguna línea de snacks: %+v", line)
 		}
 
@@ -1247,7 +1248,7 @@ func TestCloseFromCallbackWithARefMismatchAndNoMachineTypeIsAnUnknownLine(t *tes
 	}
 
 	for _, line := range mustOrder(t, fx.orders, fx.orderID).Lines {
-		if line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed {
+		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("sin tipo de máquina no se debe cerrar ninguna línea: %+v", line)
 		}
 	}
@@ -1272,7 +1273,7 @@ func TestCloseFromCallbackDoesNotCloseTheOtherMachineLineByThirdOrderNo(t *testi
 	}
 
 	batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
-	if batidos.State == dispenser.LineDelivered || batidos.State == dispenser.LineFailed {
+	if batidos.State == linestate.Delivered || batidos.State == linestate.Failed {
 		t.Fatalf("un callback de snacks no debe cerrar la línea de batidos: %+v", batidos)
 	}
 }
@@ -1298,7 +1299,7 @@ func TestCloseFromCallbackDoesNotMatchAThirdOrderNoWithoutTheMachineType(t *test
 	}
 
 	batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
-	if batidos.State == dispenser.LineDelivered || batidos.State == dispenser.LineFailed {
+	if batidos.State == linestate.Delivered || batidos.State == linestate.Failed {
 		t.Fatalf("un callback de snacks no debe cerrar la línea de batidos: %+v", batidos)
 	}
 }

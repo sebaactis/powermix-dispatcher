@@ -8,6 +8,7 @@ import (
 
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -285,11 +286,11 @@ func TestSnacksCallbackClosesTheLineByThirdOrderNo(t *testing.T) {
 		t.Fatalf("la orden no se pudo releer: %v", err)
 	}
 
-	if loaded.Lines[0].State != dispenser.LineDelivered {
+	if loaded.Lines[0].State != linestate.Delivered {
 		t.Fatalf("el ThirdOrderNo identifica la línea y debía quedar entregada, pero quedó %q", loaded.Lines[0].State)
 	}
 
-	if loaded.Lines[1].State == dispenser.LineDelivered {
+	if loaded.Lines[1].State == linestate.Delivered {
 		t.Fatalf("la otra línea no era la del callback y no debe cerrarse: %q", loaded.Lines[1].State)
 	}
 }
@@ -322,7 +323,7 @@ func TestSnacksCallbackWithTwoCandidatesIsAcknowledgedWithoutClosingAnything(t *
 	}
 
 	for _, line := range loaded.Lines {
-		if line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed {
+		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("un callback ambiguo no debe cerrar ninguna línea: %+v", line)
 		}
 	}
@@ -372,7 +373,7 @@ func TestSnacksCallbackDoesNotCloseTheBatidosLineByThirdOrderNo(t *testing.T) {
 			continue
 		}
 
-		if line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed {
+		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("un callback de snacks no debe cerrar la línea de batidos: %+v", line)
 		}
 	}

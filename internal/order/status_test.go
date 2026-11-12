@@ -6,12 +6,12 @@ import (
 	"slices"
 	"testing"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
 
-func buildLines(states ...dispenser.LineState) []store.Line {
+func buildLines(states ...linestate.State) []store.Line {
 	lines := make([]store.Line, 0, len(states))
 	for index, state := range states {
 		lines = append(lines, store.Line{
@@ -33,70 +33,70 @@ func TestDeriveOrderStatus(t *testing.T) {
 	}{
 		{name: "orden sin líneas", lines: nil, want: store.OrderPendingPayment},
 		{name: "orden con la lista de líneas vacía", lines: buildLines(), want: store.OrderPendingPayment},
-		{name: "una línea pendiente", lines: buildLines(dispenser.LinePending), want: store.OrderDispatching},
-		{name: "una línea enviada", lines: buildLines(dispenser.LineSent), want: store.OrderDispatching},
-		{name: "una línea preparándose", lines: buildLines(dispenser.LineBrewing), want: store.OrderDispatching},
-		{name: "una línea entregada", lines: buildLines(dispenser.LineDelivered), want: store.OrderDelivered},
+		{name: "una línea pendiente", lines: buildLines(linestate.Pending), want: store.OrderDispatching},
+		{name: "una línea enviada", lines: buildLines(linestate.Sent), want: store.OrderDispatching},
+		{name: "una línea preparándose", lines: buildLines(linestate.Brewing), want: store.OrderDispatching},
+		{name: "una línea entregada", lines: buildLines(linestate.Delivered), want: store.OrderDelivered},
 		{
 			name:  "las dos líneas entregadas",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineDelivered),
+			lines: buildLines(linestate.Delivered, linestate.Delivered),
 			want:  store.OrderDelivered,
 		},
-		{name: "una línea fallada", lines: buildLines(dispenser.LineFailed), want: store.OrderFailed},
-		{name: "las dos líneas falladas", lines: buildLines(dispenser.LineFailed, dispenser.LineFailed), want: store.OrderFailed},
+		{name: "una línea fallada", lines: buildLines(linestate.Failed), want: store.OrderFailed},
+		{name: "las dos líneas falladas", lines: buildLines(linestate.Failed, linestate.Failed), want: store.OrderFailed},
 		{
 			name:  "una entregada y la otra fallada",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineFailed),
+			lines: buildLines(linestate.Delivered, linestate.Failed),
 			want:  store.OrderPartial,
 		},
 		{
 			name:  "una entregada y la otra en duda",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineInDoubt),
+			lines: buildLines(linestate.Delivered, linestate.InDoubt),
 			want:  store.OrderInDoubt,
 		},
 		{
 			name:  "una en duda y la otra fallada",
-			lines: buildLines(dispenser.LineInDoubt, dispenser.LineFailed),
+			lines: buildLines(linestate.InDoubt, linestate.Failed),
 			want:  store.OrderInDoubt,
 		},
 		{
 			name:  "las dos en duda",
-			lines: buildLines(dispenser.LineInDoubt, dispenser.LineInDoubt),
+			lines: buildLines(linestate.InDoubt, linestate.InDoubt),
 			want:  store.OrderInDoubt,
 		},
 		{
 			name:  "una entregada mientras la otra sigue enviada",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineSent),
+			lines: buildLines(linestate.Delivered, linestate.Sent),
 			want:  store.OrderDispatching,
 		},
 		{
 			name:  "una entregada mientras la otra sigue pendiente",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LinePending),
+			lines: buildLines(linestate.Delivered, linestate.Pending),
 			want:  store.OrderDispatching,
 		},
 		{
 			name:  "una entregada mientras la otra se prepara",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineBrewing),
+			lines: buildLines(linestate.Delivered, linestate.Brewing),
 			want:  store.OrderDispatching,
 		},
 		{
 			name:  "una en duda mientras la otra se prepara",
-			lines: buildLines(dispenser.LineInDoubt, dispenser.LineBrewing),
+			lines: buildLines(linestate.InDoubt, linestate.Brewing),
 			want:  store.OrderDispatching,
 		},
 		{
 			name:  "una entregada, una fallada y una en duda",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineFailed, dispenser.LineInDoubt),
+			lines: buildLines(linestate.Delivered, linestate.Failed, linestate.InDoubt),
 			want:  store.OrderPartial,
 		},
 		{
 			name:  "una línea con un estado desconocido",
-			lines: buildLines(dispenser.LineState("refunded")),
+			lines: buildLines(linestate.State("refunded")),
 			want:  store.OrderInDoubt,
 		},
 		{
 			name:  "una entregada y la otra con un estado desconocido",
-			lines: buildLines(dispenser.LineDelivered, dispenser.LineState("refunded")),
+			lines: buildLines(linestate.Delivered, linestate.State("refunded")),
 			want:  store.OrderInDoubt,
 		},
 	}
@@ -124,14 +124,14 @@ func TestDeriveOrderStatusOnlyProducesLineDerivedStatuses(t *testing.T) {
 	inputs := [][]store.Line{
 		nil,
 		buildLines(),
-		buildLines(dispenser.LinePending),
-		buildLines(dispenser.LineBrewing, dispenser.LineSent),
-		buildLines(dispenser.LineDelivered, dispenser.LineDelivered),
-		buildLines(dispenser.LineFailed, dispenser.LineFailed),
-		buildLines(dispenser.LineDelivered, dispenser.LineFailed),
-		buildLines(dispenser.LineDelivered, dispenser.LineInDoubt),
-		buildLines(dispenser.LineInDoubt, dispenser.LineFailed),
-		buildLines(dispenser.LineState("refunded")),
+		buildLines(linestate.Pending),
+		buildLines(linestate.Brewing, linestate.Sent),
+		buildLines(linestate.Delivered, linestate.Delivered),
+		buildLines(linestate.Failed, linestate.Failed),
+		buildLines(linestate.Delivered, linestate.Failed),
+		buildLines(linestate.Delivered, linestate.InDoubt),
+		buildLines(linestate.InDoubt, linestate.Failed),
+		buildLines(linestate.State("refunded")),
 	}
 
 	for _, lines := range inputs {
@@ -238,19 +238,19 @@ func TestCanOrderTransitionTreatsRefundedAndCancelledAsTerminal(t *testing.T) {
 
 func TestCanLineTransitionAllowsTheLegalEdges(t *testing.T) {
 	edges := []struct {
-		from dispenser.LineState
-		to   dispenser.LineState
+		from linestate.State
+		to   linestate.State
 	}{
-		{from: dispenser.LinePending, to: dispenser.LineSent},
-		{from: dispenser.LineSent, to: dispenser.LineBrewing},
-		{from: dispenser.LineSent, to: dispenser.LineDelivered},
-		{from: dispenser.LineSent, to: dispenser.LineFailed},
-		{from: dispenser.LineSent, to: dispenser.LineInDoubt},
-		{from: dispenser.LineBrewing, to: dispenser.LineDelivered},
-		{from: dispenser.LineBrewing, to: dispenser.LineFailed},
-		{from: dispenser.LineBrewing, to: dispenser.LineInDoubt},
-		{from: dispenser.LineInDoubt, to: dispenser.LineDelivered},
-		{from: dispenser.LineInDoubt, to: dispenser.LineFailed},
+		{from: linestate.Pending, to: linestate.Sent},
+		{from: linestate.Sent, to: linestate.Brewing},
+		{from: linestate.Sent, to: linestate.Delivered},
+		{from: linestate.Sent, to: linestate.Failed},
+		{from: linestate.Sent, to: linestate.InDoubt},
+		{from: linestate.Brewing, to: linestate.Delivered},
+		{from: linestate.Brewing, to: linestate.Failed},
+		{from: linestate.Brewing, to: linestate.InDoubt},
+		{from: linestate.InDoubt, to: linestate.Delivered},
+		{from: linestate.InDoubt, to: linestate.Failed},
 	}
 
 	for _, edge := range edges {
@@ -262,37 +262,37 @@ func TestCanLineTransitionAllowsTheLegalEdges(t *testing.T) {
 
 func TestCanLineTransitionRejectsIllegalEdges(t *testing.T) {
 	edges := []struct {
-		from dispenser.LineState
-		to   dispenser.LineState
+		from linestate.State
+		to   linestate.State
 	}{
-		{from: dispenser.LinePending, to: dispenser.LinePending},
-		{from: dispenser.LinePending, to: dispenser.LineBrewing},
-		{from: dispenser.LinePending, to: dispenser.LineDelivered},
-		{from: dispenser.LinePending, to: dispenser.LineFailed},
-		{from: dispenser.LinePending, to: dispenser.LineInDoubt},
-		{from: dispenser.LineSent, to: dispenser.LinePending},
-		{from: dispenser.LineSent, to: dispenser.LineSent},
-		{from: dispenser.LineBrewing, to: dispenser.LinePending},
-		{from: dispenser.LineBrewing, to: dispenser.LineSent},
-		{from: dispenser.LineBrewing, to: dispenser.LineBrewing},
-		{from: dispenser.LineDelivered, to: dispenser.LinePending},
-		{from: dispenser.LineDelivered, to: dispenser.LineSent},
-		{from: dispenser.LineDelivered, to: dispenser.LineBrewing},
-		{from: dispenser.LineDelivered, to: dispenser.LineFailed},
-		{from: dispenser.LineDelivered, to: dispenser.LineInDoubt},
-		{from: dispenser.LineDelivered, to: dispenser.LineDelivered},
-		{from: dispenser.LineFailed, to: dispenser.LinePending},
-		{from: dispenser.LineFailed, to: dispenser.LineSent},
-		{from: dispenser.LineFailed, to: dispenser.LineBrewing},
-		{from: dispenser.LineFailed, to: dispenser.LineDelivered},
-		{from: dispenser.LineFailed, to: dispenser.LineInDoubt},
-		{from: dispenser.LineFailed, to: dispenser.LineFailed},
-		{from: dispenser.LineInDoubt, to: dispenser.LinePending},
-		{from: dispenser.LineInDoubt, to: dispenser.LineSent},
-		{from: dispenser.LineInDoubt, to: dispenser.LineBrewing},
-		{from: dispenser.LineInDoubt, to: dispenser.LineInDoubt},
-		{from: dispenser.LineState("refunded"), to: dispenser.LineDelivered},
-		{from: dispenser.LineDelivered, to: dispenser.LineState("refunded")},
+		{from: linestate.Pending, to: linestate.Pending},
+		{from: linestate.Pending, to: linestate.Brewing},
+		{from: linestate.Pending, to: linestate.Delivered},
+		{from: linestate.Pending, to: linestate.Failed},
+		{from: linestate.Pending, to: linestate.InDoubt},
+		{from: linestate.Sent, to: linestate.Pending},
+		{from: linestate.Sent, to: linestate.Sent},
+		{from: linestate.Brewing, to: linestate.Pending},
+		{from: linestate.Brewing, to: linestate.Sent},
+		{from: linestate.Brewing, to: linestate.Brewing},
+		{from: linestate.Delivered, to: linestate.Pending},
+		{from: linestate.Delivered, to: linestate.Sent},
+		{from: linestate.Delivered, to: linestate.Brewing},
+		{from: linestate.Delivered, to: linestate.Failed},
+		{from: linestate.Delivered, to: linestate.InDoubt},
+		{from: linestate.Delivered, to: linestate.Delivered},
+		{from: linestate.Failed, to: linestate.Pending},
+		{from: linestate.Failed, to: linestate.Sent},
+		{from: linestate.Failed, to: linestate.Brewing},
+		{from: linestate.Failed, to: linestate.Delivered},
+		{from: linestate.Failed, to: linestate.InDoubt},
+		{from: linestate.Failed, to: linestate.Failed},
+		{from: linestate.InDoubt, to: linestate.Pending},
+		{from: linestate.InDoubt, to: linestate.Sent},
+		{from: linestate.InDoubt, to: linestate.Brewing},
+		{from: linestate.InDoubt, to: linestate.InDoubt},
+		{from: linestate.State("refunded"), to: linestate.Delivered},
+		{from: linestate.Delivered, to: linestate.State("refunded")},
 	}
 
 	for _, edge := range edges {
@@ -303,16 +303,16 @@ func TestCanLineTransitionRejectsIllegalEdges(t *testing.T) {
 }
 
 func TestCanLineTransitionTreatsDeliveredAndFailedAsTerminal(t *testing.T) {
-	all := []dispenser.LineState{
-		dispenser.LinePending,
-		dispenser.LineSent,
-		dispenser.LineBrewing,
-		dispenser.LineDelivered,
-		dispenser.LineFailed,
-		dispenser.LineInDoubt,
+	all := []linestate.State{
+		linestate.Pending,
+		linestate.Sent,
+		linestate.Brewing,
+		linestate.Delivered,
+		linestate.Failed,
+		linestate.InDoubt,
 	}
 
-	for _, terminal := range []dispenser.LineState{dispenser.LineDelivered, dispenser.LineFailed} {
+	for _, terminal := range []linestate.State{linestate.Delivered, linestate.Failed} {
 		for _, to := range all {
 			if order.CanLineTransition(terminal, to) {
 				t.Fatalf("CanLineTransition(%q, %q) = true, %q es terminal", terminal, to, terminal)
@@ -332,43 +332,43 @@ func TestAdvanceOrder(t *testing.T) {
 		{
 			name:    "pago confirmado con las dos líneas en vuelo",
 			current: store.OrderPaid,
-			lines:   buildLines(dispenser.LinePending, dispenser.LineSent),
+			lines:   buildLines(linestate.Pending, linestate.Sent),
 			want:    store.OrderDispatching,
 		},
 		{
 			name:    "despachando y todavía con líneas en vuelo no cambia nada",
 			current: store.OrderDispatching,
-			lines:   buildLines(dispenser.LineSent, dispenser.LineBrewing),
+			lines:   buildLines(linestate.Sent, linestate.Brewing),
 			want:    store.OrderDispatching,
 		},
 		{
 			name:    "despachando con las dos líneas entregadas cierra la orden",
 			current: store.OrderDispatching,
-			lines:   buildLines(dispenser.LineDelivered, dispenser.LineDelivered),
+			lines:   buildLines(linestate.Delivered, linestate.Delivered),
 			want:    store.OrderDelivered,
 		},
 		{
 			name:    "en duda que se resuelve en parcial",
 			current: store.OrderInDoubt,
-			lines:   buildLines(dispenser.LineDelivered, dispenser.LineFailed),
+			lines:   buildLines(linestate.Delivered, linestate.Failed),
 			want:    store.OrderPartial,
 		},
 		{
 			name:    "en duda que se resuelve en fallada",
 			current: store.OrderInDoubt,
-			lines:   buildLines(dispenser.LineFailed, dispenser.LineFailed),
+			lines:   buildLines(linestate.Failed, linestate.Failed),
 			want:    store.OrderFailed,
 		},
 		{
 			name:    "entregada que se vuelve a derivar entregada",
 			current: store.OrderDelivered,
-			lines:   buildLines(dispenser.LineDelivered, dispenser.LineDelivered),
+			lines:   buildLines(linestate.Delivered, linestate.Delivered),
 			want:    store.OrderDelivered,
 		},
 		{
 			name:    "pago pendiente no puede saltear a entregada",
 			current: store.OrderPendingPayment,
-			lines:   buildLines(dispenser.LineDelivered, dispenser.LineDelivered),
+			lines:   buildLines(linestate.Delivered, linestate.Delivered),
 			want:    store.OrderPendingPayment,
 			wantErr: order.ErrInvalidTransition,
 		},
@@ -382,14 +382,14 @@ func TestAdvanceOrder(t *testing.T) {
 		{
 			name:    "reembolsada es terminal",
 			current: store.OrderRefunded,
-			lines:   buildLines(dispenser.LineDelivered, dispenser.LineDelivered),
+			lines:   buildLines(linestate.Delivered, linestate.Delivered),
 			want:    store.OrderRefunded,
 			wantErr: order.ErrInvalidTransition,
 		},
 		{
 			name:    "cancelada es terminal",
 			current: store.OrderCancelled,
-			lines:   buildLines(dispenser.LinePending, dispenser.LinePending),
+			lines:   buildLines(linestate.Pending, linestate.Pending),
 			want:    store.OrderCancelled,
 			wantErr: order.ErrInvalidTransition,
 		},
@@ -409,7 +409,7 @@ func TestAdvanceOrder(t *testing.T) {
 }
 
 func TestAdvanceOrderKeepsTheCurrentStatusWhenItRejectsTheMove(t *testing.T) {
-	got, err := order.AdvanceOrder(store.OrderPendingPayment, buildLines(dispenser.LineDelivered))
+	got, err := order.AdvanceOrder(store.OrderPendingPayment, buildLines(linestate.Delivered))
 	if !errors.Is(err, order.ErrInvalidTransition) {
 		t.Fatalf("AdvanceOrder error = %v, se esperaba %v", err, order.ErrInvalidTransition)
 	}
@@ -421,72 +421,72 @@ func TestAdvanceOrderKeepsTheCurrentStatusWhenItRejectsTheMove(t *testing.T) {
 func TestAdvanceLine(t *testing.T) {
 	cases := []struct {
 		name    string
-		current dispenser.LineState
-		next    dispenser.LineState
-		want    dispenser.LineState
+		current linestate.State
+		next    linestate.State
+		want    linestate.State
 		wantErr error
 	}{
 		{
 			name:    "pendiente a enviada",
-			current: dispenser.LinePending,
-			next:    dispenser.LineSent,
-			want:    dispenser.LineSent,
+			current: linestate.Pending,
+			next:    linestate.Sent,
+			want:    linestate.Sent,
 		},
 		{
 			name:    "enviada a preparándose",
-			current: dispenser.LineSent,
-			next:    dispenser.LineBrewing,
-			want:    dispenser.LineBrewing,
+			current: linestate.Sent,
+			next:    linestate.Brewing,
+			want:    linestate.Brewing,
 		},
 		{
 			name:    "enviada a entregada",
-			current: dispenser.LineSent,
-			next:    dispenser.LineDelivered,
-			want:    dispenser.LineDelivered,
+			current: linestate.Sent,
+			next:    linestate.Delivered,
+			want:    linestate.Delivered,
 		},
 		{
 			name:    "enviada a en duda",
-			current: dispenser.LineSent,
-			next:    dispenser.LineInDoubt,
-			want:    dispenser.LineInDoubt,
+			current: linestate.Sent,
+			next:    linestate.InDoubt,
+			want:    linestate.InDoubt,
 		},
 		{
 			name:    "en duda a entregada",
-			current: dispenser.LineInDoubt,
-			next:    dispenser.LineDelivered,
-			want:    dispenser.LineDelivered,
+			current: linestate.InDoubt,
+			next:    linestate.Delivered,
+			want:    linestate.Delivered,
 		},
 		{
 			name:    "en duda a fallada",
-			current: dispenser.LineInDoubt,
-			next:    dispenser.LineFailed,
-			want:    dispenser.LineFailed,
+			current: linestate.InDoubt,
+			next:    linestate.Failed,
+			want:    linestate.Failed,
 		},
 		{
 			name:    "enviada a enviada no cambia nada",
-			current: dispenser.LineSent,
-			next:    dispenser.LineSent,
-			want:    dispenser.LineSent,
+			current: linestate.Sent,
+			next:    linestate.Sent,
+			want:    linestate.Sent,
 		},
 		{
 			name:    "entregada no vuelve a en duda",
-			current: dispenser.LineDelivered,
-			next:    dispenser.LineInDoubt,
-			want:    dispenser.LineDelivered,
+			current: linestate.Delivered,
+			next:    linestate.InDoubt,
+			want:    linestate.Delivered,
 			wantErr: order.ErrInvalidTransition,
 		},
 		{
 			name:    "fallada no vuelve a enviada",
-			current: dispenser.LineFailed,
-			next:    dispenser.LineSent,
-			want:    dispenser.LineFailed,
+			current: linestate.Failed,
+			next:    linestate.Sent,
+			want:    linestate.Failed,
 			wantErr: order.ErrInvalidTransition,
 		},
 		{
 			name:    "en duda no vuelve a pendiente",
-			current: dispenser.LineInDoubt,
-			next:    dispenser.LinePending,
-			want:    dispenser.LineInDoubt,
+			current: linestate.InDoubt,
+			next:    linestate.Pending,
+			want:    linestate.InDoubt,
 			wantErr: order.ErrInvalidTransition,
 		},
 	}

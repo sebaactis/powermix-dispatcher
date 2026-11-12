@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -44,8 +45,8 @@ func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 	for _, machineType := range []string{"batidos", "snacks"} {
 		line := lineFor(t, got, machineType)
 
-		if line.State != dispenser.LineSent {
-			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", machineType, line.State, dispenser.LineSent)
+		if line.State != linestate.Sent {
+			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", machineType, line.State, linestate.Sent)
 		}
 		if line.Attempts != 1 {
 			t.Fatalf("la línea de %s tiene %d intentos, se esperaba 1", machineType, line.Attempts)
@@ -181,8 +182,8 @@ func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	}
 
 	failed := lineFor(t, got, "batidos")
-	if failed.State != dispenser.LineFailed {
-		t.Fatalf("la línea rechazada quedó en %q, se esperaba %q", failed.State, dispenser.LineFailed)
+	if failed.State != linestate.Failed {
+		t.Fatalf("la línea rechazada quedó en %q, se esperaba %q", failed.State, linestate.Failed)
 	}
 	if !strings.Contains(failed.LastError, "nonce repetido") {
 		t.Fatalf("LastError=%q, se esperaba el mensaje del proveedor", failed.LastError)
@@ -195,8 +196,8 @@ func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	}
 
 	sent := lineFor(t, got, "snacks")
-	if sent.State != dispenser.LineSent {
-		t.Fatalf("la línea sana quedó en %q, se esperaba %q", sent.State, dispenser.LineSent)
+	if sent.State != linestate.Sent {
+		t.Fatalf("la línea sana quedó en %q, se esperaba %q", sent.State, linestate.Sent)
 	}
 
 	if saved := st.savedFor(t, failed.ID); saved.Outcome != "rejected" {
@@ -239,8 +240,8 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 	got := mustOrder(t, st, placed.ID)
 	for _, machineType := range []string{"batidos", "snacks"} {
 		line := lineFor(t, got, machineType)
-		if line.State != dispenser.LineSent {
-			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", machineType, line.State, dispenser.LineSent)
+		if line.State != linestate.Sent {
+			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", machineType, line.State, linestate.Sent)
 		}
 		if line.LastError != "" {
 			t.Fatalf("la línea de %s se despachó con el error %q", machineType, line.LastError)
@@ -286,11 +287,11 @@ func TestEngineConfirmPaymentKeepsAnUncertainLineInDoubt(t *testing.T) {
 			got := mustOrder(t, st, placed.ID)
 
 			doubtful := lineFor(t, got, "batidos")
-			if doubtful.State == dispenser.LineFailed {
+			if doubtful.State == linestate.Failed {
 				t.Fatalf("una llamada sin respuesta quedó %q: no se sabe si el producto salió", doubtful.State)
 			}
-			if doubtful.State != dispenser.LineInDoubt {
-				t.Fatalf("la línea incierta quedó en %q, se esperaba %q", doubtful.State, dispenser.LineInDoubt)
+			if doubtful.State != linestate.InDoubt {
+				t.Fatalf("la línea incierta quedó en %q, se esperaba %q", doubtful.State, linestate.InDoubt)
 			}
 			if doubtful.LastError == "" {
 				t.Fatal("la línea incierta quedó sin motivo")
@@ -331,8 +332,8 @@ func TestEngineConfirmPaymentFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 	}
 
 	for _, machineType := range []string{"batidos", "snacks"} {
-		if line := lineFor(t, got, machineType); line.State != dispenser.LineFailed {
-			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", machineType, line.State, dispenser.LineFailed)
+		if line := lineFor(t, got, machineType); line.State != linestate.Failed {
+			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", machineType, line.State, linestate.Failed)
 		}
 	}
 }
@@ -410,8 +411,8 @@ func TestEngineConfirmPaymentDoesNotDispatchTwiceAfterARestart(t *testing.T) {
 	}
 
 	got := mustOrder(t, st, placed.ID)
-	if reloaded := got.Lines[0]; reloaded.State != dispenser.LinePending {
-		t.Fatalf("la línea quedó en %q, se esperaba %q", reloaded.State, dispenser.LinePending)
+	if reloaded := got.Lines[0]; reloaded.State != linestate.Pending {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", reloaded.State, linestate.Pending)
 	}
 	if got.Lines[0].Attempts != 0 {
 		t.Fatalf("la línea acumuló %d intentos, se esperaba 0", got.Lines[0].Attempts)
@@ -480,7 +481,7 @@ func TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed(t *testing.
 	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
 
 	got := st.lineStatesFor(line.ID)
-	want := []dispenser.LineState{dispenser.LinePending, dispenser.LinePending, dispenser.LinePending, dispenser.LineSent}
+	want := []linestate.State{linestate.Pending, linestate.Pending, linestate.Pending, linestate.Sent}
 	if !slices.Equal(got, want) {
 		t.Fatalf("la línea reintentada se guardó con los estados %v, se esperaba %v: cada vuelta reclama la línea antes del intento y un rechazo con intentos pendientes no pasa por failed", got, want)
 	}
@@ -522,8 +523,8 @@ func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
 	got := mustOrder(t, st, placed.ID)
 	line := lineFor(t, got, "batidos")
 
-	if line.State != dispenser.LineSent {
-		t.Fatalf("la línea reintentada quedó en %q, se esperaba %q", line.State, dispenser.LineSent)
+	if line.State != linestate.Sent {
+		t.Fatalf("la línea reintentada quedó en %q, se esperaba %q", line.State, linestate.Sent)
 	}
 	if line.Attempts != 2 {
 		t.Fatalf("la línea reintentada acumuló %d intentos, se esperaban 2", line.Attempts)
@@ -590,8 +591,8 @@ func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 	got := mustOrder(t, st, placed.ID)
 	line := lineFor(t, got, "batidos")
 
-	if line.State != dispenser.LineFailed {
-		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, dispenser.LineFailed)
+	if line.State != linestate.Failed {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, linestate.Failed)
 	}
 	if line.Attempts != 2 {
 		t.Fatalf("la línea acumuló %d intentos, se esperaban 2", line.Attempts)
@@ -627,8 +628,8 @@ func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
 	got := mustOrder(t, st, placed.ID)
 	line := lineFor(t, got, "batidos")
 
-	if line.State != dispenser.LineInDoubt {
-		t.Fatalf("la línea incierta quedó en %q, se esperaba %q", line.State, dispenser.LineInDoubt)
+	if line.State != linestate.InDoubt {
+		t.Fatalf("la línea incierta quedó en %q, se esperaba %q", line.State, linestate.InDoubt)
 	}
 	if line.Attempts != 1 {
 		t.Fatalf("la línea incierta acumuló %d intentos, se esperaba 1", line.Attempts)
@@ -659,8 +660,8 @@ func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 	got := mustOrder(t, st, placed.ID)
 	line := lineFor(t, got, "batidos")
 
-	if line.State != dispenser.LineFailed {
-		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, dispenser.LineFailed)
+	if line.State != linestate.Failed {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, linestate.Failed)
 	}
 	if line.Attempts != 1 {
 		t.Fatalf("la línea acumuló %d intentos, se esperaba 1", line.Attempts)
@@ -697,8 +698,8 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	if reloaded := got.Lines[0]; reloaded.Attempts != 2 {
 		t.Fatalf("la línea acumuló %d intentos, se esperaban 2", reloaded.Attempts)
 	}
-	if reloaded := got.Lines[0]; reloaded.State != dispenser.LinePending {
-		t.Fatalf("la línea quedó en %q, se esperaba no tocarla en %q", reloaded.State, dispenser.LinePending)
+	if reloaded := got.Lines[0]; reloaded.State != linestate.Pending {
+		t.Fatalf("la línea quedó en %q, se esperaba no tocarla en %q", reloaded.State, linestate.Pending)
 	}
 }
 
@@ -743,8 +744,8 @@ func TestEngineConfirmPaymentDispatchesWithACancelledRequestContext(t *testing.T
 
 	for _, item := range probes {
 		line := lineFor(t, got, item.machineType)
-		if line.State != dispenser.LineSent {
-			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", item.machineType, line.State, dispenser.LineSent)
+		if line.State != linestate.Sent {
+			t.Fatalf("la línea de %s quedó en %q, se esperaba %q", item.machineType, line.State, linestate.Sent)
 		}
 	}
 }
@@ -807,8 +808,8 @@ func TestEngineConfirmPaymentGivesALineTheClaimDeadline(t *testing.T) {
 	}
 
 	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
-	if line.State != dispenser.LineInDoubt {
-		t.Fatalf("la línea cortada por el plazo quedó en %q, se esperaba %q", line.State, dispenser.LineInDoubt)
+	if line.State != linestate.InDoubt {
+		t.Fatalf("la línea cortada por el plazo quedó en %q, se esperaba %q", line.State, linestate.InDoubt)
 	}
 	if line.Attempts != 1 {
 		t.Fatalf("la línea cortada por el plazo acumuló %d intentos, se esperaba 1", line.Attempts)
@@ -824,7 +825,7 @@ type probeMachine struct {
 	attempt dispenser.DispatchResult
 }
 
-func (m *probeMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (m *probeMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -873,7 +874,7 @@ type blockedMachine struct {
 	errs []error
 }
 
-func (m *blockedMachine) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (m *blockedMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 

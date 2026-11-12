@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
@@ -36,7 +36,7 @@ func fixtureOrder() store.Order {
 				ID:       drinkLineID,
 				OrderID:  "order-1",
 				Position: 1,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID:      "kiosk-1",
 					Kind:         "batidos",
 					Name:         "Batidos Powermix",
@@ -47,7 +47,7 @@ func fixtureOrder() store.Order {
 				},
 				SKU:            "sku-batido",
 				AmountCents:    1500,
-				State:          dispenser.LinePending,
+				State:          linestate.Pending,
 				Ref:            "exchange-code-1",
 				ReconcileUntil: baseTime.Add(4 * time.Minute),
 			},
@@ -55,7 +55,7 @@ func fixtureOrder() store.Order {
 				ID:       snackLineID,
 				OrderID:  "order-1",
 				Position: 2,
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID: "kiosk-1",
 					Kind:    "snacks",
 					Name:    "Snacks Powermix",
@@ -63,7 +63,7 @@ func fixtureOrder() store.Order {
 				},
 				SKU:         "sku-snack",
 				AmountCents: 1000,
-				State:       dispenser.LinePending,
+				State:       linestate.Pending,
 			},
 		},
 	}
@@ -184,7 +184,7 @@ func TestMemorySaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	stale := mustOrder(t, m, "order-1")
 
 	line := stale.Lines[0]
-	line.State = dispenser.LineSent
+	line.State = linestate.Sent
 	line.Ref = "order-no-1"
 
 	saved, err := m.SaveLine(context.Background(), line)
@@ -199,7 +199,7 @@ func TestMemorySaveOrderOnlyPersistsTheHeader(t *testing.T) {
 	stale.Status = store.OrderDispatching
 	stale.ClosedAt = baseTime.Add(2 * time.Minute)
 	stale.Lines = stale.Lines[:1]
-	stale.Lines[0].State = dispenser.LineDelivered
+	stale.Lines[0].State = linestate.Delivered
 	stale.Lines[0].Ref = "ref-vieja"
 
 	if _, err := m.SaveOrder(context.Background(), stale); err != nil {
@@ -216,7 +216,7 @@ func TestMemorySaveOrderOnlyPersistsTheHeader(t *testing.T) {
 		t.Fatalf("SaveOrder no debe tocar las líneas: se guardaron %d y quedaron %d", len(stale.Lines), len(got.Lines))
 	}
 
-	if got.Lines[0].State != dispenser.LineSent || got.Lines[0].Ref != "order-no-1" {
+	if got.Lines[0].State != linestate.Sent || got.Lines[0].Ref != "order-no-1" {
 		t.Fatalf("la línea escrita por su propio camino debe sobrevivir al guardado de la orden: %+v", got.Lines[0])
 	}
 
@@ -313,7 +313,7 @@ func TestMemoryLineKeepsItsMachineThroughThePort(t *testing.T) {
 
 	line := lineByID(t, created.Lines, drinkLineID)
 	line.Machine.MID = "mid-cambiado"
-	line.State = dispenser.LineSent
+	line.State = linestate.Sent
 	mustSaveLine(t, m, line)
 
 	saved := lineByID(t, mustOrder(t, m, want.ID).Lines, drinkLineID)
@@ -341,7 +341,7 @@ func TestMemorySaveLineUpdatesOnlyThatLine(t *testing.T) {
 	mustCreate(t, m, fixtureOrder())
 
 	line := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
-	line.State = dispenser.LineBrewing
+	line.State = linestate.Brewing
 	line.Attempts = 2
 	line.Ref = "order-no-1"
 	line.DeadlineAt = baseTime.Add(2 * time.Minute)
@@ -367,7 +367,7 @@ func TestMemorySaveLineReturnsNotFoundForUnknownLine(t *testing.T) {
 	_, err := m.SaveLine(context.Background(), store.Line{
 		ID:      "line-inexistente",
 		OrderID: "order-1",
-		State:   dispenser.LineDelivered,
+		State:   linestate.Delivered,
 	})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SaveLine devolvió %v, se esperaba %v", err, store.ErrNotFound)
@@ -401,7 +401,7 @@ func TestMemorySaveLineReturnsThePersistedVersion(t *testing.T) {
 	mustCreate(t, m, fixtureOrder())
 
 	line := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
-	line.State = dispenser.LineSent
+	line.State = linestate.Sent
 	line.Ref = "order-no-1"
 
 	saved := mustSaveLine(t, m, line)
@@ -425,10 +425,10 @@ func TestMemorySaveLineRejectsAStaleVersionAndKeepsTheStoredLine(t *testing.T) {
 	stale := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
 
 	fresh := stale
-	fresh.State = dispenser.LineDelivered
+	fresh.State = linestate.Delivered
 	saved := mustSaveLine(t, m, fresh)
 
-	stale.State = dispenser.LineFailed
+	stale.State = linestate.Failed
 	stale.LastError = "el worker guardó su copia vieja"
 
 	_, err := m.SaveLine(context.Background(), stale)
@@ -440,8 +440,8 @@ func TestMemorySaveLineRejectsAStaleVersionAndKeepsTheStoredLine(t *testing.T) {
 	if !reflect.DeepEqual(stored, saved) {
 		t.Fatalf("un guardado con versión vieja tocó la línea: %+v, se esperaba %+v", stored, saved)
 	}
-	if stored.State != dispenser.LineDelivered {
-		t.Fatalf("el cierre de la línea se perdió: State=%q, se esperaba %q", stored.State, dispenser.LineDelivered)
+	if stored.State != linestate.Delivered {
+		t.Fatalf("el cierre de la línea se perdió: State=%q, se esperaba %q", stored.State, linestate.Delivered)
 	}
 }
 
@@ -450,14 +450,14 @@ func TestMemorySaveLineRejectsTheSecondSaveFromTheSameCopy(t *testing.T) {
 	mustCreate(t, m, fixtureOrder())
 
 	copied := lineByID(t, mustOrder(t, m, "order-1").Lines, drinkLineID)
-	copied.State = dispenser.LineSent
+	copied.State = linestate.Sent
 
 	first := mustSaveLine(t, m, copied)
 	if first.Version != copied.Version+1 {
 		t.Fatalf("el primer guardado devolvió Version=%d, se esperaba %d", first.Version, copied.Version+1)
 	}
 
-	copied.State = dispenser.LineFailed
+	copied.State = linestate.Failed
 	copied.LastError = "segundo guardado con la misma copia"
 
 	_, err := m.SaveLine(context.Background(), copied)
@@ -666,12 +666,12 @@ func TestMemoryRegisterWebhookDeduplicatesBySourceAndKey(t *testing.T) {
 	}
 }
 
-func dueLine(id string, position int, kind machine.Kind, state dispenser.LineState, deadline time.Time) store.Line {
+func dueLine(id string, position int, kind machine.Kind, state linestate.State, deadline time.Time) store.Line {
 	return store.Line{
 		ID:         id,
 		OrderID:    "order-1",
 		Position:   position,
-		Machine:    dispenser.MachineRef{Kind: kind},
+		Machine:    machine.Ref{Kind: kind},
 		State:      state,
 		DeadlineAt: deadline,
 	}
@@ -690,17 +690,17 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 		Status:      store.OrderDispatching,
 		CreatedAt:   baseTime,
 		Lines: []store.Line{
-			dueLine("line-a", 1, "batidos", dispenser.LineSent, baseTime.Add(time.Minute)),
-			dueLine("line-b", 2, "snacks", dispenser.LineBrewing, baseTime.Add(time.Minute)),
-			dueLine("line-c", 3, "batidos", dispenser.LineSent, baseTime.Add(5*time.Minute)),
-			dueLine("line-future", 4, "snacks", dispenser.LineSent, now.Add(time.Second)),
-			dueLine("line-sin-plazo", 5, "batidos", dispenser.LineBrewing, time.Time{}),
-			dueLine("line-delivered", 6, "snacks", dispenser.LineDelivered, baseTime),
-			dueLine("line-failed", 7, "batidos", dispenser.LineFailed, baseTime),
-			dueLine("line-in-doubt", 8, "snacks", dispenser.LineInDoubt, baseTime),
-			dueLine("line-in-doubt-sin-plazo", 10, "snacks", dispenser.LineInDoubt, time.Time{}),
-			dueLine("line-pending", 9, "batidos", dispenser.LinePending, baseTime),
-			dueLine("line-pending-sin-plazo", 11, "batidos", dispenser.LinePending, time.Time{}),
+			dueLine("line-a", 1, "batidos", linestate.Sent, baseTime.Add(time.Minute)),
+			dueLine("line-b", 2, "snacks", linestate.Brewing, baseTime.Add(time.Minute)),
+			dueLine("line-c", 3, "batidos", linestate.Sent, baseTime.Add(5*time.Minute)),
+			dueLine("line-future", 4, "snacks", linestate.Sent, now.Add(time.Second)),
+			dueLine("line-sin-plazo", 5, "batidos", linestate.Brewing, time.Time{}),
+			dueLine("line-delivered", 6, "snacks", linestate.Delivered, baseTime),
+			dueLine("line-failed", 7, "batidos", linestate.Failed, baseTime),
+			dueLine("line-in-doubt", 8, "snacks", linestate.InDoubt, baseTime),
+			dueLine("line-in-doubt-sin-plazo", 10, "snacks", linestate.InDoubt, time.Time{}),
+			dueLine("line-pending", 9, "batidos", linestate.Pending, baseTime),
+			dueLine("line-pending-sin-plazo", 11, "batidos", linestate.Pending, time.Time{}),
 		},
 	}
 	second := store.Order{
@@ -712,7 +712,7 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 		Status:      store.OrderDispatching,
 		CreatedAt:   baseTime,
 		Lines: []store.Line{
-			{ID: "line-justo-ahora", OrderID: "order-2", Position: 1, Machine: dispenser.MachineRef{Kind: "snacks"}, State: dispenser.LineBrewing, DeadlineAt: now},
+			{ID: "line-justo-ahora", OrderID: "order-2", Position: 1, Machine: machine.Ref{Kind: "snacks"}, State: linestate.Brewing, DeadlineAt: now},
 		},
 	}
 
@@ -757,12 +757,12 @@ func TestMemoryReturnsCopiesOfStoredOrders(t *testing.T) {
 	m := store.NewMemory()
 	input := fixtureOrder()
 	deadline := baseTime.Add(time.Minute)
-	input.Lines[0].State = dispenser.LineSent
+	input.Lines[0].State = linestate.Sent
 	input.Lines[0].DeadlineAt = deadline
 	mustCreate(t, m, input)
 
 	input.Status = store.OrderCancelled
-	input.Lines[0].State = dispenser.LineDelivered
+	input.Lines[0].State = linestate.Delivered
 	input.Lines[0].DeadlineAt = baseTime.Add(time.Hour)
 	input.Lines = append(input.Lines, store.Line{ID: "line-extra"})
 
@@ -773,14 +773,14 @@ func TestMemoryReturnsCopiesOfStoredOrders(t *testing.T) {
 	if len(stored.Lines) != 2 {
 		t.Fatalf("mutar la orden de entrada agregó líneas: %v", lineIDs(stored.Lines))
 	}
-	if stored.Lines[0].State != dispenser.LineSent {
+	if stored.Lines[0].State != linestate.Sent {
 		t.Fatalf("mutar la orden de entrada cambió la línea guardada: state=%q", stored.Lines[0].State)
 	}
 	if !stored.Lines[0].DeadlineAt.Equal(deadline) {
 		t.Fatalf("mutar la orden de entrada cambió el plazo guardado: %v", stored.Lines[0].DeadlineAt)
 	}
 
-	stored.Lines[0].State = dispenser.LineFailed
+	stored.Lines[0].State = linestate.Failed
 	stored.Lines[0].DeadlineAt = baseTime
 	stored.Lines = append(stored.Lines, store.Line{ID: "line-extra"})
 
@@ -788,7 +788,7 @@ func TestMemoryReturnsCopiesOfStoredOrders(t *testing.T) {
 	if len(again.Lines) != 2 {
 		t.Fatalf("mutar la orden leída agregó líneas: %v", lineIDs(again.Lines))
 	}
-	if again.Lines[0].State != dispenser.LineSent {
+	if again.Lines[0].State != linestate.Sent {
 		t.Fatalf("mutar la orden leída cambió lo guardado: state=%q", again.Lines[0].State)
 	}
 	if !again.Lines[0].DeadlineAt.Equal(deadline) {
@@ -799,7 +799,7 @@ func TestMemoryReturnsCopiesOfStoredOrders(t *testing.T) {
 func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
 	m := store.NewMemory()
 	order := fixtureOrder()
-	order.Lines[0].State = dispenser.LineSent
+	order.Lines[0].State = linestate.Sent
 	order.Lines[0].DeadlineAt = baseTime
 	mustCreate(t, m, order)
 
@@ -808,7 +808,7 @@ func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
 		t.Fatalf("DueLines devolvió %v, se esperaba [%s]", lineIDs(due), drinkLineID)
 	}
 
-	due[0].State = dispenser.LineDelivered
+	due[0].State = linestate.Delivered
 	due[0].DeadlineAt = time.Time{}
 	due[0].Attempts = 99
 
@@ -816,7 +816,7 @@ func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
 	if len(again) != 1 {
 		t.Fatalf("mutar el resultado cambió el store: %v", lineIDs(again))
 	}
-	if again[0].State != dispenser.LineSent {
+	if again[0].State != linestate.Sent {
 		t.Fatalf("mutar el resultado cambió el estado guardado: %q", again[0].State)
 	}
 	if !again[0].DeadlineAt.Equal(baseTime) {
@@ -827,7 +827,7 @@ func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
 	}
 
 	stored := mustOrder(t, m, order.ID)
-	if stored.Lines[0].State != dispenser.LineSent {
+	if stored.Lines[0].State != linestate.Sent {
 		t.Fatalf("mutar el resultado de DueLines cambió la orden: %q", stored.Lines[0].State)
 	}
 }
@@ -860,10 +860,10 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 					ID:          lineID,
 					OrderID:     orderID,
 					Position:    1,
-					Machine:     dispenser.MachineRef{Kind: "snacks"},
+					Machine:     machine.Ref{Kind: "snacks"},
 					SKU:         "sku-snack",
 					AmountCents: 100,
-					State:       dispenser.LineSent,
+					State:       linestate.Sent,
 					DeadlineAt:  baseTime,
 				}},
 			}
@@ -884,7 +884,7 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 			}
 
 			line := loaded.Lines[0]
-			line.State = dispenser.LineBrewing
+			line.State = linestate.Brewing
 			line.Attempts++
 			if _, err := m.SaveLine(ctx, line); err != nil {
 				t.Errorf("SaveLine(%q): %v", lineID, err)
@@ -932,8 +932,8 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 		if len(order.Lines) != 1 {
 			t.Fatalf("Order(%q) devolvió %d líneas, se esperaba 1", orderID, len(order.Lines))
 		}
-		if order.Lines[0].State != dispenser.LineBrewing {
-			t.Fatalf("Order(%q) tiene state=%q, se esperaba %q", orderID, order.Lines[0].State, dispenser.LineBrewing)
+		if order.Lines[0].State != linestate.Brewing {
+			t.Fatalf("Order(%q) tiene state=%q, se esperaba %q", orderID, order.Lines[0].State, linestate.Brewing)
 		}
 		if order.Lines[0].Attempts != 1 {
 			t.Fatalf("Order(%q) tiene attempts=%d, se esperaba 1", orderID, order.Lines[0].Attempts)
@@ -987,8 +987,8 @@ func unclaimedLine(lineID, orderID string, position int, kind machine.Kind) stor
 		ID:       lineID,
 		OrderID:  orderID,
 		Position: position,
-		Machine:  dispenser.MachineRef{Kind: kind},
-		State:    dispenser.LinePending,
+		Machine:  machine.Ref{Kind: kind},
+		State:    linestate.Pending,
 	}
 }
 
@@ -1034,7 +1034,7 @@ func TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders(t *testing.T
 	claimed.DeadlineAt = baseTime.Add(time.Minute)
 
 	sent := unclaimedLine("line-enviada", "order-paga", 3, "batidos")
-	sent.State = dispenser.LineSent
+	sent.State = linestate.Sent
 
 	mustCreate(t, m, stalledOrder("order-paga", store.OrderPaid, baseTime,
 		unclaimedLine("line-b", "order-paga", 1, "snacks"),

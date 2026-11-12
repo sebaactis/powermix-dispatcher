@@ -15,6 +15,7 @@ import (
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -81,7 +82,7 @@ func testKiosk(id string) config.Kiosk {
 
 type fakeDispenser struct{}
 
-func (fakeDispenser) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (fakeDispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -90,7 +91,7 @@ func (fakeDispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispe
 }
 
 func (fakeDispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
-	return dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "ref-" + req.LineID}, nil
+	return dispenser.Status{State: linestate.Delivered, ProviderOrderNo: "ref-" + req.LineID}, nil
 }
 
 func testMachines() map[machine.Kind]dispenser.Dispenser {
@@ -278,7 +279,7 @@ func newCallbackFixture(t *testing.T, secrets CallbackSecrets) (*http.ServeMux, 
 
 type silentRefDispenser struct{}
 
-func (silentRefDispenser) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (silentRefDispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	return dispenser.Availability{Available: true}, nil
 }
 
@@ -287,7 +288,7 @@ func (silentRefDispenser) Dispatch(ctx context.Context, req dispenser.Request) (
 }
 
 func (silentRefDispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
-	return dispenser.Status{State: dispenser.LineInDoubt}, nil
+	return dispenser.Status{State: linestate.InDoubt}, nil
 }
 
 type liveCallbackFixture struct {

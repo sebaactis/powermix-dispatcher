@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -68,8 +69,8 @@ func TestEnginePlaceCreatesOneLinePerMachine(t *testing.T) {
 		if line.AmountCents != want.AmountCents {
 			t.Fatalf("la línea %d tiene AmountCents=%d, se esperaba %d", i+1, line.AmountCents, want.AmountCents)
 		}
-		if line.State != dispenser.LinePending {
-			t.Fatalf("la línea %d nace en %q, se esperaba %q", i+1, line.State, dispenser.LinePending)
+		if line.State != linestate.Pending {
+			t.Fatalf("la línea %d nace en %q, se esperaba %q", i+1, line.State, linestate.Pending)
 		}
 		if line.Attempts != 0 {
 			t.Fatalf("la línea %d nace con %d intentos", i+1, line.Attempts)
@@ -113,7 +114,7 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 		{
 			name: "sin identificador de máquina",
 			mutate: func(draft *order.Draft) {
-				draft.Items[0].Machine = dispenser.MachineRef{KioskID: "kiosk-1", Kind: "batidos"}
+				draft.Items[0].Machine = machine.Ref{KioskID: "kiosk-1", Kind: "batidos"}
 			},
 			wantPosition: "ítem 1",
 		},
@@ -200,7 +201,7 @@ func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceTakesTheLineMachineTypeFromTheMachineRef(t *testing.T) {
+func TestEnginePlaceTakesTheLineMachineTypeFromTheRef(t *testing.T) {
 	st := newRecordingStore()
 	machines := map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}}
 	engine := order.New(

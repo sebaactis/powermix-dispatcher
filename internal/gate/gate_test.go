@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/gate"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/preflight"
 )
@@ -50,7 +50,7 @@ func mixedDraft() order.Draft {
 		Items: []order.Item{
 			{
 				SKU: "batido-frutilla",
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID:  "kiosk-1",
 					Kind:     "batidos",
 					Name:     "Batidos Powermix",
@@ -60,7 +60,7 @@ func mixedDraft() order.Draft {
 			},
 			{
 				SKU: "snack-alfajor",
-				Machine: dispenser.MachineRef{
+				Machine: machine.Ref{
 					KioskID: "kiosk-1",
 					Kind:    "snacks",
 					Name:    "Snacks Powermix",
@@ -137,7 +137,7 @@ func TestGateRejectsADraftWithTwoItemsOfTheSameMachineType(t *testing.T) {
 	draft := mixedDraft()
 	draft.Items = append(draft.Items, order.Item{
 		SKU:     "batido-chocolate",
-		Machine: dispenser.MachineRef{KioskID: "kiosk-1", Kind: "batidos", DeviceID: "batidos-device-2"},
+		Machine: machine.Ref{KioskID: "kiosk-1", Kind: "batidos", DeviceID: "batidos-device-2"},
 	})
 
 	err := gate.New(checker).Check(context.Background(), draft)

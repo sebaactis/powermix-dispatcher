@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -63,7 +64,7 @@ func TestEngineConfirmPaymentArmsTheReconcileWindow(t *testing.T) {
 
 func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 	machine := acceptedDrinkMachine()
-	machine.status = dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "order-no-1"}
+	machine.status = dispenser.Status{State: linestate.Delivered, ProviderOrderNo: "order-no-1"}
 
 	setup := newReconcileFixture(t, machine)
 	setup.clock.set(engineNow.Add(2 * time.Minute))
@@ -96,8 +97,8 @@ func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 	}
 
 	line := setup.line(t)
-	if line.State != dispenser.LineDelivered {
-		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, dispenser.LineDelivered)
+	if line.State != linestate.Delivered {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, linestate.Delivered)
 	}
 	if !line.DeadlineAt.IsZero() {
 		t.Fatalf("la línea entregada conserva el plazo %v", line.DeadlineAt)
@@ -116,7 +117,7 @@ func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 
 func TestEngineReconcileDueMarksAFailedLineAndSettlesTheOrder(t *testing.T) {
 	machine := acceptedDrinkMachine()
-	machine.status = dispenser.Status{State: dispenser.LineFailed, Reason: "la máquina informó que no entregó"}
+	machine.status = dispenser.Status{State: linestate.Failed, Reason: "la máquina informó que no entregó"}
 
 	setup := newReconcileFixture(t, machine)
 	setup.clock.set(engineNow.Add(2 * time.Minute))
@@ -130,8 +131,8 @@ func TestEngineReconcileDueMarksAFailedLineAndSettlesTheOrder(t *testing.T) {
 	}
 
 	line := setup.line(t)
-	if line.State != dispenser.LineFailed {
-		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, dispenser.LineFailed)
+	if line.State != linestate.Failed {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, linestate.Failed)
 	}
 	if !line.DeadlineAt.IsZero() || !line.ReconcileUntil.IsZero() {
 		t.Fatalf("la línea fallida conserva plazos: deadline=%v until=%v", line.DeadlineAt, line.ReconcileUntil)
@@ -158,7 +159,7 @@ func TestEngineReconcileDueKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			machine := acceptedDrinkMachine()
-			machine.status = dispenser.Status{State: dispenser.LineInDoubt, Reason: "el proveedor no informa el pedido"}
+			machine.status = dispenser.Status{State: linestate.InDoubt, Reason: "el proveedor no informa el pedido"}
 
 			setup := newReconcileFixture(t, machine, tc.opts...)
 			until := setup.line(t).ReconcileUntil
@@ -176,8 +177,8 @@ func TestEngineReconcileDueKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
 			if !line.ReconcileUntil.Equal(until) {
 				t.Fatalf("ReconcileUntil=%v, se esperaba %v sin tocar: el tope no se mueve", line.ReconcileUntil, until)
 			}
-			if line.State != dispenser.LineSent {
-				t.Fatalf("la línea quedó en %q, se esperaba %q: mientras la ventana está abierta la línea sigue en vuelo para que el worker la vuelva a ver", line.State, dispenser.LineSent)
+			if line.State != linestate.Sent {
+				t.Fatalf("la línea quedó en %q, se esperaba %q: mientras la ventana está abierta la línea sigue en vuelo para que el worker la vuelva a ver", line.State, linestate.Sent)
 			}
 			if !strings.Contains(line.LastError, "no informa el pedido") {
 				t.Fatalf("LastError=%q, se esperaba el motivo informado por el proveedor", line.LastError)
@@ -188,7 +189,7 @@ func TestEngineReconcileDueKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
 
 func TestEngineReconcileDueClampsTheLastScanToTheHardStop(t *testing.T) {
 	machine := acceptedDrinkMachine()
-	machine.status = dispenser.Status{State: dispenser.LineInDoubt, Reason: "el proveedor no informa el pedido"}
+	machine.status = dispenser.Status{State: linestate.InDoubt, Reason: "el proveedor no informa el pedido"}
 
 	setup := newReconcileFixture(t, machine)
 	until := setup.line(t).ReconcileUntil
@@ -210,7 +211,7 @@ func TestEngineReconcileDueClampsTheLastScanToTheHardStop(t *testing.T) {
 
 func TestEngineReconcileDueClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
 	machine := acceptedDrinkMachine()
-	machine.status = dispenser.Status{State: dispenser.LineInDoubt, Reason: "el proveedor no informa el pedido"}
+	machine.status = dispenser.Status{State: linestate.InDoubt, Reason: "el proveedor no informa el pedido"}
 	notifier := &recordingNotifier{}
 
 	setup := newReconcileFixture(t, machine, order.WithNotifier(notifier))
@@ -223,8 +224,8 @@ func TestEngineReconcileDueClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
 	}
 
 	line := setup.line(t)
-	if line.State != dispenser.LineInDoubt {
-		t.Fatalf("la línea quedó en %q, se esperaba %q: sin dato no se afirma nada", line.State, dispenser.LineInDoubt)
+	if line.State != linestate.InDoubt {
+		t.Fatalf("la línea quedó en %q, se esperaba %q: sin dato no se afirma nada", line.State, linestate.InDoubt)
 	}
 	if !line.DeadlineAt.IsZero() {
 		t.Fatalf("la línea en duda conserva el plazo %v: se escanearía para siempre", line.DeadlineAt)
@@ -275,8 +276,8 @@ func TestEngineReconcileDueKeepsTheLineWhenTheProviderAnswersWithAnError(t *test
 	}
 
 	line := setup.line(t)
-	if line.State != dispenser.LineSent {
-		t.Fatalf("la línea quedó en %q, se esperaba %q: un error de consulta no resuelve la línea ni la pierde", line.State, dispenser.LineSent)
+	if line.State != linestate.Sent {
+		t.Fatalf("la línea quedó en %q, se esperaba %q: un error de consulta no resuelve la línea ni la pierde", line.State, linestate.Sent)
 	}
 	if !strings.Contains(line.LastError, "connection refused") {
 		t.Fatalf("LastError=%q, se esperaba el mensaje del error", line.LastError)
@@ -295,7 +296,7 @@ func TestEngineReconcileDueKeepsTheLineWhenTheProviderAnswersWithAnError(t *test
 
 func TestEngineReconcileDueIgnoresALineThatIsNotDue(t *testing.T) {
 	machine := acceptedDrinkMachine()
-	machine.status = dispenser.Status{State: dispenser.LineDelivered}
+	machine.status = dispenser.Status{State: linestate.Delivered}
 
 	setup := newReconcileFixture(t, machine)
 	before := setup.line(t)
@@ -333,10 +334,10 @@ func pendingLine(lineID, orderID string, position int, kind string, amountCents 
 		ID:          lineID,
 		OrderID:     orderID,
 		Position:    position,
-		Machine:     dispenser.MachineRef{KioskID: "kiosk-1", Kind: machine.Kind(kind), Name: kind + " Powermix", DeviceID: "device-1", DeviceNo: "1", DeviceTypeID: "2"},
+		Machine:     machine.Ref{KioskID: "kiosk-1", Kind: machine.Kind(kind), Name: kind + " Powermix", DeviceID: "device-1", DeviceNo: "1", DeviceTypeID: "2"},
 		SKU:         sku,
 		AmountCents: amountCents,
-		State:       dispenser.LinePending,
+		State:       linestate.Pending,
 	}
 }
 
@@ -362,21 +363,21 @@ func TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching(t
 		name      string
 		until     time.Time
 		status    dispenser.Status
-		wantState dispenser.LineState
+		wantState linestate.State
 		wantOrder store.OrderStatus
 	}{
 		{
 			name:      "el proveedor informa la entrega",
 			until:     engineNow.Add(time.Minute),
-			status:    dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: "order-no-1"},
-			wantState: dispenser.LineDelivered,
+			status:    dispenser.Status{State: linestate.Delivered, ProviderOrderNo: "order-no-1"},
+			wantState: linestate.Delivered,
 			wantOrder: store.OrderDelivered,
 		},
 		{
 			name:      "sin dato y con la ventana agotada",
 			until:     engineNow.Add(-time.Second),
-			status:    dispenser.Status{State: dispenser.LineInDoubt, Reason: "el proveedor no informa el pedido"},
-			wantState: dispenser.LineInDoubt,
+			status:    dispenser.Status{State: linestate.InDoubt, Reason: "el proveedor no informa el pedido"},
+			wantState: linestate.InDoubt,
 			wantOrder: store.OrderInDoubt,
 		},
 	}
@@ -457,8 +458,8 @@ func TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt(t *testi
 	}
 
 	got := mustOrder(t, st, "order-1")
-	if got.Lines[0].State != dispenser.LineSent {
-		t.Fatalf("la línea quedó en %q, se esperaba %q", got.Lines[0].State, dispenser.LineSent)
+	if got.Lines[0].State != linestate.Sent {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", got.Lines[0].State, linestate.Sent)
 	}
 	if got.Lines[0].Attempts != 2 {
 		t.Fatalf("la línea acumuló %d intentos, se esperaban 2", got.Lines[0].Attempts)
@@ -492,8 +493,8 @@ func TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLi
 		t.Fatalf("Status=%q, se esperaba %q: el barrido toma la orden paga que quedó trabada", got.Status, store.OrderDispatching)
 	}
 	for _, line := range got.Lines {
-		if line.State != dispenser.LineSent {
-			t.Fatalf("la línea %q quedó en %q, se esperaba %q", line.ID, line.State, dispenser.LineSent)
+		if line.State != linestate.Sent {
+			t.Fatalf("la línea %q quedó en %q, se esperaba %q", line.ID, line.State, linestate.Sent)
 		}
 		if line.Attempts != 1 {
 			t.Fatalf("la línea %q acumuló %d intentos, se esperaba 1", line.ID, line.Attempts)
