@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
@@ -428,12 +428,12 @@ func scanLine(row rowScanner) (store.Line, error) {
 		return store.Line{}, err
 	}
 
-	line.State = dispenser.LineState(state)
+	line.State = linestate.State(state)
 	line.Ref = ref.String
 	line.DeadlineAt = deadlineAt.Time
 	line.ReconcileUntil = reconcileUntil.Time
 	line.LastError = lastError.String
-	line.Machine = dispenser.MachineRef{
+	line.Machine = machine.Ref{
 		KioskID:      kioskID.String,
 		Kind:         machine.Kind(machineType),
 		Name:         machineName.String,

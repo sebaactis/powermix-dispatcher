@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
@@ -71,7 +71,7 @@ func (e *Engine) ConfirmFromCallback(ctx context.Context, cb Callback) (duplicat
 		}
 
 		if applied {
-			line.State = dispenser.LineBrewing
+			line.State = linestate.Brewing
 		}
 	}
 
@@ -199,7 +199,7 @@ func (e *Engine) recordCallback(ctx context.Context, cb Callback, cause error) (
 }
 
 func lineClosed(line store.Line) bool {
-	return line.State == dispenser.LineDelivered || line.State == dispenser.LineFailed
+	return line.State == linestate.Delivered || line.State == linestate.Failed
 }
 
 func (e *Engine) applyCallback(ctx context.Context, line store.Line, cb Callback) error {
@@ -207,9 +207,9 @@ func (e *Engine) applyCallback(ctx context.Context, line store.Line, cb Callback
 
 	switch cb.State {
 	case CallbackDelivered:
-		return e.closeLine(ctx, line, dispenser.LineDelivered, "")
+		return e.closeLine(ctx, line, linestate.Delivered, "")
 	case CallbackFailed:
-		return e.closeLine(ctx, line, dispenser.LineFailed, cb.Reason)
+		return e.closeLine(ctx, line, linestate.Failed, cb.Reason)
 	case CallbackProgress:
 		_, err := e.markBrewing(ctx, line)
 
@@ -220,11 +220,11 @@ func (e *Engine) applyCallback(ctx context.Context, line store.Line, cb Callback
 }
 
 func (e *Engine) markBrewing(ctx context.Context, line store.Line) (bool, error) {
-	if line.State == dispenser.LineBrewing {
+	if line.State == linestate.Brewing {
 		return false, nil
 	}
 
-	state, err := transitionLine(line.State, dispenser.LineBrewing)
+	state, err := transitionLine(line.State, linestate.Brewing)
 	if err != nil {
 		return false, nil
 	}

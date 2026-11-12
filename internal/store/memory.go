@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 )
 
 type webhookKey struct {
@@ -242,7 +242,7 @@ func cloneOrder(order Order) Order {
 
 func lineDue(line Line, now time.Time) bool {
 	switch line.State {
-	case dispenser.LinePending, dispenser.LineSent, dispenser.LineBrewing, dispenser.LineInDoubt:
+	case linestate.Pending, linestate.Sent, linestate.Brewing, linestate.InDoubt:
 	default:
 		return false
 	}
@@ -271,7 +271,7 @@ func (m *Memory) StalledLines(ctx context.Context, paidBefore time.Time, limit i
 		}
 
 		for _, line := range order.Lines {
-			if line.State != dispenser.LinePending || !line.DeadlineAt.IsZero() {
+			if line.State != linestate.Pending || !line.DeadlineAt.IsZero() {
 				continue
 			}
 

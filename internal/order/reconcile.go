@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/store"
 )
 
@@ -85,7 +86,7 @@ func (e *Engine) resumeStalledLine(ctx context.Context, line store.Line) error {
 		return err
 	}
 
-	if fresh.State != dispenser.LinePending || !fresh.DeadlineAt.IsZero() {
+	if fresh.State != linestate.Pending || !fresh.DeadlineAt.IsZero() {
 		return nil
 	}
 
@@ -118,16 +119,16 @@ func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, erro
 	}
 
 	switch status.State {
-	case dispenser.LineDelivered:
-		return true, e.closeLine(ctx, line, dispenser.LineDelivered, "")
-	case dispenser.LineFailed:
-		return true, e.closeLine(ctx, line, dispenser.LineFailed, status.Reason)
+	case linestate.Delivered:
+		return true, e.closeLine(ctx, line, linestate.Delivered, "")
+	case linestate.Failed:
+		return true, e.closeLine(ctx, line, linestate.Failed, status.Reason)
 	default:
 		return e.extendReconcile(ctx, line, status.Reason)
 	}
 }
 
-func (e *Engine) closeLine(ctx context.Context, line store.Line, target dispenser.LineState, detail string) error {
+func (e *Engine) closeLine(ctx context.Context, line store.Line, target linestate.State, detail string) error {
 	_, err := e.saveClosedLine(ctx, line, target, detail)
 	if !errors.Is(err, store.ErrStale) {
 		return err
@@ -150,14 +151,14 @@ func (e *Engine) closeLine(ctx context.Context, line store.Line, target dispense
 	return retryErr
 }
 
-func (e *Engine) saveClosedLine(ctx context.Context, line store.Line, target dispenser.LineState, detail string) (store.Line, error) {
+func (e *Engine) saveClosedLine(ctx context.Context, line store.Line, target linestate.State, detail string) (store.Line, error) {
 	state, stateErr := transitionLine(line.State, target)
 
 	line.State = state
 	line.DeadlineAt = time.Time{}
 	line.ReconcileUntil = time.Time{}
 
-	if target == dispenser.LineDelivered {
+	if target == linestate.Delivered {
 		line.LastError = ""
 	} else if detail != "" {
 		line.LastError = detail
@@ -191,7 +192,7 @@ func (e *Engine) extendReconcile(ctx context.Context, line store.Line, detail st
 	}
 
 	if line.ReconcileUntil.IsZero() || !now.Before(line.ReconcileUntil) {
-		state, stateErr := transitionLine(line.State, dispenser.LineInDoubt)
+		state, stateErr := transitionLine(line.State, linestate.InDoubt)
 
 		line.State = state
 		line.DeadlineAt = time.Time{}
@@ -230,13 +231,13 @@ func (e *Engine) extendReconcile(ctx context.Context, line store.Line, detail st
 	return false, nil
 }
 
-func transitionLine(current, next dispenser.LineState) (dispenser.LineState, error) {
-	if current == dispenser.LinePending && next != dispenser.LineSent {
-		if _, err := AdvanceLine(current, dispenser.LineSent); err != nil {
+func transitionLine(current, next linestate.State) (linestate.State, error) {
+	if current == linestate.Pending && next != linestate.Sent {
+		if _, err := AdvanceLine(current, linestate.Sent); err != nil {
 			return current, err
 		}
 
-		current = dispenser.LineSent
+		current = linestate.Sent
 	}
 
 	return AdvanceLine(current, next)

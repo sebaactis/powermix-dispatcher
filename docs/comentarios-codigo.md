@@ -482,45 +482,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 > mientras un snack se despacha de forma directa: desde acá los dos se ven
 > igual. Cada proveedor implementa esta interfaz en su propio subpaquete
 > (batidos, snacks).
-
-### LineState
-
-> LineState es el ciclo de vida de un producto dentro de una orden. Las dos
-> líneas de un combo evolucionan de forma independiente.
-
-### const
-
-> LineInDoubt significa que no sabemos si el producto salió. Nunca se
-> reintenta a ciegas: primero se reconcilia (ver Reconcile).
-
-### MachineRef
-
-> MachineRef identifica una máquina física y las direcciones con las que
-> responde en cada proveedor.
-
-### MachineRef
-
-> El tipo es `machine.Kind`; sus valores son «batidos» y «snacks».
-
-### MachineRef
-
-> La familia de la máquina se llama `Kind` y no `Type` porque ya tiene su propio tipo —`machine.Kind`—: un campo `Type` de tipo `Kind` se lee al revés, y `Type` sugería que ahí vivía el tipo de dispositivo, que es otra cosa y es `DeviceTypeID`.
-
-### MachineRef
-
-> Batidos
-
-### MachineRef
-
-> Batidos
-
-### MachineRef
-
-> Batidos
-
-### MachineRef
-
-> Snacks
+>
+> El vocabulario que el puerto nombra en su firma vive fuera de él: la familia y
+> la referencia de la máquina en `machine` (`machine.Kind`, `machine.Ref`), y el
+> estado de una línea en `linestate` (`linestate.State`). Acá queda sólo el contrato, y por
+> eso el store puede tipar una fila sin importar el puerto de las máquinas.
 
 ### Availability
 
@@ -590,7 +556,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### ShipmentRequest
 
-> MID identifica a la máquina de snacks (dispenser.MachineRef.MID).
+> MID identifica a la máquina de snacks (machine.Ref.MID).
 
 ### ShipmentRequest
 
@@ -963,6 +929,30 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El test que más importa del fake es el que firma la ruta **con** la query y exige un 40004. Si algún día el falso empezara a aceptarla, el cliente podría firmar mal sin que ningún test lo note.
 
+## internal/linestate/linestate.go
+
+### (archivo)
+
+> Package linestate declara el estado de una línea de la orden. No importa nada del
+> proyecto y no tiene funciones ni métodos: es vocabulario compartido, no
+> comportamiento.
+>
+> Vive en un paquete propio porque lo nombran todas las capas —el puerto del
+> despachador, el store, el motor y los adaptadores— y porque el estado de una
+> línea no es un detalle del puerto: es el mismo dato que guarda la columna
+> `order_line.state` y el que la API devuelve en `line.state`. Con el tipo dentro
+> del puerto, la persistencia dependía del puerto para escribir una fila.
+
+### State
+
+> State es el ciclo de vida de un producto dentro de una orden. Las dos
+> líneas de un combo evolucionan de forma independiente.
+
+### const
+
+> `InDoubt` significa que no sabemos si el producto salió. Nunca se
+> reintenta a ciegas: primero se reconcilia (ver `Reconcile`).
+
 ## internal/logging/logging.go
 
 ### (archivo)
@@ -1017,9 +1007,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### (archivo)
 
-> Package machine declara el único tipo de la familia de máquina del sistema.
-> No importa nada del proyecto y no tiene funciones ni métodos: es vocabulario
-> compartido, no comportamiento.
+> Package machine declara los tipos compartidos de la máquina: la familia
+> (`Kind`) y la referencia a una máquina concreta (`Ref`). No importa nada del
+> proyecto y no tiene funciones ni métodos: es vocabulario compartido, no
+> comportamiento.
 
 ### Kind
 
@@ -1036,6 +1027,37 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Batidos y Snacks, con los valores que ya están escritos en el JSON del
 > catálogo y en las columnas SQL. Cambiarlos sería un cambio de datos, no de
 > código.
+
+### Ref
+
+> Ref identifica una máquina física y las direcciones con las que responde en
+> cada proveedor. Vive acá y no en el puerto del despachador porque el store
+> guarda la referencia de cada línea: con el tipo en el puerto, la
+> persistencia dependía del puerto para tipar una fila.
+
+### Ref
+
+> El tipo es `machine.Kind`; sus valores son «batidos» y «snacks».
+
+### Ref
+
+> La familia de la máquina se llama `Kind` y no `Type` porque ya tiene su propio tipo —`machine.Kind`—: un campo `Type` de tipo `Kind` se lee al revés, y `Type` sugería que ahí vivía el tipo de dispositivo, que es otra cosa y es `DeviceTypeID`.
+
+### Ref
+
+> Batidos
+
+### Ref
+
+> Batidos
+
+### Ref
+
+> Batidos
+
+### Ref
+
+> Snacks
 
 ## internal/notify/notify.go
 
@@ -1277,7 +1299,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Reconcile
 
-> Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `LineInDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `LineFailed` sería afirmar algo que el proveedor no dijo.
+> Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `linestate.InDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `linestate.Failed` sería afirmar algo que el proveedor no dijo.
 >
 > `Status.ProviderOrderNo` es siempre el orderNo del proveedor, también en el caso fallido: es lo que identifica el pedido en la conciliación y en el panel.
 >
@@ -1331,7 +1353,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Busca el pedido por `transactionOrderNo` igual al asa que tenemos (`req.KnownRef`, o el id de la orden cuando el ProviderRef quedó vacío). No se manda `OrderNo` como filtro a propósito: el filtro del proveedor es por `orderNo` y el asa que tenemos es el `transactionOrderNo` del pago; mandarlo excluiría justamente el pedido buscado. El match es local y exacto.
 >
-> Este método no puede dar un veredicto, y es deliberado. El único estado que trae la página de pedidos es el estado del PEDIDO —ciclo de pago—, no el resultado del despacho. Declarar entregado afirmaría algo que el proveedor no dijo; declarar fallido sería peor, porque dispararía un reintento y podría sacar dos snacks. Por eso siempre responde `LineInDoubt`: «el proveedor no informa el pedido» si no aparece, o el número y el nombre crudos del estado si aparece. La verdad por producto llega por callback (T10, R5).
+> Este método no puede dar un veredicto, y es deliberado. El único estado que trae la página de pedidos es el estado del PEDIDO —ciclo de pago—, no el resultado del despacho. Declarar entregado afirmaría algo que el proveedor no dijo; declarar fallido sería peor, porque dispararía un reintento y podría sacar dos snacks. Por eso siempre responde `linestate.InDoubt`: «el proveedor no informa el pedido» si no aparece, o el número y el nombre crudos del estado si aparece. La verdad por producto llega por callback (T10, R5).
 >
 > Si el proveedor rechaza la consulta se devuelve el error tal cual y con un Status vacío: el puerto no inventa un estado cuando no tuvo respuesta.
 
@@ -1367,9 +1389,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Line
 
-> La unidad de ejecución. La familia de la máquina vive en un solo lugar: `Machine.Kind`. Antes la línea la guardaba dos veces —`MachineType` por un lado y la `MachineRef` por otro— y nada obligaba a que coincidieran: una línea podía decir «snacks» y llevar los identificadores del batido, y el motor elegía el driver de una máquina y le mandaba la identidad de la otra. Con un solo campo la incoherencia no se puede escribir: no compila.
+> La unidad de ejecución. La familia de la máquina vive en un solo lugar: `Machine.Kind`. Antes la línea la guardaba dos veces —`MachineType` por un lado y la `machine.Ref` por otro— y nada obligaba a que coincidieran: una línea podía decir «snacks» y llevar los identificadores del batido, y el motor elegía el driver de una máquina y le mandaba la identidad de la otra. Con un solo campo la incoherencia no se puede escribir: no compila.
 >
-> `State` reusa `dispenser.LineState` a propósito: el estado de una línea es el mismo que informa el puerto de las máquinas, y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde.
+> `State` es `linestate.State`, el mismo tipo que informa el puerto de las máquinas: el estado de una línea es uno solo y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde. Vive en `internal/linestate` porque la persistencia y el borde lo necesitan tipado y no pueden depender del puerto para eso.
 >
 > `Ref` tiene dos significados según la máquina —código de canje en batidos, asa del proveedor en snacks— porque el SQL tiene dos columnas y el motor nunca necesita las dos a la vez.
 >
@@ -1487,11 +1509,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### El tipo de máquina como fuente única
 
-> Antes el tipo estaba dos veces —`Item.MachineType` y la familia de la `MachineRef`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `MachineRef{Kind: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
+> Antes el tipo estaba dos veces —`Item.MachineType` y la familia de la `machine.Ref`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `machine.Ref{Kind: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
 >
 > Se arregló por la vía limpia y no con una validación de coincidencia: dos campos que deben coincidir es una regla que se puede olvidar, un campo solo no. Ahora la incoherencia no se puede escribir —no compila—, que es más fuerte que cualquier chequeo en ejecución.
 >
-> Lo mismo pasaba un escalón más abajo, en la línea: `store.Line` guardaba `MachineType` y además la `MachineRef` completa. Se borró el campo de la línea, no se lo validó: la línea lleva sólo `Machine` y todo el motor lee `line.Machine.Kind` —el mapa de drivers del despacho, la reconciliación y las dos reglas de correlación del callback—. `catalog.Item.MachineType` y `order.Callback.MachineType` se quedan, porque no son la identidad de una máquina: el primero dice qué familia pide un combo en el menú y el segundo qué máquina habla en el aviso.
+> Lo mismo pasaba un escalón más abajo, en la línea: `store.Line` guardaba `MachineType` y además la `machine.Ref` completa. Se borró el campo de la línea, no se lo validó: la línea lleva sólo `Machine` y todo el motor lee `line.Machine.Kind` —el mapa de drivers del despacho, la reconciliación y las dos reglas de correlación del callback—. `catalog.Item.MachineType` y `order.Callback.MachineType` se quedan, porque no son la identidad de una máquina: el primero dice qué familia pide un combo en el menú y el segundo qué máquina habla en el aviso.
 >
 > `validateDraft` exige que `item.Machine.Kind` no esté vacío y que ese tipo exista en el mapa de drivers, que es el mismo mapa con el que `dispatchLine` busca la máquina después: lo que se valida en el alta y lo que se usa en el despacho es la misma fuente, así que un borrador aceptado no puede terminar en «no hay una máquina configurada para el tipo».
 >
@@ -1503,7 +1525,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
 >
-> La línea se arma copiando la `MachineRef` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
+> La línea se arma copiando la `machine.Ref` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
 
 ## internal/order/payment.go
 
@@ -1583,7 +1605,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > La referencia de la máquina es un dato de la línea, no del proceso. Antes vivía en un mapa en RAM del motor y eso rompía dos cosas reales: después de un reinicio una línea `pending` no se podía despachar, y un `Place` en una instancia con un `ConfirmPayment` en otra no funcionaba.
 >
-> Se guarda como un único campo con la `MachineRef` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
+> Se guarda como un único campo con la `machine.Ref` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
 
 ## internal/order/place.go — cambios
 
@@ -1733,7 +1755,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un combo cuyos ítems piden una máquina que el mueble no tiene es 409: la petición es válida, el estado del mueble no permite venderla. No se inventa la máquina que falta.
 >
-> De la configuración del mueble se arma el `dispenser.MachineRef` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
+> De la configuración del mueble se arma el `machine.Ref` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
 >
 > El importe de cada línea queda en cero: el catálogo define un precio por combo, no por ítem, y repartirlo sería inventar un dato que nadie definió. El importe de la orden es el del combo.
 
@@ -1793,7 +1815,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### markBrewing
 
-> Devuelve si aplicó, y el llamador sólo toca el estado en memoria cuando aplicó. La primera versión forzaba `LineBrewing` aunque la transición fuera ilegal, y eso permitía que un callback «en curso» que llegaba tarde degradara una línea ya entregada: el reconcile posterior le escribía encima `in_doubt` o `failed`. Una transición ilegal ahora es silencio, no error: si el callback dice «en curso» cuando la línea todavía no salió, se deja como está y sigue mandando el worker.
+> Devuelve si aplicó, y el llamador sólo toca el estado en memoria cuando aplicó. La primera versión forzaba `linestate.Brewing` aunque la transición fuera ilegal, y eso permitía que un callback «en curso» que llegaba tarde degradara una línea ya entregada: el reconcile posterior le escribía encima `in_doubt` o `failed`. Una transición ilegal ahora es silencio, no error: si el callback dice «en curso» cuando la línea todavía no salió, se deja como está y sigue mandando el worker.
 >
 > `ErrStale` también termina en `(false, nil)`: significa que otro escritor tocó la línea entre la lectura y el guardado, y en esa carrera «en curso» es siempre la información más débil —un cierre entregado o fallido la supera, y si el otro escritor sólo movió un plazo no hay nada que corregir—. Devolver error obligaría al handler a responder 500 y el proveedor reintentaría un aviso que ya no puede aplicar; devolver `false` deja que el flujo siga y que el que ganó mande.
 
@@ -1986,7 +2008,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### Mapeo de columnas
 
 > - `Line.Ref` → `order_line.external_ref`. La columna `exchange_code` del esquema inicial quedó sin uso: era el nombre del proveedor de batidos y el asa de snacks no es un código de canje. Un campo con dos significados (R5) es menos código que dos campos de los cuales siempre se usa uno.
-> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Kind` no tiene columna propia: se escribe y se lee de `order_line.machine_type`. La columna sobrevive al campo Go que se borró, y la razón es que no eran lo mismo: la columna es el dato persistido —existe desde `0001_init.sql`, la escriben las migraciones y el seed, y tiene un `CHECK` con las dos familias— y `Line.MachineType` era la duplicación en memoria de algo que ya viajaba dentro de la `MachineRef`. Por eso no hay migración: `SaveLine` escribe `line.Machine.Kind` en `machine_type` y `scanLine` construye `dispenser.MachineRef{Kind: machine.Kind(<columna>)}` directamente. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
+> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Kind` no tiene columna propia: se escribe y se lee de `order_line.machine_type`. La columna sobrevive al campo Go que se borró, y la razón es que no eran lo mismo: la columna es el dato persistido —existe desde `0001_init.sql`, la escriben las migraciones y el seed, y tiene un `CHECK` con las dos familias— y `Line.MachineType` era la duplicación en memoria de algo que ya viajaba dentro de la `machine.Ref`. Por eso no hay migración: `SaveLine` escribe `line.Machine.Kind` en `machine_type` y `scanLine` construye `machine.Ref{Kind: machine.Kind(<columna>)}` directamente. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
 > - `Line.Version` → `order_line.version`, `bigint NOT NULL DEFAULT 0`.
 > - `Order.ClientKey` → `orders.client_key`, con índice único parcial (`WHERE client_key IS NOT NULL`) para que dos órdenes sin clave no choquen entre sí.
 > - `Order.Version` → `orders.version`, `bigint NOT NULL DEFAULT 0`. Misma columna y mismo significado que `order_line.version`, con el `DEFAULT` que deja las órdenes viejas en cero sin backfill.
@@ -2047,7 +2069,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > - `orders.client_key` y su índice único **parcial**: la idempotencia de la creación de la orden queda en la base, no en un `SELECT` previo, que sería un TOCTOU entre dos tablets tocando en el mismo instante. El `WHERE client_key IS NOT NULL` es lo que permite que muchas órdenes no tengan clave sin chocar entre sí.
 > - `order_line.version` (`bigint NOT NULL DEFAULT 0`): el `DEFAULT` es lo que hace que las filas viejas queden en la versión correcta sin backfill, y el `NOT NULL` es lo que impide que una línea quede fuera del guardado condicional.
-> - Las seis columnas `machine_*`: la `MachineRef` que antes sólo vivía en un mapa de RAM. Son nullable porque el esquema no puede exigir «las de batidos o la de snacks» sin repetir en SQL una regla que ya vive en el motor, y un `CHECK` duplicado sería una segunda fuente que se desincroniza.
+> - Las seis columnas `machine_*`: la `machine.Ref` que antes sólo vivía en un mapa de RAM. Son nullable porque el esquema no puede exigir «las de batidos o la de snacks» sin repetir en SQL una regla que ya vive en el motor, y un `CHECK` duplicado sería una segunda fuente que se desincroniza.
 > - `dispatch_attempt_key_idx` y `webhook_event_source_dedupe_idx` son índices únicos que ya existían con otro nombre en `0001_init.sql` (`dispatch_attempt_idempotency_idx` y `webhook_event_dedupe_idx`). El `IF NOT EXISTS` compara el nombre y no la definición, así que la base queda con dos índices únicos equivalentes por tabla. Es inocuo —la unicidad ya se cumplía y el costo es un índice de más al escribir— y se deja tal cual porque quitarlo es una migración aparte; conviene saberlo antes de mirar el esquema y creer que falta un índice o que sobra una regla.
 
 ## migrations/0005_order_version.sql

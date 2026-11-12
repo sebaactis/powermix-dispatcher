@@ -4,30 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 )
-
-type LineState string
-
-const (
-	LinePending   LineState = "pending"
-	LineSent      LineState = "sent"
-	LineBrewing   LineState = "brewing"
-	LineDelivered LineState = "delivered"
-	LineFailed    LineState = "failed"
-
-	LineInDoubt LineState = "in_doubt"
-)
-
-type MachineRef struct {
-	KioskID      string
-	Kind         machine.Kind
-	Name         string
-	DeviceID     string
-	DeviceNo     string
-	DeviceTypeID string
-	MID          string
-}
 
 type Availability struct {
 	Available bool
@@ -37,7 +16,7 @@ type Availability struct {
 type Request struct {
 	OrderID     string
 	LineID      string
-	Machine     MachineRef
+	Machine     machine.Ref
 	SKU         string
 	AmountCents int64
 
@@ -51,7 +30,7 @@ type DispatchResult struct {
 }
 
 type Status struct {
-	State           LineState
+	State           linestate.State
 	ProviderOrderNo string
 	Reason          string
 }
@@ -73,7 +52,7 @@ func (r *Rejection) Error() string {
 }
 
 type Dispenser interface {
-	Check(ctx context.Context, machine MachineRef) (Availability, error)
+	Check(ctx context.Context, machine machine.Ref) (Availability, error)
 
 	Dispatch(ctx context.Context, req Request) (DispatchResult, error)
 

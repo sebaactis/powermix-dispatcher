@@ -5,7 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
 
 type OrderStatus string
@@ -41,10 +42,10 @@ type Line struct {
 	ID             string
 	OrderID        string
 	Position       int
-	Machine        dispenser.MachineRef
+	Machine        machine.Ref
 	SKU            string
 	AmountCents    int64
-	State          dispenser.LineState
+	State          linestate.State
 	Ref            string
 	Attempts       int
 	DeadlineAt     time.Time

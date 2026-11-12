@@ -10,7 +10,7 @@ import (
 
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 )
 
@@ -74,7 +74,7 @@ func (h *Handler) buildDraft(kiosk config.Kiosk, combo catalog.Combo, clientKey 
 	}
 
 	for _, item := range combo.Items {
-		machine, found := kiosk.Machine(item.MachineType)
+		machineConfig, found := kiosk.Machine(item.MachineType)
 		if !found {
 			return order.Draft{}, apiError{
 				status: http.StatusConflict,
@@ -87,14 +87,14 @@ func (h *Handler) buildDraft(kiosk config.Kiosk, combo catalog.Combo, clientKey 
 
 		draft.Items = append(draft.Items, order.Item{
 			SKU: item.SKU,
-			Machine: dispenser.MachineRef{
+			Machine: machine.Ref{
 				KioskID:      kiosk.ID,
-				Kind:         machine.Type,
-				Name:         machine.Name,
-				DeviceID:     machine.DeviceID,
-				DeviceNo:     machine.DeviceNo,
-				DeviceTypeID: machine.DeviceTypeID,
-				MID:          machine.MID,
+				Kind:         machineConfig.Type,
+				Name:         machineConfig.Name,
+				DeviceID:     machineConfig.DeviceID,
+				DeviceNo:     machineConfig.DeviceNo,
+				DeviceTypeID: machineConfig.DeviceTypeID,
+				MID:          machineConfig.MID,
 			},
 		})
 	}

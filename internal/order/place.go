@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
 
@@ -53,7 +54,7 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 			Machine:     item.Machine,
 			SKU:         item.SKU,
 			AmountCents: item.AmountCents,
-			State:       dispenser.LinePending,
+			State:       linestate.Pending,
 		})
 	}
 
@@ -107,6 +108,6 @@ func (e *Engine) validateDraft(draft Draft) error {
 	return nil
 }
 
-func machineIdentified(machine dispenser.MachineRef) bool {
+func machineIdentified(machine machine.Ref) bool {
 	return machine.DeviceID != "" || machine.DeviceNo != "" || machine.MID != ""
 }

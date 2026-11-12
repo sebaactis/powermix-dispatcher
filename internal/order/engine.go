@@ -25,7 +25,7 @@ type Draft struct {
 type Item struct {
 	SKU         string
 	AmountCents int64
-	Machine     dispenser.MachineRef
+	Machine     machine.Ref
 }
 
 type Option func(*Engine)

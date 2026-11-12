@@ -3,7 +3,7 @@ package httpapi
 import (
 	"time"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/store"
 )
@@ -22,13 +22,13 @@ type orderResponse struct {
 }
 
 type lineResponse struct {
-	ID          string              `json:"id"`
-	Position    int                 `json:"position"`
-	MachineType machine.Kind        `json:"machine_type"`
-	SKU         string              `json:"sku"`
-	State       dispenser.LineState `json:"state"`
-	Attempts    int                 `json:"attempts"`
-	LastError   string              `json:"last_error,omitempty"`
+	ID          string          `json:"id"`
+	Position    int             `json:"position"`
+	MachineType machine.Kind    `json:"machine_type"`
+	SKU         string          `json:"sku"`
+	State       linestate.State `json:"state"`
+	Attempts    int             `json:"attempts"`
+	LastError   string          `json:"last_error,omitempty"`
 }
 
 func newOrderResponse(loaded store.Order) orderResponse {

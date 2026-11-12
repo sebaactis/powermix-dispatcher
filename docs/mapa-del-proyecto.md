@@ -52,10 +52,11 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `migrations` | los `.sql` del esquema, **dentro del binario** (`//go:embed`) | `Files` |
 | `cmd/migrate` | aplica las migraciones pendientes y termina; es el paso previo del compose | `main`, `run` |
 | `internal/migrate` | qué archivos faltan, en una transacción por archivo, bajo un advisory lock | `Apply`, `versions`, `missing`, `applyOne` |
-| `internal/machine` | **vocabulario compartido**: la familia de máquina | `Kind`, `Batidos`, `Snacks` |
+| `internal/machine` | **vocabulario compartido**: la familia de máquina y la referencia a una máquina concreta | `Kind`, `Batidos`, `Snacks`, `Ref` |
+| `internal/linestate` | **vocabulario compartido**: el estado de una línea | `State`, `Pending`, `Sent`, `Brewing`, `Delivered`, `Failed`, `InDoubt` |
 | `internal/config` | topología del mueble desde JSON + secretos por entorno, validada al arrancar | `Load`, `Config`, `Kiosk`, `Machine`, `validate` |
 | `internal/catalog` | el menú: carga, valida y sirve combos | `Combo`, `Item`, `LoadFile`, `Memory` |
-| `internal/dispenser` | **el puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `MachineRef`, `Request`, `DispatchResult`, `Status`, `Rejection`, `LineState` |
+| `internal/dispenser` | **el puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
 | `internal/dispenser/batidos` | adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
 | `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `DueLines`, `StalledLines` |
@@ -76,20 +77,20 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 Todas las flechas apuntan **hacia adentro**. Los puertos no conocen adaptadores:
 
 ```
-cmd/api ──► httpapi ──► order ──► store (puerto) · dispenser (puerto) · machine · notify
+cmd/api ──► httpapi ──► order ──► store (puerto) · dispenser (puerto) · machine · linestate · notify
                 │           │                ▲            ▲
                 │           └──► gate ──► preflight      │
                 └──► catalog, config          batidos ───┘
                                               snacks ────┘
-store/postgres ──► store (tipos) · topology · machine
+store/postgres ──► store (tipos) · topology · machine · linestate
 ```
 
 Reglas que no se rompen:
 
 - `order` **no** importa `batidos` ni `snacks` ni `httpapi` ni `config`.
 - `catalog` no importa `dispenser`.
-- `machine` no importa nada del proyecto.
-- `store` todavía importa `dispenser` por `LineState` y `MachineRef` — **es deuda anotada**, no diseño.
+- `machine` y `linestate` no importan nada del proyecto: son vocabulario, no comportamiento.
+- `store` **no** importa `dispenser`: la referencia de la máquina es `machine.Ref` y el estado de la línea, `linestate.State`. El puerto no dicta cómo se guarda una fila.
 
 ## Flujo de una compra
 
@@ -146,7 +147,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | Tipo | Vive en | Valores |
 | --- | --- | --- |
 | `machine.Kind` | `internal/machine` | `batidos`, `snacks` |
-| `dispenser.LineState` | `internal/dispenser` | `pending`, `sent`, `brewing`, `delivered`, `failed`, `in_doubt` |
+| `linestate.State` | `internal/linestate` | `pending`, `sent`, `brewing`, `delivered`, `failed`, `in_doubt` |
 | `store.OrderStatus` | `internal/store` | `pending_payment`, `paid`, `dispatching`, `delivered`, `partial`, `failed`, `in_doubt`, `refunded`, `cancelled` |
 | `store.AttemptOutcome` | `internal/store` | `ambiguous`, `accepted`, `rejected`, `error` |
 | `notify.Kind` | `internal/notify` | `order_in_doubt`, `order_failed` |
@@ -199,7 +200,6 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | --- | --- |
 | Decisiones de dinero (proveedor de pago, política de devolución, quién asume la pérdida) | **abiertas**, son del dueño del producto; el código ya tiene los ganchos |
 | Hosting + `PUBLIC_BASE_URL` | sin definir; sin eso el callback de batidos nunca llega |
-| `store` importa `dispenser` por `LineState`/`MachineRef` | deuda anotada, próximo cambio de la revisión de código |
 | `machineIdentified` acepta cualquier identificador | una línea con `Kind: snacks` y `device_id` de batidos sigue siendo expresable |
 | Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
 | Avisos repetidos | `settleOrder` avisa cada vez que la orden está en duda; no hay dedupe por `(orden, tipo)` |
