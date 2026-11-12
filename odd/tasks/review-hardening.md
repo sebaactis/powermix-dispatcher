@@ -1,7 +1,7 @@
 # Endurecimiento tras la revisión
 
 Correcciones surgidas de la revisión de buenas prácticas, en el orden recomendado, un paso por vez.
-Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4), `refactor/store-dispenser-decoupling` (paso 6), `fix/machine-ref-identity` (paso 7) y `fix/notification-dedupe` (paso 8). Cada paso espera la decisión del usuario cuando es estructural.
+Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4), `refactor/store-dispenser-decoupling` (paso 6), `fix/machine-ref-identity` (paso 7), `fix/notification-dedupe` (paso 8) y `fix/memory-store-parity` (paso 9). Cada paso espera la decisión del usuario cuando es estructural.
 
 ## Specs
 
@@ -19,6 +19,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **S7** (paso 6, opción A aceptada): cortar la dependencia de `store` hacia `dispenser` moviendo los dos tipos según lo que son. «`MachineRef` pasa a `machine.Ref`»; «`LineState` pasa al paquete nuevo `internal/linestate` como `linestate.State` con sus constantes (`linestate.Pending`, `linestate.Sent`, etc.)», con import sin alias en todos lados. Sin alias de tipo: «la deuda queda escondida en lugar de resuelta». «Los JSON de la API, el `CHECK` de la base y las cadenas `'pending'`, `'sent'`, etc. **no cambian**», sin migración. `internal/store` e `internal/store/postgres` dejan de importar `internal/dispenser`. Los tests de `archive/tests` se ajustan al cambio; el mapa y los comentarios del código se actualizan. Reemplaza al «`internal/line`» original (L24).
 - **S8** (paso 7, deuda «`machineIdentified` acepta cualquier identificador»; opciones aceptadas: «Método en machine» y «Solo exigir los propios»): `machine.Ref` gana un método que devuelve error cuando faltan los identificadores de su `Kind`: batidos exige `DeviceID`, `DeviceNo` y `DeviceTypeID`; snacks exige `MID`; un `Kind` desconocido es error. No rechaza los campos de la otra familia, igual que `internal/config/validate.go` y el `CHECK` de la tabla `machine`. `validateDraft` (`internal/order/place.go`) lo usa en lugar de `machineIdentified`, que desaparece, y el error del ítem conserva el prefijo «ítem N:». La regla de `config` queda duplicada a propósito (valida otro tipo y cambiar sus mensajes no se pidió). Se quita la deuda del mapa y el riesgo residual de `docs/comentarios-codigo.md`.
 - **S9** (paso 8, deuda «Avisos repetidos», opción B aceptada): registro durable de avisos enviados. Migración `0006` con `notification_sent (order_id, kind)` y clave única; el puerto del store gana `NotificationSent` y `RecordNotification` (memoria y Postgres). `notifyOrder` pregunta si ese aviso ya salió; si no, avisa y **después** registra (invariante 7: «el dedupe se registra después del efecto»). Si `Notify` falla no se registra y la próxima pasada reintenta (at-least-once); una caída entre `Notify` y el registro puede duplicar un aviso, aceptado. Descartada A (avisar sólo en la transición) porque un `Notify` fallido perdía el aviso para siempre.
+- **S10** (paso 9, deuda «Store en memoria más permisivo que Postgres», opción aceptada: paridad exacta): el store en memoria rechaza lo mismo que los `CHECK` de SQL (familia de máquina, importe, estado, posición repetida y los que correspondan de `orders`). Error nuevo `store.ErrInvalidLine` en las dos implementaciones; Postgres traduce la violación de `CHECK` (23514) a ese error. Descartado que memoria llame a `Ref.Validate()`: sería más estricta que Postgres en los identificadores.
 
 ## Tasks
 
@@ -39,6 +40,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T7 | S7 | worker | `5099f2d` hecho; tests en `archive/tests` |
 | T8 | S8 | worker | `1a73e71` hecho; tests en `archive/tests` `652c250` |
 | T9 | S9 | worker | `1adda20` hecho, verify PASS con Postgres; tests en `archive/tests` `7607933` |
+| T10 | S10 | worker | pendiente |
 
 ## Corte de entrega
 
@@ -88,3 +90,5 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L28**: «Si» (paso 7 fusionado y subido: `ae3a39a`, `652c250`). «Si» a la deuda «Avisos repetidos».
 - **L29**: «Vamos con la B».
 - **L30**: «Listo» (Docker iniciado). Con un Postgres descartable y esquema vacío: los 3 tests nuevos del store, el runner con 6 versiones y la suite completa con `TEST_DATABASE_URL` pasan. En el compose, `migrate` aplica sólo `0006_notification_sent` sobre la base existente y la segunda corrida informa «El esquema ya está al día». Verificación independiente (Risk: item 1): V1-V5 PASS, con inserts reales: la clave `(order_id, kind)` rechaza el duplicado y borrar la orden borra sus avisos en cascada. Diferencia menor sin efecto observable: al registrar dos veces, memoria pisa `sent_at` y Postgres conserva el primero. Se corrige la sección «Qué NO está verificado» del mapa, que seguía diciendo que el store y el runner nunca corrieron contra una base real. Tests en `archive/tests` `7607933`.
+- **L31**: «Dale» (paso 8 fusionado y subido: `dfee174`, `7607933`). «Dale vamos con la 3.»
+- **L32**: «Si» (paridad exacta + `ErrInvalidLine`).

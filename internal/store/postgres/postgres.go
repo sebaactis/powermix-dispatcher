@@ -515,6 +515,12 @@ func mapWriteError(err error, kind, id string) error {
 	if isUniqueViolation(err) {
 		return store.ErrAlreadyExists
 	}
+	if isCheckViolation(err, "order_line") {
+		return fmt.Errorf("%w: %s %s: %w", store.ErrInvalidLine, kind, id, err)
+	}
+	if isCheckViolation(err, "orders") {
+		return fmt.Errorf("%w: %s %s: %w", store.ErrInvalidOrder, kind, id, err)
+	}
 
 	return fmt.Errorf("no se pudo guardar %s %s: %w", kind, id, err)
 }
@@ -524,6 +530,16 @@ func isUniqueViolation(err error) bool {
 
 	if errors.As(err, &pgErr) {
 		return pgErr.Code == "23505"
+	}
+
+	return false
+}
+
+func isCheckViolation(err error, table string) bool {
+	var pgErr *pgconn.PgError
+
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23514" && pgErr.TableName == table
 	}
 
 	return false

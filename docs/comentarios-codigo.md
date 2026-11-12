@@ -1429,6 +1429,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El conflicto de escritura, y el mismo error sirve para la línea y para la orden: alguien escribió después de que esta copia se leyera. Significa algo distinto según quién escribe —para el callback, alguien con más autoridad ya resolvió la línea; para el worker, la línea ya tiene dueño; para el segundo `/pay`, el cobro ya está registrado—, y por eso la reacción la decide el dominio y no el store. El mensaje dice el hecho —«el registro cambió desde que se leyó»— y no una acción, porque la reacción correcta no la puede decidir el store. Se compara con `errors.Is` desde el motor y nunca se muestra a un cliente.
 
+### ErrInvalidOrder / ErrInvalidLine
+
+> Las dos formas del mismo hecho: un registro que el esquema de SQL rechazaría. `ErrInvalidOrder` cubre la cabecera —importe negativo y estado que no existe en `orders.status`— y `ErrInvalidLine` la línea —familia de máquina que no está en `machine_type`, importe negativo y estado que no está en `order_line.state`—. Existen para que las dos implementaciones del puerto respondan lo mismo: antes del paso 9 el único que frenaba una línea sin familia era el `CHECK` de la base, así que la misma entrada se aceptaba en memoria —y en los tests— y explotaba recién contra Postgres.
+>
+> Se devuelven envueltos con `%w` y el detalle de qué campo y qué valor rompió la regla, y se comparan con `errors.Is`: a diferencia de `ErrNotFound`, `ErrAlreadyExists` y `ErrStale`, acá el detalle es lo único que dice cuál de las tres reglas saltó. No son errores de entrada para el usuario: el alta ya valida antes (`validateDraft`), así que uno de estos que llegue al borde HTTP termina en 500 porque significa que el motor armó un registro que no debería existir. La posición repetida **no** es `ErrInvalidLine` sino `ErrAlreadyExists`: en SQL no la frena un `CHECK` sino el índice único `(order_id, position)`, y el `23505` ya tenía traducción; la paridad se hizo con el error que existía en vez de inventar uno nuevo.
+
 ### Store
 
 > `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció. `StalledLines` responde la otra: qué quedó `pending` sin que nadie sepa si se llegó a llamar.
@@ -1464,6 +1470,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `SaveOrder` aplica la misma comparación a la cabecera dentro del mismo lock: si la versión no coincide devuelve `ErrStale` sin tocar la copia guardada, así que un guardado viejo no puede revertir ni el estado ni las tres fechas; si coincide guarda con `Version+1` y devuelve la orden recibida con ese número, que es el que encadena el llamador.
 >
 > `CreateOrder` normaliza a cero la versión de cada línea antes de guardar, sobre una copia para no mutar lo que recibió. No es cosmético: sin eso un llamador podría crear una línea con versión inventada y quedar inmune a los conflictos durante toda su vida. La versión de la cabecera, en cambio, se guarda tal como llega: una orden nueva llega en cero y corregirla acá escondería un error de quien llama en vez de evitarlo.
+>
+> `validateOrder` y `validateLine` son la paridad con el esquema: rechazan exactamente lo que rechazan los `CHECK` de `orders` y `order_line` —importe negativo, estado fuera de la lista, familia de máquina fuera de `batidos`/`snacks`— más la posición repetida, que en SQL frena el índice único. Ni una regla más: no se llama a `machine.Ref.Validate`, porque `order_line` no exige los identificadores (los exige la tabla `machine`, que el store no toca) y una memoria más estricta que la base rompería el contrato en el otro sentido. `refundedState` existe por lo mismo: `order_line.state` acepta `refunded` aunque `internal/linestate` no tenga la constante, y el store no puede rechazar lo que la base acepta.
+>
+> El orden de los chequeos replica el de SQL y no es casual. En `CreateOrder` la cabecera se valida **antes** de mirar si la orden ya existe porque Postgres evalúa los `CHECK` al formar la tupla y recién después inserta en el índice de la clave primaria: con un ID repetido y además un importe negativo, las dos implementaciones tienen que decir «importe negativo». En `SaveLine` y `SaveOrder` es al revés —primero la versión, después el contenido— porque el `UPDATE` no evalúa ninguna restricción si el `WHERE` no encontró fila: con una copia vieja y un estado inválido, las dos dicen `ErrStale`. Dentro de una línea el contenido se valida antes de la posición, igual que en SQL.
+>
+> Nada se escribe antes de validar: `CreateOrder` valida la orden entera y todas sus líneas antes de tocar los mapas, y `SaveLine`/`SaveOrder` validan antes de asignar, así que una entrada rechazada deja el store exactamente como estaba.
 
 ## internal/store/memory_test.go
 
@@ -1478,6 +1490,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los tres del registro de avisos fijan el dedupe del puerto: la pregunta empieza en `false`, la grabación la deja en `true`, grabar dos veces no da error ni borra el aviso, los tipos y las órdenes son independientes entre sí y una orden inexistente devuelve `ErrNotFound` en las dos operaciones. El de los tipos es el que importa para el dominio: `order_in_doubt` y `order_failed` son dos avisos, no uno.
 >
 > Los cuatro de la versión de la línea fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
+>
+> Los seis de S10 son la mitad en memoria del contrato de validación: la misma tabla de líneas inválidas —familia desconocida, familia vacía, importe negativo, estado que el esquema no conoce— da `ErrInvalidLine`, y la posición repetida da `ErrAlreadyExists` tanto por `CreateOrder` como por `SaveLine`; en los dos caminos se comprueba después que no quedó nada escrito, que es la mitad que un test de validación suele olvidar. `TestMemoryAcceptsTheValuesSQLAccepts` evita que la paridad se vaya al otro extremo: importe cero, estado `refunded` y una línea de batidos sin identificadores son legales en el esquema y el store los acepta. `TestMemoryRejectsADuplicateClientKeyAndFindsByKey` necesitó una orden con estado: creaba órdenes con el estado vacío, que es justo lo que el `CHECK` de `orders.status` rechaza. `TestMemoryChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema` fija el orden de los chequeos con las dos combinaciones que lo revelan: una orden repetida y además inválida tiene que dar `ErrInvalidOrder`, y una copia vieja con un estado inválido tiene que dar `ErrStale`.
 
 ## internal/order/status.go
 
@@ -1543,7 +1557,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > La identidad se valida contra el tipo: `validateDraft` delega en `machine.Ref.Validate`, que exige los identificadores propios de la familia —`device_id`, `device_no` y `device_type_id` en batidos; `mid` en snacks— y no rechaza los de la otra. Antes alcanzaba con que hubiera **algún** identificador, así que un ítem de snacks con sólo el `device_id` de batidos pasaba el alta y el motor le mandaba al proveedor de snacks una identidad que no era la suya. El error del ítem conserva el prefijo «ítem N:» y suma el motivo: cuál máquina y qué le falta.
 >
-> No se agregó ninguna validación nueva en el store. `validateDraft` ya rechaza un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` es la última red; sumar un chequeo en memoria duplicaría esa regla en un tercer lugar. El store en memoria queda más permisivo que Postgres —acepta una línea sin familia— y es una asimetría conocida y aceptada, no un olvido.
+> En este paso no se agregó ninguna validación en el store: `validateDraft` ya rechazaba un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` era la última red, así que el store en memoria quedó más permisivo que la base y anotado como deuda. S10 la cerró con `validateLine` en `internal/store/memory.go`, que rechaza la familia desconocida igual que el `CHECK`; desde entonces la regla vive en tres lugares con propósitos distintos —el borde para devolver el número de ítem, la memoria para no aceptar lo que la base rechaza, y el `CHECK` como última red— y no por duplicación, sino porque cada uno responde a un llamador distinto.
 
 ### Place
 
@@ -2027,9 +2041,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un tiempo en cero se escribe como `NULL` y vuelve como `time.Time` en cero, que es la convención del puerto —`DeadlineAt` en cero significa «sin plazo armado», no un plazo vencido en el año 1—. Los `text` vacíos también viajan como `NULL`; los campos con `CHECK` (`state`, `outcome`) nunca, porque la base los rechazaría.
 >
-> Un conflicto de unicidad (`23505`) se traduce a `store.ErrAlreadyExists` en vez de propagarse como error de driver: para el motor es el mismo hecho que en memoria —se pidió crear algo que ya existe— y no tiene por qué enterarse de que abajo hay una base. Cualquier otro error de escritura se envuelve con el contexto de qué se estaba guardando.
+> Un conflicto de unicidad (`23505`) se traduce a `store.ErrAlreadyExists` en vez de propagarse como error de driver: para el motor es el mismo hecho que en memoria —se pidió crear algo que ya existe— y no tiene por qué enterarse de que abajo hay una base. Una violación de `CHECK` (`23514`) se traduce por tabla y no por mensaje: la de `order_line` es `store.ErrInvalidLine` y la de `orders` es `store.ErrInvalidOrder`, que es lo que hace que las dos implementaciones del puerto rechacen con el mismo error. El detalle del driver se conserva envolviéndolo junto al centinela —`fmt.Errorf` admite dos `%w`—, porque el nombre de la restricción que saltó es la única explicación útil cuando aparece. Cualquier otro error de escritura se envuelve con el contexto de qué se estaba guardando.
 >
-> Los tres errores de dominio (`ErrNotFound`, `ErrAlreadyExists`, `ErrStale`) se devuelven como el valor centinela, sin envolver: así el llamador puede compararlos con `errors.Is` o con `==` y obtiene el mismo resultado, igual que con `store.Memory`.
+> `ErrNotFound`, `ErrAlreadyExists` y `ErrStale` se devuelven como el valor centinela, sin envolver: así el llamador puede compararlos con `errors.Is` o con `==` y obtiene el mismo resultado, igual que con `store.Memory`. `ErrInvalidLine` y `ErrInvalidOrder` sí van envueltos con el detalle: son errores de programación del motor, no de carrera, y ahí lo que se necesita es saber qué campo rompió qué regla.
 
 ### Mapeo de columnas
 
@@ -2095,7 +2109,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Los tres del registro de avisos son el espejo de los de la memoria y agregan lo que sólo se ve en SQL: el `ON CONFLICT DO NOTHING` de la segunda grabación, la independencia por tipo y por orden, y el `23503` de una orden inexistente traducido a `ErrNotFound` en las dos consultas. `notification_sent` entra en el `TRUNCATE` del arranque para que un test no vea el aviso del anterior.
 >
-> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete: las migraciones `0005` y `0006` y este contrato quedan escritos y sin ejecutar contra una base real.
+> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete; con la variable apuntada a un Postgres descartable corren contra una base real.
+>
+> Los seis de S10 son el espejo en Postgres de los de la memoria, y prueban lo que la memoria no puede: que el `CHECK` exista de verdad y que el `23514` se traduzca. La misma tabla —familia desconocida, familia vacía, importe negativo, estado inválido— exige `ErrInvalidLine` y la posición repetida `ErrAlreadyExists`; la cabecera tiene sus dos casos (`orders_amount_cents_check`, `orders_status_check`) y `ErrInvalidOrder`. Cada caso verifica además que no quede nada guardado: en `CreateOrder` se revierte la transacción entera y la orden no existe; en `SaveLine`/`SaveOrder` la fila queda igual, versión incluida. `TestAcceptsTheValuesSQLAccepts` fija el otro extremo sobre la base real: importe cero, `refunded` y una línea de batidos sin identificadores pasan los `CHECK`. `TestChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema` confirma contra la base el orden que la memoria copia: Postgres evalúa el `CHECK` al formar la tupla y antes de la clave, y no evalúa ninguna restricción si el `WHERE` de la versión no encontró fila.
 
 ## migrations/0004_store_postgres.sql
 

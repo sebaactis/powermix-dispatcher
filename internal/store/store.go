@@ -85,6 +85,8 @@ var (
 	ErrNotFound      = errors.New("el registro no existe")
 	ErrAlreadyExists = errors.New("el registro ya existe")
 	ErrStale         = errors.New("el registro cambió desde que se leyó")
+	ErrInvalidOrder  = errors.New("la orden no cumple las reglas del esquema")
+	ErrInvalidLine   = errors.New("la línea no cumple las reglas del esquema")
 )
 
 type Store interface {

@@ -59,7 +59,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/dispenser` | **el puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
 | `internal/dispenser/batidos` | adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
-| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines` |
+| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalidOrder`, `ErrInvalidLine`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines` |
 | `internal/store/postgres` | implementación sobre Postgres | `Open`, `Store`, `Seed` |
 | `internal/topology` | upsert de muebles/máquinas/combos al arrancar (Postgres tiene FK) | `Seed` |
 | `internal/order` | **el dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
@@ -165,6 +165,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | por qué una venta se bloqueó | `internal/preflight/checker.go` + `internal/gate` |
 | la forma de la URL de aviso | `internal/httpapi/callback_url.go`, `BatidosCallbackURL` |
 | el mapeo de una columna SQL | `internal/store/postgres/postgres.go` y `migrations/` |
+| qué rechaza el store antes de llegar a la base | `internal/store/memory.go` (`validateOrder`, `validateLine`) y el 23514 de `internal/store/postgres/postgres.go` |
 | qué versión del esquema está aplicada | `internal/migrate` (`versions`, `missing`) y `migrations/embed.go` |
 | por qué un aviso de excepción llegó una sola vez | `internal/order/settle.go` (`notifyOrder`) y la tabla `notification_sent` (`migrations/0006`) |
 | qué hace un proveedor paso a paso | `internal/dispenser/{batidos,snacks}/dispenser.go` |
@@ -189,7 +190,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 ## Qué NO está verificado
 
 - **`main` no tiene ni un test.** Los 42 archivos viven en `archive/tests`, así que `go test ./...` responde `[no test files]` en todos los paquetes y nada frena una regresión hasta que vuelvan.
-- **El store de Postgres sólo corre con `TEST_DATABASE_URL` definida**, pero ya se ejecutó contra una base real (L21, L22 y este paso): sus 21 tests (19 en `postgres_test.go` + 2 en `seed_test.go`) pasan sobre un Postgres descartable. Viven en `archive/tests` (regla L16), así que sin la variable se saltean y `main` no los corre.
+- **El store de Postgres sólo corre con `TEST_DATABASE_URL` definida**, pero ya se ejecutó contra una base real (L21, L22 y este paso): sus 27 tests (25 en `postgres_test.go` + 2 en `seed_test.go`) pasan sobre un Postgres descartable. Viven en `archive/tests` (regla L16), así que sin la variable se saltean y `main` no los corre.
 - **Lo mismo para el runner de migraciones**: `internal/migrate` (7 tests, en `archive/tests`, regla L16) corre contra un Postgres real cuando `TEST_DATABASE_URL` está definida y ya aplicó las 6 versiones sobre un esquema vacío; en el compose aplicó sólo `0006_notification_sent` sobre la base existente y la segunda corrida informó «El esquema ya está al día». Un volumen anterior a este cambio necesita `docker compose down -v` una vez.
 - **`go test -race` no corre** en esta máquina. Casi toda la concurrencia se demuestra de forma determinista (copias viejas inyectadas); la excepción es el chequeo previo, que sí corre sus dos goroutines contra una barrera (`preflight/checker_parallel_test.go`), pero sin detector de carreras.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
@@ -203,7 +204,6 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | Hosting + `PUBLIC_BASE_URL` | sin definir; sin eso el callback de batidos nunca llega |
 | Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
 | El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |
-| Store en memoria más permisivo que Postgres | acepta una línea sin familia; el `CHECK` de SQL es la última red |
 | Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |
 
 ## Convenciones

@@ -2,13 +2,17 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
+
+const refundedState linestate.State = "refunded"
 
 type webhookKey struct {
 	source    string
@@ -47,6 +51,10 @@ func (m *Memory) CreateOrder(ctx context.Context, order Order) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := validateOrder(order); err != nil {
+		return err
+	}
+
 	if _, exists := m.orders[order.ID]; exists {
 		return ErrAlreadyExists
 	}
@@ -55,6 +63,20 @@ func (m *Memory) CreateOrder(ctx context.Context, order Order) error {
 		if _, exists := m.clientKeys[order.ClientKey]; exists {
 			return ErrAlreadyExists
 		}
+	}
+
+	positions := make(map[int]struct{}, len(order.Lines))
+
+	for _, line := range order.Lines {
+		if err := validateLine(line); err != nil {
+			return err
+		}
+
+		if _, taken := positions[line.Position]; taken {
+			return ErrAlreadyExists
+		}
+
+		positions[line.Position] = struct{}{}
 	}
 
 	order = cloneOrder(order)
@@ -114,6 +136,10 @@ func (m *Memory) SaveOrder(ctx context.Context, order Order) (Order, error) {
 		return Order{}, ErrStale
 	}
 
+	if err := validateOrder(order); err != nil {
+		return Order{}, err
+	}
+
 	stored.KioskID = order.KioskID
 	stored.ComboID = order.ComboID
 	stored.ClientKey = order.ClientKey
@@ -153,6 +179,16 @@ func (m *Memory) SaveLine(ctx context.Context, line Line) (Line, error) {
 
 		if order.Lines[i].Version != line.Version {
 			return Line{}, ErrStale
+		}
+
+		if err := validateLine(line); err != nil {
+			return Line{}, err
+		}
+
+		for _, other := range order.Lines {
+			if other.ID != line.ID && other.Position == line.Position {
+				return Line{}, ErrAlreadyExists
+			}
 		}
 
 		line.Version = order.Lines[i].Version + 1
@@ -265,6 +301,56 @@ func (m *Memory) putOrderLocked(order Order) {
 	for _, line := range stored.Lines {
 		m.lineOrder[line.ID] = order.ID
 	}
+}
+
+func validateOrder(order Order) error {
+	if order.AmountCents < 0 {
+		return fmt.Errorf("%w: la orden %s tiene el importe %d", ErrInvalidOrder, order.ID, order.AmountCents)
+	}
+
+	if !knownOrderStatus(order.Status) {
+		return fmt.Errorf("%w: la orden %s tiene el estado %q", ErrInvalidOrder, order.ID, order.Status)
+	}
+
+	return nil
+}
+
+func validateLine(line Line) error {
+	if !knownMachineKind(line.Machine.Kind) {
+		return fmt.Errorf("%w: la línea %s tiene la familia de máquina %q", ErrInvalidLine, line.ID, line.Machine.Kind)
+	}
+
+	if line.AmountCents < 0 {
+		return fmt.Errorf("%w: la línea %s tiene el importe %d", ErrInvalidLine, line.ID, line.AmountCents)
+	}
+
+	if !knownLineState(line.State) {
+		return fmt.Errorf("%w: la línea %s tiene el estado %q", ErrInvalidLine, line.ID, line.State)
+	}
+
+	return nil
+}
+
+func knownOrderStatus(status OrderStatus) bool {
+	switch status {
+	case OrderPendingPayment, OrderPaid, OrderDispatching, OrderDelivered, OrderPartial, OrderFailed, OrderInDoubt, OrderRefunded, OrderCancelled:
+		return true
+	}
+
+	return false
+}
+
+func knownMachineKind(kind machine.Kind) bool {
+	return kind == machine.Batidos || kind == machine.Snacks
+}
+
+func knownLineState(state linestate.State) bool {
+	switch state {
+	case linestate.Pending, linestate.Sent, linestate.Brewing, linestate.Delivered, linestate.Failed, linestate.InDoubt, refundedState:
+		return true
+	}
+
+	return false
 }
 
 func cloneOrder(order Order) Order {
