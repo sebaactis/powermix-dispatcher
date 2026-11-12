@@ -15,24 +15,31 @@ type webhookKey struct {
 	dedupeKey string
 }
 
+type notificationKey struct {
+	orderID string
+	kind    string
+}
+
 type Memory struct {
-	mu         sync.Mutex
-	orders     map[string]Order
-	lineOrder  map[string]string
-	clientKeys map[string]string
-	attempts   map[string]struct{}
-	webhooks   map[webhookKey]struct{}
+	mu            sync.Mutex
+	orders        map[string]Order
+	lineOrder     map[string]string
+	clientKeys    map[string]string
+	attempts      map[string]struct{}
+	webhooks      map[webhookKey]struct{}
+	notifications map[notificationKey]time.Time
 }
 
 var _ Store = (*Memory)(nil)
 
 func NewMemory() *Memory {
 	return &Memory{
-		orders:     make(map[string]Order),
-		lineOrder:  make(map[string]string),
-		clientKeys: make(map[string]string),
-		attempts:   make(map[string]struct{}),
-		webhooks:   make(map[webhookKey]struct{}),
+		orders:        make(map[string]Order),
+		lineOrder:     make(map[string]string),
+		clientKeys:    make(map[string]string),
+		attempts:      make(map[string]struct{}),
+		webhooks:      make(map[webhookKey]struct{}),
+		notifications: make(map[notificationKey]time.Time),
 	}
 }
 
@@ -193,6 +200,32 @@ func (m *Memory) RegisterWebhook(ctx context.Context, wh Webhook) (bool, error) 
 	m.webhooks[key] = struct{}{}
 
 	return false, nil
+}
+
+func (m *Memory) NotificationSent(ctx context.Context, orderID, kind string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.orders[orderID]; !exists {
+		return false, ErrNotFound
+	}
+
+	_, sent := m.notifications[notificationKey{orderID: orderID, kind: kind}]
+
+	return sent, nil
+}
+
+func (m *Memory) RecordNotification(ctx context.Context, orderID, kind string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.orders[orderID]; !exists {
+		return ErrNotFound
+	}
+
+	m.notifications[notificationKey{orderID: orderID, kind: kind}] = at
+
+	return nil
 }
 
 func (m *Memory) DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error) {

@@ -59,7 +59,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/dispenser` | **el puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
 | `internal/dispenser/batidos` | adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
-| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `DueLines`, `StalledLines` |
+| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines` |
 | `internal/store/postgres` | implementación sobre Postgres | `Open`, `Store`, `Seed` |
 | `internal/topology` | upsert de muebles/máquinas/combos al arrancar (Postgres tiene FK) | `Seed` |
 | `internal/order` | **el dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
@@ -166,6 +166,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | la forma de la URL de aviso | `internal/httpapi/callback_url.go`, `BatidosCallbackURL` |
 | el mapeo de una columna SQL | `internal/store/postgres/postgres.go` y `migrations/` |
 | qué versión del esquema está aplicada | `internal/migrate` (`versions`, `missing`) y `migrations/embed.go` |
+| por qué un aviso de excepción llegó una sola vez | `internal/order/settle.go` (`notifyOrder`) y la tabla `notification_sent` (`migrations/0006`) |
 | qué hace un proveedor paso a paso | `internal/dispenser/{batidos,snacks}/dispenser.go` |
 | cómo se arma el binario | `cmd/api/main.go` (orden de construcción) |
 
@@ -188,7 +189,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 ## Qué NO está verificado
 
 - **`main` no tiene ni un test.** Los 42 archivos viven en `archive/tests`, así que `go test ./...` responde `[no test files]` en todos los paquetes y nada frena una regresión hasta que vuelvan.
-- **Nada del store de Postgres se ejecutó contra una base real.** Las migraciones `0004` y `0005` y los 14 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
+- **Nada del store de Postgres se ejecutó contra una base real.** Las migraciones `0004`, `0005` y `0006` y los 19 tests de ese paquete se saltean sin `TEST_DATABASE_URL`. El contenedor está escrito y `docker compose config` lo resuelve, pero nunca se levantó.
 - **El runner de migraciones tampoco se ejecutó contra un Postgres real**: `cmd/migrate` compila y los `.sql` se aplican con la misma transacción por archivo, pero el advisory lock, el `CREATE TABLE IF NOT EXISTS` y el rollback de un archivo roto sólo se probaron hasta el borde (los tests se saltean sin `TEST_DATABASE_URL`). Un volumen anterior a este cambio necesita `docker compose down -v` una vez.
 - **`go test -race` no corre** en esta máquina. Casi toda la concurrencia se demuestra de forma determinista (copias viejas inyectadas); la excepción es el chequeo previo, que sí corre sus dos goroutines contra una barrera (`preflight/checker_parallel_test.go`), pero sin detector de carreras.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
@@ -201,7 +202,6 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | Decisiones de dinero (proveedor de pago, política de devolución, quién asume la pérdida) | **abiertas**, son del dueño del producto; el código ya tiene los ganchos |
 | Hosting + `PUBLIC_BASE_URL` | sin definir; sin eso el callback de batidos nunca llega |
 | Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
-| Avisos repetidos | `settleOrder` avisa cada vez que la orden está en duda; no hay dedupe por `(orden, tipo)` |
 | El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |
 | Store en memoria más permisivo que Postgres | acepta una línea sin familia; el `CHECK` de SQL es la última red |
 | Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |

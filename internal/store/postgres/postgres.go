@@ -235,6 +235,39 @@ func (s *Store) RegisterWebhook(ctx context.Context, wh store.Webhook) (bool, er
 	return affected == 0, nil
 }
 
+func (s *Store) NotificationSent(ctx context.Context, orderID, kind string) (bool, error) {
+	var sent, exists bool
+
+	err := s.db.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM notification_sent WHERE order_id = $1 AND kind = $2),
+		EXISTS (SELECT 1 FROM orders WHERE id = $1)`, orderID, kind).Scan(&sent, &exists)
+	if err != nil {
+		return false, fmt.Errorf("no se pudo buscar el aviso %s de la orden %s: %w", kind, orderID, err)
+	}
+
+	if !exists {
+		return false, store.ErrNotFound
+	}
+
+	return sent, nil
+}
+
+func (s *Store) RecordNotification(ctx context.Context, orderID, kind string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO notification_sent (order_id, kind, sent_at)
+		VALUES ($1, $2, COALESCE($3, now()))
+		ON CONFLICT (order_id, kind) DO NOTHING`,
+		orderID, kind, nullableTime(at))
+	if err != nil {
+		if isForeignKeyViolation(err) {
+			return store.ErrNotFound
+		}
+
+		return fmt.Errorf("no se pudo registrar el aviso %s de la orden %s: %w", kind, orderID, err)
+	}
+
+	return nil
+}
+
 func (s *Store) DueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {
 	query := `SELECT ` + lineColumns + ` FROM order_line
 		WHERE deadline_at IS NOT NULL AND deadline_at <= $1
@@ -491,6 +524,16 @@ func isUniqueViolation(err error) bool {
 
 	if errors.As(err, &pgErr) {
 		return pgErr.Code == "23505"
+	}
+
+	return false
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23503"
 	}
 
 	return false

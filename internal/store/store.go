@@ -96,6 +96,8 @@ type Store interface {
 	AppendAttempt(ctx context.Context, attempt Attempt) error
 	SaveAttempt(ctx context.Context, attempt Attempt) error
 	RegisterWebhook(ctx context.Context, wh Webhook) (duplicate bool, err error)
+	NotificationSent(ctx context.Context, orderID, kind string) (bool, error)
+	RecordNotification(ctx context.Context, orderID, kind string, at time.Time) error
 	DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error)
 	StalledLines(ctx context.Context, paidBefore time.Time, limit int) ([]Line, error)
 }

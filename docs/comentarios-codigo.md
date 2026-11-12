@@ -1391,7 +1391,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### (archivo)
 
-> Puerto de persistencia del motor, y el vocabulario que se guarda: orden, línea, intento y webhook.
+> Puerto de persistencia del motor, y el vocabulario que se guarda: orden, línea, intento, webhook y aviso enviado.
 >
 > Es un puerto y no un driver porque el motor tiene que poder escribirse y probarse sin base de datos. Las columnas, los CHECK y los índices únicos de `migrations/0001_init.sql` son el contrato que este paquete refleja.
 
@@ -1438,6 +1438,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `SaveOrder` guarda sólo la cabecera y **lleva versión**, igual que `SaveLine`: recibe la orden con la versión que se leyó y devuelve la orden persistida con la versión siguiente, o `ErrStale` si alguien escribió antes. Las líneas quedan fuera a propósito, y siguen fuera con versión: escribirlas convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. Devolver la orden y no sólo un error es lo que permite encadenar el guardado siguiente —`ConfirmPayment` guarda dos veces— sin releer la cabecera. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
 >
 > `DueLines` y `StalledLines` son dos preguntas distintas sobre líneas `pending`, y confundirlas cuesta un producto. Una `pending` **con** plazo es una línea que alguien reclamó antes de llamar a la máquina y nunca dejó el resultado: puede haberse despachado, así que se reconcilia. Una `pending` **sin** plazo es una línea que nadie llegó a reclamar: no hubo llamada, así que se despacha. El plazo es el único dato que separa «no sé si salió» de «no salió», y por eso la condición de `StalledLines` incluye el `DeadlineAt` en cero y la de `DueLines` lo exige vencido.
+>
+> `NotificationSent` y `RecordNotification` son el registro de los avisos de excepción y el único dedupe que hay para ellos. Preguntar primero y grabar **después** de que `Notify` devolvió sin error es lo que conserva el reintento que antes daba la repetición: un aviso que no salió no queda registrado, así que la pasada siguiente lo reintenta. Grabar dos veces no es error —en SQL es `ON CONFLICT DO NOTHING`— y la orden inexistente es `ErrNotFound` en las dos implementaciones, igual que el resto del puerto. `kind` viaja como `string` y no como `notify.Kind` porque el store no puede depender del paquete de avisos: el borde que traduce es el dominio, que ya tiene el `Kind` en la mano.
 
 ## internal/store/memory.go
 
@@ -1450,6 +1452,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `putOrderLocked` reconstruye el índice de líneas al reemplazar la orden: sin borrar las entradas viejas, un `SaveOrder` que quita una línea dejaría el índice apuntando a algo que ya no existe.
 >
 > `RegisterWebhook` devuelve `first` y no un error de duplicado: un callback repetido es el caso normal de un proveedor que reintenta, no un fallo.
+>
+> `NotificationSent` y `RecordNotification` comparten un mapa `(orden, tipo)` protegido por el mismo mutex, con el instante del aviso como valor porque la tabla guarda cuándo salió y no sólo que salió. La pareja pregunta-graba **no** es atómica: dos procesos que preguntan a la vez pueden avisar los dos, igual que una caída entre el aviso y el registro. Se acepta por la misma razón en las dos implementaciones —B es at-least-once y un aviso de más es menos grave que uno perdido—; lo que el lock garantiza es que el mapa no se corrompa, no que el dedupe sea perfecto.
 >
 > `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Entran `pending`, `sent`, `brewing` e `in_doubt`: las cuatro tienen un plazo que venció y las cuatro se reconcilian, nunca se redespachan. `pending` es la novedad —una línea reclamada antes del intento y abandonada— y comparte la regla del resto: mientras el plazo no venza, no se toca.
 >
@@ -1470,6 +1474,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los dos de la versión de la orden trasladan ese mismo contrato a la cabecera: el guardado aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` dejando intactos el estado, `paid_at`, `closed_at` y la versión.
 >
 > `TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` fijan las dos preguntas nuevas y su diferencia: el plazo es lo que decide a cuál pertenece una línea `pending`. El segundo arma seis órdenes —`paid` vieja, `dispatching` vieja, `paid` reciente, `pending_payment`, `delivered` y una con la línea ya reclamada— y exige que sólo salgan las dos primeras, en orden de `paid_at` y de ID, con y sin tope. Las tres exclusiones son las que importan: sin el filtro de estado se despacharía una orden sin pagar, sin el corte de `paid_at` se despacharía un cobro recién registrado, y sin el plazo en cero se volvería a despachar una línea que quizá ya salió.
+>
+> Los tres del registro de avisos fijan el dedupe del puerto: la pregunta empieza en `false`, la grabación la deja en `true`, grabar dos veces no da error ni borra el aviso, los tipos y las órdenes son independientes entre sí y una orden inexistente devuelve `ErrNotFound` en las dos operaciones. El de los tipos es el que importa para el dominio: `order_in_doubt` y `order_failed` son dos avisos, no uno.
 >
 > Los cuatro de la versión de la línea fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
 
@@ -1734,6 +1740,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `settleOrder` es `refreshOrderStatus` más el aviso; la cola de `ConfirmPayment` usa `refreshOrderStatus` a secas porque no avisa. Mismo cálculo, dos políticas.
 >
 > Un aviso por orden afectada, y sólo cuando el estado final es duda o fallo: es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
+>
+> Desde S9 ese aviso sale **una sola vez por `(orden, tipo)`**: `notifyOrder` pregunta a `NotificationSent`, avisa y recién después registra, que es la invariante 7 aplicada al aviso. Si `Notify` falla no se registra nada y la pasada siguiente reintenta —exactamente el reintento que antes daba la repetición—; una caída entre el aviso y el registro puede mandar el mismo aviso dos veces y se acepta. Descartada la alternativa de avisar sólo en la transición de estado: un `Notify` fallido habría perdido el aviso para siempre. `in_doubt` y `failed` son tipos distintos, así que una orden que pasa de duda a fallo avisa las dos cosas, en ese orden.
 
 ## migrations/0003_line_reconcile_until.sql
 
@@ -2069,6 +2077,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > No hay migración para esto. El índice `order_line (state, deadline_at)` de `0001_init.sql` ya sirve: `state = 'pending'` es su primera columna y `deadline_at IS NULL` se resuelve dentro del mismo índice. Ordenar por `orders.paid_at` cuesta un sort sobre el puñado de líneas que devuelve ese filtro, no un recorrido de la tabla de órdenes.
 
+### NotificationSent / RecordNotification
+
+> `NotificationSent` resuelve en **una** consulta las dos cosas que el dominio necesita: si ese aviso ya salió y si la orden existe. Los dos `EXISTS` en el mismo `SELECT` evitan el viaje extra del camino normal —«todavía no salió», que es el que termina en `INSERT`— y devuelven `ErrNotFound` cuando la orden no está, igual que `orderBy`. Preguntar por la orden primero y por el aviso después costaría dos viajes siempre para ahorrar uno en el caso raro.
+>
+> `RecordNotification` es `INSERT … ON CONFLICT (order_id, kind) DO NOTHING`: grabar dos veces no es error y no mueve el `sent_at` de la primera vez, que es lo que hace que el reintento del aviso sea inofensivo. La violación de clave foránea (`23503`) se traduce a `ErrNotFound` en vez de propagarse como error de driver: la orden desapareció entre la lectura y el registro, y para el motor es el mismo hecho que en memoria. `sent_at` se escribe con `COALESCE($3, now())`, la misma convención que las otras fechas.
+
 ### Open / Close — la dependencia
 
 > La versión de `pgx` se eligió entre las que no obligan a subir el lenguaje declarado en `go.mod`: agregar la primera dependencia externa no debe cambiar la versión mínima de Go del proyecto. Actualizarla es una decisión aparte, con su propio diff.
@@ -2079,7 +2093,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` son el espejo en SQL de los de la memoria, y por eso cubren las mismas exclusiones: estado de la orden, corte de `paid_at` y plazo en cero. En SQL además prueban que el `JOIN` y las columnas prefijadas devuelven una línea completa —`scanLine` recibe las 19 columnas en orden—, que es lo que un test de memoria no puede ver.
 >
-> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete: la migración `0005` y este contrato quedan escritos y sin ejecutar contra una base real.
+> Los tres del registro de avisos son el espejo de los de la memoria y agregan lo que sólo se ve en SQL: el `ON CONFLICT DO NOTHING` de la segunda grabación, la independencia por tipo y por orden, y el `23503` de una orden inexistente traducido a `ErrNotFound` en las dos consultas. `notification_sent` entra en el `TRUNCATE` del arranque para que un test no vea el aviso del anterior.
+>
+> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete: las migraciones `0005` y `0006` y este contrato quedan escritos y sin ejecutar contra una base real.
 
 ## migrations/0004_store_postgres.sql
 
@@ -2093,6 +2109,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## migrations/0005_order_version.sql
 
 > Agrega `orders.version` (`bigint NOT NULL DEFAULT 0`). Aditiva y sin backfill por el mismo motivo que `order_line.version` en `0004`: el `DEFAULT` deja las órdenes existentes en la versión correcta y el `NOT NULL` impide que una orden quede fuera del guardado condicional. No lleva índice porque la versión viaja en el `WHERE` junto con la clave primaria, que ya está indexada.
+
+## migrations/0006_notification_sent.sql
+
+> `notification_sent (order_id, kind)` con la clave primaria en la pareja: es el registro de avisos de excepción, no una tabla de eventos, así que cada aviso existe una vez y lo garantiza la base y no un `SELECT` previo. `ON DELETE CASCADE` cuelga la fila de su orden igual que `order_line`: sin orden no hay a quién avisar. `sent_at` es `NOT NULL` sin `DEFAULT` porque el dominio manda el instante del aviso —el mismo `now` con el que decidió— y una fecha puesta por la base diría «cuándo llegó el `INSERT`», que no es el dato. No lleva índice aparte porque la clave primaria ya resuelve la única búsqueda que se hace, la de la pareja. No lleva `BEGIN`/`COMMIT` porque la transacción la pone el runner, como en las anteriores.
 
 ## migrations/0001–0005 — sin `BEGIN;` / `COMMIT;`
 
@@ -2156,7 +2176,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Los cuatro que necesitan base usan la misma idea de aislamiento: cada test crea un esquema propio (`mig_test_<base36 del reloj>`), abre su `*sql.DB` con `search_path` en el DSN —`search_path` viaja como parámetro de sesión de `pgx`, así que vale para todas las conexiones del pool, no sólo para la primera— y lo borra con `DROP SCHEMA … CASCADE` en la limpieza. `TEST_DATABASE_URL` es la misma variable que usa el paquete del store, y sin ella se saltean.
 >
-> - El esquema vacío aplica los cinco archivos reales (`migrations.Files`) en orden y deja cinco filas en `schema_migrations`: es la prueba de que los `.sql` sin `BEGIN`/`COMMIT` entran en la transacción del runner.
+> - El esquema vacío aplica los seis archivos reales (`migrations.Files`) en orden y deja seis filas en `schema_migrations`: es la prueba de que los `.sql` sin `BEGIN`/`COMMIT` entran en la transacción del runner.
 > - La segunda corrida devuelve vacío y no toca nada.
 > - Un archivo agregado después es el único que se aplica: dos `MapFS` que difieren en un archivo, que es el caso real del próximo cambio de esquema.
 > - Un archivo roto (`CREATE TABLE` y después basura) revierte las dos cosas: ni la tabla ni la fila de versión quedan, el error nombra el archivo y las versiones anteriores siguen aplicadas.
@@ -2247,3 +2267,25 @@ Formato: `Símbolo --> "texto del comentario"`.
 > La otra mitad de S5b: el despacho no puede sobrevivir a su propio reclamo. `blockedMachine` espera a que su contexto termine y devuelve lo que ve; el plazo se baja a 100 ms con `order.WithLineDeadline`, la opción que ya existía para el plazo de reclamo, y por eso el test fija de paso que el tope del proceso y el número que se escribe en `DeadlineAt` son el mismo. Se espera `context.DeadlineExceeded` adentro de `Dispatch` —no `context.Canceled`, que sería el request—, la línea en `in_doubt` y `ConfirmPayment` de vuelta: una máquina que no contesta no puede colgar el `/pay`. La cota de 10 s con `time.After` es del test, no del motor: si el despacho se queda esperando, el test falla en vez de colgarse.
 >
 > La máquina tiene además una salida propia a los 5 s para que la versión sin arreglo termine y el rojo se lea como «terminó con `<nil>`» en vez de como un cuelgue del binario de pruebas.
+
+## internal/order/settle_test.go — el dedupe de los avisos (S9)
+
+### notifyFixture
+
+> Arma el caso que reproduce el problema con la API pública del motor: un combo de dos líneas pagado y despachado, más el notificador de grabación. `failLine` y `progressLine` mandan un callback con clave nueva cada vez, así que el dedupe de `webhook_event` no tapa el bug: lo que se repite es el asiento de la orden, no el evento del proveedor.
+
+### TestEngineNotifiesAnOrderExceptionOnlyOnce
+
+> Cierra las dos líneas por callback hasta `failed` —un aviso— y después manda dos callbacks sobre la línea ya cerrada. Antes del cambio el notificador recibía tres eventos, uno por cada pasada de `settleOrder`; ahora recibe uno y los dos callbacks repetidos no devuelven error. El rojo de este test, con tres eventos, es la mitad de la evidencia que no se puede inventar después.
+
+### TestEngineRetriesTheNoticeThatTheNotifierCouldNotDeliver
+
+> Fija lo que la repetición daba gratis y el cambio no puede perder. Con el notificador fallando, el callback que cierra la orden devuelve el error, la orden queda `failed` igual —el estado se guarda antes del aviso— y `NotificationSent` sigue en `false`: la prueba de que no se registró un aviso que nunca salió. Cuando el notificador vuelve a responder, la pasada siguiente lo entrega y lo registra; una tercera pasada no repite nada. Es la invariante 7 del lado del aviso: el dedupe se anota después del efecto.
+
+### TestEngineNotifiesTheDoubtAndLaterTheFailureOfTheSameOrder
+
+> La duda y el fallo son dos avisos distintos y se esperan los dos, en ese orden. El barrido cierra la línea en duda al agotarse la ventana y avisa `order_in_doubt`; un callback de progreso sobre esa misma línea no cambia nada y **no** repite el aviso —es el otro rojo original, porque `settleOrder` avisaba en cada pasada—; el callback de fallo mueve la orden a `failed` y avisa `order_failed`; un callback repetido sobre la línea cerrada no agrega un tercero.
+
+### TestEngineDoesNotNotifyWhenItCannotTellWhetherTheNoticeWentOut
+
+> `failingNoticeStore` envuelve la memoria y hace fallar `NotificationSent`. El caso fija la decisión ante la duda: sin respuesta del registro, `settleOrder` devuelve el error y **no** avisa, porque avisar sin saber si ya se avisó es exactamente el problema que S9 vino a resolver. La orden queda `failed` y el webhook no se registra, así que el reintento del proveedor encuentra el trabajo pendiente.
