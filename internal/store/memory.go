@@ -24,12 +24,18 @@ type notificationKey struct {
 	kind    string
 }
 
+type lineAttemptKey struct {
+	lineID string
+	number int
+}
+
 type Memory struct {
 	mu            sync.Mutex
 	orders        map[string]Order
 	lineOrder     map[string]string
 	clientKeys    map[string]string
 	attempts      map[string]struct{}
+	lineAttempts  map[lineAttemptKey]struct{}
 	webhooks      map[webhookKey]struct{}
 	notifications map[notificationKey]time.Time
 }
@@ -42,6 +48,7 @@ func NewMemory() *Memory {
 		lineOrder:     make(map[string]string),
 		clientKeys:    make(map[string]string),
 		attempts:      make(map[string]struct{}),
+		lineAttempts:  make(map[lineAttemptKey]struct{}),
 		webhooks:      make(map[webhookKey]struct{}),
 		notifications: make(map[notificationKey]time.Time),
 	}
@@ -204,11 +211,21 @@ func (m *Memory) AppendAttempt(ctx context.Context, attempt Attempt) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := validateAttempt(attempt); err != nil {
+		return err
+	}
+
 	if _, exists := m.attempts[attempt.IdempotencyKey]; exists {
 		return ErrAlreadyExists
 	}
 
+	lineKey := lineAttemptKey{lineID: attempt.LineID, number: attempt.Number}
+	if _, exists := m.lineAttempts[lineKey]; exists {
+		return ErrAlreadyExists
+	}
+
 	m.attempts[attempt.IdempotencyKey] = struct{}{}
+	m.lineAttempts[lineKey] = struct{}{}
 
 	return nil
 }
@@ -227,6 +244,10 @@ func (m *Memory) SaveAttempt(ctx context.Context, attempt Attempt) error {
 func (m *Memory) RegisterWebhook(ctx context.Context, wh Webhook) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := validateWebhook(wh); err != nil {
+		return false, err
+	}
 
 	key := webhookKey{source: wh.Source, dedupeKey: wh.DedupeKey}
 	if _, exists := m.webhooks[key]; exists {
@@ -305,11 +326,11 @@ func (m *Memory) putOrderLocked(order Order) {
 
 func validateOrder(order Order) error {
 	if order.AmountCents < 0 {
-		return fmt.Errorf("%w: la orden %s tiene el importe %d", ErrInvalidOrder, order.ID, order.AmountCents)
+		return fmt.Errorf("%w: la orden %s tiene el importe %d", ErrInvalid, order.ID, order.AmountCents)
 	}
 
 	if !knownOrderStatus(order.Status) {
-		return fmt.Errorf("%w: la orden %s tiene el estado %q", ErrInvalidOrder, order.ID, order.Status)
+		return fmt.Errorf("%w: la orden %s tiene el estado %q", ErrInvalid, order.ID, order.Status)
 	}
 
 	return nil
@@ -317,15 +338,31 @@ func validateOrder(order Order) error {
 
 func validateLine(line Line) error {
 	if !knownMachineKind(line.Machine.Kind) {
-		return fmt.Errorf("%w: la línea %s tiene la familia de máquina %q", ErrInvalidLine, line.ID, line.Machine.Kind)
+		return fmt.Errorf("%w: la línea %s tiene la familia de máquina %q", ErrInvalid, line.ID, line.Machine.Kind)
 	}
 
 	if line.AmountCents < 0 {
-		return fmt.Errorf("%w: la línea %s tiene el importe %d", ErrInvalidLine, line.ID, line.AmountCents)
+		return fmt.Errorf("%w: la línea %s tiene el importe %d", ErrInvalid, line.ID, line.AmountCents)
 	}
 
 	if !knownLineState(line.State) {
-		return fmt.Errorf("%w: la línea %s tiene el estado %q", ErrInvalidLine, line.ID, line.State)
+		return fmt.Errorf("%w: la línea %s tiene el estado %q", ErrInvalid, line.ID, line.State)
+	}
+
+	return nil
+}
+
+func validateAttempt(attempt Attempt) error {
+	if !knownAttemptOutcome(attempt.Outcome) {
+		return fmt.Errorf("%w: el intento %s tiene el desenlace %q", ErrInvalid, attempt.ID, attempt.Outcome)
+	}
+
+	return nil
+}
+
+func validateWebhook(wh Webhook) error {
+	if !knownWebhookSource(wh.Source) {
+		return fmt.Errorf("%w: el webhook %s tiene la fuente %q", ErrInvalid, wh.ID, wh.Source)
 	}
 
 	return nil
@@ -347,6 +384,24 @@ func knownMachineKind(kind machine.Kind) bool {
 func knownLineState(state linestate.State) bool {
 	switch state {
 	case linestate.Pending, linestate.Sent, linestate.Brewing, linestate.Delivered, linestate.Failed, linestate.InDoubt, refundedState:
+		return true
+	}
+
+	return false
+}
+
+func knownAttemptOutcome(outcome AttemptOutcome) bool {
+	switch outcome {
+	case OutcomeAmbiguous, OutcomeAccepted, OutcomeRejected, OutcomeError:
+		return true
+	}
+
+	return false
+}
+
+func knownWebhookSource(source string) bool {
+	switch source {
+	case "payment", "batidos", "snacks":
 		return true
 	}
 

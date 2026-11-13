@@ -59,7 +59,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/dispenser` | **el puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
 | `internal/dispenser/batidos` | adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
-| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalidOrder`, `ErrInvalidLine`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines` |
+| `internal/store` | **el puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalid`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines` |
 | `internal/store/postgres` | implementación sobre Postgres | `Open`, `Store`, `Seed` |
 | `internal/topology` | upsert de muebles/máquinas/combos al arrancar (Postgres tiene FK) | `Seed` |
 | `internal/order` | **el dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
@@ -205,7 +205,6 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
 | El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |
 | Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |
-| Paridad de memoria en otras tablas | `webhook_event.source` y `dispatch_attempt.outcome` tienen `CHECK` en SQL que el store en memoria no aplica; en Postgres su 23514 cae en el error genérico |
 
 ## Convenciones
 

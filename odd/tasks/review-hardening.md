@@ -1,7 +1,7 @@
 # Endurecimiento tras la revisión
 
 Correcciones surgidas de la revisión de buenas prácticas, en el orden recomendado, un paso por vez.
-Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4), `refactor/store-dispenser-decoupling` (paso 6), `fix/machine-ref-identity` (paso 7), `fix/notification-dedupe` (paso 8) y `fix/memory-store-parity` (paso 9). Cada paso espera la decisión del usuario cuando es estructural.
+Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4), `refactor/store-dispenser-decoupling` (paso 6), `fix/machine-ref-identity` (paso 7), `fix/notification-dedupe` (paso 8), `fix/memory-store-parity` (paso 9) y `fix/store-invalid-error` (paso 10). Cada paso espera la decisión del usuario cuando es estructural.
 
 ## Specs
 
@@ -20,6 +20,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **S8** (paso 7, deuda «`machineIdentified` acepta cualquier identificador»; opciones aceptadas: «Método en machine» y «Solo exigir los propios»): `machine.Ref` gana un método que devuelve error cuando faltan los identificadores de su `Kind`: batidos exige `DeviceID`, `DeviceNo` y `DeviceTypeID`; snacks exige `MID`; un `Kind` desconocido es error. No rechaza los campos de la otra familia, igual que `internal/config/validate.go` y el `CHECK` de la tabla `machine`. `validateDraft` (`internal/order/place.go`) lo usa en lugar de `machineIdentified`, que desaparece, y el error del ítem conserva el prefijo «ítem N:». La regla de `config` queda duplicada a propósito (valida otro tipo y cambiar sus mensajes no se pidió). Se quita la deuda del mapa y el riesgo residual de `docs/comentarios-codigo.md`.
 - **S9** (paso 8, deuda «Avisos repetidos», opción B aceptada): registro durable de avisos enviados. Migración `0006` con `notification_sent (order_id, kind)` y clave única; el puerto del store gana `NotificationSent` y `RecordNotification` (memoria y Postgres). `notifyOrder` pregunta si ese aviso ya salió; si no, avisa y **después** registra (invariante 7: «el dedupe se registra después del efecto»). Si `Notify` falla no se registra y la próxima pasada reintenta (at-least-once); una caída entre `Notify` y el registro puede duplicar un aviso, aceptado. Descartada A (avisar sólo en la transición) porque un `Notify` fallido perdía el aviso para siempre.
 - **S10** (paso 9, deuda «Store en memoria más permisivo que Postgres», opción aceptada: paridad exacta): el store en memoria rechaza lo mismo que los `CHECK` de SQL (familia de máquina, importe, estado, posición repetida); los `CHECK` de `orders` (importe y estado) entran a la paridad con un segundo error `store.ErrInvalidOrder` (L33). Errores nuevos `store.ErrInvalidLine` y `store.ErrInvalidOrder` en las dos implementaciones; Postgres traduce el 23514 por tabla (`order_line` → `ErrInvalidLine`, `orders` → `ErrInvalidOrder`); la posición repetida devuelve `ErrAlreadyExists` en las dos, como ya hacía Postgres (23505). Descartado que memoria llame a `Ref.Validate()`: sería más estricta que Postgres en los identificadores.
+- **S11** (paso 10, deuda «Paridad de memoria en otras tablas», opción 1 aceptada): un solo error `store.ErrInvalid` reemplaza a `ErrInvalidLine` y `ErrInvalidOrder`. Las dos implementaciones lo devuelven ante cualquier violación de `CHECK`: `orders`, `order_line`, `dispatch_attempt.outcome` y `webhook_event.source`; Postgres traduce todo 23514 a `ErrInvalid` conservando el detalle del driver, y el mensaje nombra el registro («la línea X», «el intento Y»). Memoria valida antes de escribir. Se pierde distinguir con `errors.Is` qué tabla falló; nadie fuera de `internal/store` lo usaba (verificación de T10, V4).
 
 ## Tasks
 
@@ -41,6 +42,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T8 | S8 | worker | `1a73e71` hecho; tests en `archive/tests` `652c250` |
 | T9 | S9 | worker | `1adda20` hecho, verify PASS con Postgres; tests en `archive/tests` `7607933` |
 | T10 | S10 | worker | `97c3672` hecho; tests en `archive/tests` `a95a492` |
+| T11 | S11 | worker | pendiente |
 
 ## Corte de entrega
 
@@ -93,3 +95,5 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L31**: «Dale» (paso 8 fusionado y subido: `dfee174`, `7607933`). «Dale vamos con la 3.»
 - **L32**: «Si» (paridad exacta + `ErrInvalidLine`).
 - **L33**: «Si.» (se acepta `ErrInvalidOrder`, decisión derivada del worker para los `CHECK` de `orders`). RED: 14 casos aceptados por memoria y 12 en Postgres que salían con el error crudo del driver. GREEN: la misma tabla pasa contra las dos implementaciones, con los límites que deben seguir aceptándose (importe 0, `refunded`, batidos sin identificadores); suite completa con `TEST_DATABASE_URL` y `-p 1` sobre esquema vacío pasa. Fuera de alcance, anotado como deuda: `webhook_event.source` y `dispatch_attempt.outcome` tienen `CHECK` en SQL que memoria no aplica, y su 23514 cae en el error genérico.
+- **L34**: «Si.» (paso 9 subido: `5a21ff2`, `a95a492`). «Dale» a la deuda «Paridad de memoria en otras tablas».
+- **L35**: «La 1.» (un solo `ErrInvalid`; descartado sumar `ErrInvalidAttempt` y `ErrInvalidWebhook`).
