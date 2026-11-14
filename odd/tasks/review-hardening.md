@@ -42,7 +42,7 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 | T8 | S8 | worker | `1a73e71` hecho; tests en `archive/tests` `652c250` |
 | T9 | S9 | worker | `1adda20` hecho, verify PASS con Postgres; tests en `archive/tests` `7607933` |
 | T10 | S10 | worker | `97c3672` hecho; tests en `archive/tests` `a95a492` |
-| T11 | S11 | worker | pendiente |
+| T11 | S11 | worker + verify | `7ce975a`, `293017d` hecho, verify PASS con Postgres; tests en `archive/tests` |
 
 ## Corte de entrega
 
@@ -97,3 +97,4 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L33**: «Si.» (se acepta `ErrInvalidOrder`, decisión derivada del worker para los `CHECK` de `orders`). RED: 14 casos aceptados por memoria y 12 en Postgres que salían con el error crudo del driver. GREEN: la misma tabla pasa contra las dos implementaciones, con los límites que deben seguir aceptándose (importe 0, `refunded`, batidos sin identificadores); suite completa con `TEST_DATABASE_URL` y `-p 1` sobre esquema vacío pasa. Fuera de alcance, anotado como deuda: `webhook_event.source` y `dispatch_attempt.outcome` tienen `CHECK` en SQL que memoria no aplica, y su 23514 cae en el error genérico.
 - **L34**: «Si.» (paso 9 subido: `5a21ff2`, `a95a492`). «Dale» a la deuda «Paridad de memoria en otras tablas».
 - **L35**: «La 1.» (un solo `ErrInvalid`; descartado sumar `ErrInvalidAttempt` y `ErrInvalidWebhook`).
+- **L36** (T11): RED observado por el orquestador: los tests no compilaban sin `store.ErrInvalid`, y con un `-overlay` temporal de `store.go` (sin tocar el repositorio) fallaron por comportamiento: «AppendAttempt con outcome "maybe" devolvió <nil>», «RegisterWebhook con fuente "stripe" devolvió <nil>» y «el mismo número de intento en la misma línea con clave distinta devolvió <nil>». Verificación independiente: V1-V4 PASS; encontró que `SaveAttempt` en memoria no validaba el resultado (corregido en `293017d` tras su RED) y que faltaba fijar el `CHECK` antes de la unicidad (test agregado). En producción el número repetido implica clave repetida (`orden:línea:número`), así que los caminos válidos no cambian. V5 con Postgres sobre esquema vacío: los 12 tests de validación del store y la suite completa pasan. El worker usa Antigravity con `permissions: auto_edit`: edita archivos pero no corre comandos; los tests los corre el orquestador.
