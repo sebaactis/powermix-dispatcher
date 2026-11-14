@@ -238,6 +238,10 @@ func (m *Memory) SaveAttempt(ctx context.Context, attempt Attempt) error {
 		return ErrNotFound
 	}
 
+	if err := validateAttempt(attempt); err != nil {
+		return err
+	}
+
 	return nil
 }
 
