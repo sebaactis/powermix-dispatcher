@@ -1,7 +1,7 @@
 # Endurecimiento tras la revisión
 
 Correcciones surgidas de la revisión de buenas prácticas, en el orden recomendado, un paso por vez.
-Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4), `refactor/store-dispenser-decoupling` (paso 6), `fix/machine-ref-identity` (paso 7), `fix/notification-dedupe` (paso 8), `fix/memory-store-parity` (paso 9) y `fix/store-invalid-error` (paso 10). Cada paso espera la decisión del usuario cuando es estructural.
+Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 3), ya en `main`; `fix/timeouts-and-isolation` (paso 4), `refactor/store-dispenser-decoupling` (paso 6), `fix/machine-ref-identity` (paso 7), `fix/notification-dedupe` (paso 8), `fix/memory-store-parity` (paso 9) y `fix/store-invalid-error` (paso 10), las de los pasos 6 a 10 ya en `main` y subidas. Cada paso espera la decisión del usuario cuando es estructural.
 
 ## Specs
 
@@ -49,6 +49,19 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **Porción 1** (pasos 1 y 2): `415fdb1`, `eb34cbc`, `646320a`, `7a1f963`. ~830 líneas, por encima de las ~400 recomendadas por revisión, porque 2B cambia el contrato del store en las dos implementaciones a la vez. Candidata a un PR propio antes del paso 3.
 
 - **Porción 2** (paso 3): `9833a3d`, `333e55a` en `fix/recover-pending-lines`. ~970 líneas, la mayor parte tests (casos C1, C2, C3 y guardias). Candidata a su propio PR.
+
+## Retomar
+
+Estado al cierre de la sesión del 2026-11-13. Leer esto primero.
+
+- **Git**: `main` en `008c8ae` y `archive/tests` en `09ce9f7`, los dos subidos a `origin`. Árbol limpio. Las ramas locales de los pasos 6 a 10 (`refactor/store-dispenser-decoupling`, `fix/machine-ref-identity`, `fix/notification-dedupe`, `fix/memory-store-parity`, `fix/store-invalid-error`) ya están fusionadas; se pueden borrar con `git branch -d`.
+- **Pasos cerrados**: 1 a 10 (T1 a T11), todos verificados; los que tocan el store, también contra Postgres.
+- **Deudas que quedan** (tabla «Deudas y bloqueos abiertos» de `docs/mapa-del-proyecto.md`): migraciones sin *checksum* (chica, la recomendada para seguir) y el reclamo como plazo y no como *lease* (grande; discutir opciones antes de codificar). Las de dinero, hosting y firma del callback de snacks dependen del dueño del producto o del proveedor.
+- **Flujo de tests (L16)**: los `*_test.go` viven sólo en `archive/tests`. Para cada cambio: `git ls-tree -r --name-only archive/tests | grep '_test.go$' > /tmp/tests.txt` y `xargs git restore --source=archive/tests --worktree -- < /tmp/tests.txt`; trabajar y correr la suite; archivar los tests nuevos o cambiados con un commit en `archive/tests` armado con un índice temporal (`GIT_INDEX_FILE`, `git read-tree archive/tests`, `git hash-object -w`, `git update-index --add --cacheinfo`, `git write-tree`, `git commit-tree`, `git update-ref`), sin cambiar de rama; y antes del commit en `main` borrarlos con `xargs rm -f < /tmp/tests.txt`.
+- **Postgres para tests**: un contenedor descartable `postgres:16` en un puerto libre de `127.0.0.1` (por ejemplo 55440), `TEST_DATABASE_URL=postgres://t:t@127.0.0.1:<puerto>/t?sslmode=disable` y `-p 1`. Vaciar con `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`. Docker Desktop suele estar apagado al empezar; sin él los tests de Postgres se saltean. No usar el volumen del compose para tests.
+- **RED sin tocar producción**: cuando el test nuevo no compila porque falta un símbolo, `go test -overlay=<json>` con una copia temporal del archivo fuera del repositorio permite ver el fallo de comportamiento.
+- **Subagentes**: el worker usa Antigravity con `C:\Users\Seba\.pi\agent\antigravity-acp-provider\config.json` en `"permissions": "auto_edit"` (decisión del usuario): edita archivos pero no corre comandos, así que build, vet, tests y RED/GREEN los corre el orquestador. Con `"default"` todas sus herramientas de escritura se rechazan con `denied by pre-tool hook: Denied by user (*)`. Si un worker se cuelga al arrancar, revisar el modelo en `/gentle:profiles` (ya pasó con `gemini-4-hydrogen` no encontrado).
+- **Cambios con riesgo** (item 1 o 3 de la lista de riesgos): verificación independiente con `gentle-ai-verify`, también contra Postgres, antes de fusionar. Fusionar con `--ff-only` y subir `main` y `archive/tests` sólo con aprobación del usuario.
 
 ## Log
 
@@ -98,3 +111,4 @@ Ramas: `fix/review-hardening` (pasos 1 y 2) y `fix/recover-pending-lines` (paso 
 - **L34**: «Si.» (paso 9 subido: `5a21ff2`, `a95a492`). «Dale» a la deuda «Paridad de memoria en otras tablas».
 - **L35**: «La 1.» (un solo `ErrInvalid`; descartado sumar `ErrInvalidAttempt` y `ErrInvalidWebhook`).
 - **L36** (T11): RED observado por el orquestador: los tests no compilaban sin `store.ErrInvalid`, y con un `-overlay` temporal de `store.go` (sin tocar el repositorio) fallaron por comportamiento: «AppendAttempt con outcome "maybe" devolvió <nil>», «RegisterWebhook con fuente "stripe" devolvió <nil>» y «el mismo número de intento en la misma línea con clave distinta devolvió <nil>». Verificación independiente: V1-V4 PASS; encontró que `SaveAttempt` en memoria no validaba el resultado (corregido en `293017d` tras su RED) y que faltaba fijar el `CHECK` antes de la unicidad (test agregado). En producción el número repetido implica clave repetida (`orden:línea:número`), así que los caminos válidos no cambian. V5 con Postgres sobre esquema vacío: los 12 tests de validación del store y la suite completa pasan. El worker usa Antigravity con `permissions: auto_edit`: edita archivos pero no corre comandos; los tests los corre el orquestador.
+- **L37**: «Si» (paso 10 fusionado y subido: `008c8ae`, `09ce9f7`; segunda verificación independiente con Postgres, W1-W5 PASS). «Guardá todo el progreso en el archivo correspondiente para seguir mañana en otra sesion»: se agrega la sección «Retomar».
