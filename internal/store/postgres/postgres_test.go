@@ -915,7 +915,7 @@ func TestCreateOrderRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.Machine.Kind = "express"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "una línea sin familia de máquina",
@@ -923,7 +923,7 @@ func TestCreateOrderRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.Machine.Kind = ""
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "una línea con importe negativo",
@@ -931,7 +931,7 @@ func TestCreateOrderRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.AmountCents = -1
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "una línea con un estado que el esquema no conoce",
@@ -939,7 +939,7 @@ func TestCreateOrderRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.State = "cancelled"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "dos líneas en la misma posición",
@@ -997,8 +997,8 @@ func TestCreateOrderRejectsHeadersThatSQLRejects(t *testing.T) {
 			order := sampleOrder(tc.orderID, "")
 			tc.mutate(&order)
 
-			if err := st.CreateOrder(ctx, order); !errors.Is(err, store.ErrInvalidOrder) {
-				t.Fatalf("CreateOrder devolvió %v, se esperaba %v", err, store.ErrInvalidOrder)
+			if err := st.CreateOrder(ctx, order); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("CreateOrder devolvió %v, se esperaba %v", err, store.ErrInvalid)
 			}
 
 			if _, err := st.LoadOrder(ctx, tc.orderID); !errors.Is(err, store.ErrNotFound) {
@@ -1024,7 +1024,7 @@ func TestSaveLineRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.Machine.Kind = "express"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "una línea sin familia de máquina",
@@ -1032,7 +1032,7 @@ func TestSaveLineRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.Machine.Kind = ""
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "un importe negativo",
@@ -1040,7 +1040,7 @@ func TestSaveLineRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.AmountCents = -1
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "un estado que el esquema no conoce",
@@ -1048,7 +1048,7 @@ func TestSaveLineRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.State = "cancelled"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name:    "una posición que ya usa otra línea de la orden",
@@ -1115,8 +1115,8 @@ func TestSaveOrderRejectsHeadersThatSQLRejects(t *testing.T) {
 			changed := before
 			tc.mutate(&changed)
 
-			if _, err := st.SaveOrder(ctx, changed); !errors.Is(err, store.ErrInvalidOrder) {
-				t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrInvalidOrder)
+			if _, err := st.SaveOrder(ctx, changed); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrInvalid)
 			}
 
 			after := mustLoadOrder(t, st, tc.orderID)
@@ -1162,8 +1162,8 @@ func TestChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema(t *testing
 	repeated := sampleOrder("order-precedencia", "")
 	repeated.AmountCents = -1
 
-	if err := st.CreateOrder(ctx, repeated); !errors.Is(err, store.ErrInvalidOrder) {
-		t.Fatalf("una orden repetida y además inválida devolvió %v, se esperaba %v: el CHECK va antes que la clave", err, store.ErrInvalidOrder)
+	if err := st.CreateOrder(ctx, repeated); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("una orden repetida y además inválida devolvió %v, se esperaba %v: el CHECK va antes que la clave", err, store.ErrInvalid)
 	}
 
 	before := mustLoadOrder(t, st, "order-precedencia")
@@ -1182,5 +1182,278 @@ func TestChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema(t *testing
 
 	if _, err := st.SaveOrder(ctx, staleOrder); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("una orden con la versión vieja y un estado inválido devolvió %v, se esperaba %v: la versión va antes que el CHECK", err, store.ErrStale)
+	}
+}
+
+func TestAppendAttemptRejectsInvalidOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome store.AttemptOutcome
+	}{
+		{name: "outcome desconocido", outcome: "maybe"},
+		{name: "outcome vacío", outcome: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _ := newStore(t)
+			ctx := context.Background()
+			orderID := "order-attempt-invalid"
+			mustCreateOrder(t, st, sampleOrder(orderID, ""))
+			lineID := orderID + "-batidos"
+
+			invalid := store.Attempt{
+				ID:             "attempt-invalid",
+				LineID:         lineID,
+				Number:         1,
+				IdempotencyKey: "key-invalid",
+				Outcome:        tc.outcome,
+				StartedAt:      moment(),
+			}
+
+			err := st.AppendAttempt(ctx, invalid)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("AppendAttempt con outcome %q devolvió %v, se esperaba %v", tc.outcome, err, store.ErrInvalid)
+			}
+
+			valid := invalid
+			valid.ID = "attempt-valid"
+			valid.Outcome = "accepted"
+			if err := st.AppendAttempt(ctx, valid); err != nil {
+				t.Fatalf("un intento posterior válido con la misma clave y número falló: %v", err)
+			}
+		})
+	}
+}
+
+func TestRegisterWebhookRejectsInvalidSource(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{name: "fuente desconocida", source: "stripe"},
+		{name: "fuente vacía", source: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _ := newStore(t)
+			ctx := context.Background()
+
+			invalid := store.Webhook{
+				ID:         "wh-invalid",
+				Source:     tc.source,
+				DedupeKey:  "dedupe-1",
+				ReceivedAt: moment(),
+			}
+
+			_, err := st.RegisterWebhook(ctx, invalid)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("RegisterWebhook con fuente %q devolvió %v, se esperaba %v", tc.source, err, store.ErrInvalid)
+			}
+
+			valid := store.Webhook{
+				ID:         "wh-valid",
+				Source:     "payment",
+				DedupeKey:  "dedupe-1",
+				ReceivedAt: moment(),
+			}
+			duplicate, err := st.RegisterWebhook(ctx, valid)
+			if err != nil {
+				t.Fatalf("RegisterWebhook con fuente válida devolvió error: %v", err)
+			}
+			if duplicate {
+				t.Fatalf("el intento rechazado dejó la clave de deduplicación tomada: duplicate=%v, se esperaba false", duplicate)
+			}
+		})
+	}
+}
+
+func TestAppendAttemptAndWebhookAcceptValidBoundaries(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+	orderID := "order-attempt-boundaries"
+	mustCreateOrder(t, st, sampleOrder(orderID, ""))
+	lineID := orderID + "-batidos"
+
+	outcomes := []store.AttemptOutcome{"accepted", "rejected", "ambiguous", "error"}
+	for i, outcome := range outcomes {
+		attempt := store.Attempt{
+			ID:             fmt.Sprintf("attempt-boundary-%d", i+1),
+			LineID:         lineID,
+			Number:         i + 1,
+			IdempotencyKey: fmt.Sprintf("key-boundary-%d", i+1),
+			Outcome:        outcome,
+			StartedAt:      moment(),
+		}
+		if err := st.AppendAttempt(ctx, attempt); err != nil {
+			t.Fatalf("AppendAttempt con outcome válido %q falló: %v", outcome, err)
+		}
+	}
+
+	sources := []string{"payment", "batidos", "snacks"}
+	for i, source := range sources {
+		wh := store.Webhook{
+			ID:         fmt.Sprintf("wh-boundary-%d", i+1),
+			Source:     source,
+			DedupeKey:  fmt.Sprintf("dedupe-boundary-%d", i+1),
+			ReceivedAt: moment(),
+		}
+		duplicate, err := st.RegisterWebhook(ctx, wh)
+		if err != nil {
+			t.Fatalf("RegisterWebhook con fuente válida %q falló: %v", source, err)
+		}
+		if duplicate {
+			t.Fatalf("RegisterWebhook con fuente válida %q devolvió duplicate=true", source)
+		}
+	}
+}
+
+func TestAppendAttemptRejectsDuplicateAttemptNumberOnSameLine(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+	orderID := "order-attempt-dup-no"
+	mustCreateOrder(t, st, sampleOrder(orderID, ""))
+	lineID := orderID + "-batidos"
+
+	first := store.Attempt{
+		ID:             "attempt-num-1",
+		LineID:         lineID,
+		Number:         1,
+		IdempotencyKey: "key-attempt-1",
+		Outcome:        "accepted",
+		StartedAt:      moment(),
+	}
+	if err := st.AppendAttempt(ctx, first); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+
+	sameNumber := store.Attempt{
+		ID:             "attempt-num-2",
+		LineID:         lineID,
+		Number:         1,
+		IdempotencyKey: "key-attempt-2",
+		Outcome:        "error",
+		StartedAt:      moment(),
+	}
+	if err := st.AppendAttempt(ctx, sameNumber); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("el mismo número de intento en la misma línea con clave distinta devolvió %v, se esperaba %v", err, store.ErrAlreadyExists)
+	}
+
+	fresh := store.Attempt{
+		ID:             "attempt-num-3",
+		LineID:         lineID,
+		Number:         2,
+		IdempotencyKey: "key-attempt-2",
+		Outcome:        "accepted",
+		StartedAt:      moment(),
+	}
+	if err := st.AppendAttempt(ctx, fresh); err != nil {
+		t.Fatalf("AppendAttempt con la clave del intento rechazado y un número nuevo falló: %v", err)
+	}
+}
+
+func TestSaveAttemptRejectsInvalidOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome store.AttemptOutcome
+	}{
+		{name: "outcome desconocido", outcome: "maybe"},
+		{name: "outcome vacío", outcome: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, admin := newStore(t)
+			ctx := context.Background()
+			orderID := "order-save-invalid"
+			mustCreateOrder(t, st, sampleOrder(orderID, ""))
+			lineID := orderID + "-batidos"
+
+			attempt := store.Attempt{
+				ID:             "attempt-1",
+				LineID:         lineID,
+				Number:         1,
+				IdempotencyKey: "key-1",
+				Outcome:        "accepted",
+				StartedAt:      moment(),
+			}
+			if err := st.AppendAttempt(ctx, attempt); err != nil {
+				t.Fatalf("AppendAttempt: %v", err)
+			}
+
+			invalid := attempt
+			invalid.Outcome = tc.outcome
+			invalid.FinishedAt = moment().Add(time.Second)
+
+			err := st.SaveAttempt(ctx, invalid)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("SaveAttempt con outcome %q devolvió %v, se esperaba %v", tc.outcome, err, store.ErrInvalid)
+			}
+
+			if err := st.AppendAttempt(ctx, attempt); !errors.Is(err, store.ErrAlreadyExists) {
+				t.Fatalf("el intento rechazado alteró la clave de idempotencia: %v", err)
+			}
+
+			var outcome string
+			if err := admin.QueryRow(`SELECT outcome FROM dispatch_attempt WHERE idempotency_key = $1`, "key-1").Scan(&outcome); err != nil {
+				t.Fatalf("no se pudo leer el intento: %v", err)
+			}
+			if outcome != "accepted" {
+				t.Fatalf("el outcome del intento cambió a %q", outcome)
+			}
+
+			valid := attempt
+			valid.Outcome = "rejected"
+			valid.Detail = "rechazo posterior válido"
+			valid.FinishedAt = moment().Add(2 * time.Second)
+			if err := st.SaveAttempt(ctx, valid); err != nil {
+				t.Fatalf("SaveAttempt posterior con outcome válido falló: %v", err)
+			}
+		})
+	}
+}
+
+func TestAppendAttemptChecksTheSchemaBeforeTheConflict(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+	orderID := "order-attempt-precedence"
+	mustCreateOrder(t, st, sampleOrder(orderID, ""))
+	lineID := orderID + "-batidos"
+
+	first := store.Attempt{
+		ID:             "attempt-1",
+		LineID:         lineID,
+		Number:         1,
+		IdempotencyKey: "key-1",
+		Outcome:        "accepted",
+		StartedAt:      moment(),
+	}
+	if err := st.AppendAttempt(ctx, first); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+
+	repeatedKey := store.Attempt{
+		ID:             "attempt-2",
+		LineID:         lineID,
+		Number:         2,
+		IdempotencyKey: "key-1",
+		Outcome:        "maybe",
+		StartedAt:      moment(),
+	}
+	if err := st.AppendAttempt(ctx, repeatedKey); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("un intento con clave repetida y outcome inválido devolvió %v, se esperaba %v", err, store.ErrInvalid)
+	}
+
+	repeatedNumber := store.Attempt{
+		ID:             "attempt-3",
+		LineID:         lineID,
+		Number:         1,
+		IdempotencyKey: "key-2",
+		Outcome:        "",
+		StartedAt:      moment(),
+	}
+	if err := st.AppendAttempt(ctx, repeatedNumber); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("un intento con número repetido y outcome vacío devolvió %v, se esperaba %v", err, store.ErrInvalid)
 	}
 }

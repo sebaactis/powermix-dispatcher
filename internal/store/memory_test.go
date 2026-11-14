@@ -1223,28 +1223,28 @@ func TestMemoryCreateOrderRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(order *store.Order) {
 				order.Lines[1].Machine.Kind = "express"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "una línea sin familia de máquina",
 			mutate: func(order *store.Order) {
 				order.Lines[0].Machine.Kind = ""
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "una línea con importe negativo",
 			mutate: func(order *store.Order) {
 				order.Lines[0].AmountCents = -1
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "una línea con un estado que el esquema no conoce",
 			mutate: func(order *store.Order) {
 				order.Lines[1].State = "cancelled"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "dos líneas en la misma posición",
@@ -1299,8 +1299,8 @@ func TestMemoryCreateOrderRejectsHeadersThatSQLRejects(t *testing.T) {
 			tc.mutate(&order)
 
 			err := m.CreateOrder(context.Background(), order)
-			if !errors.Is(err, store.ErrInvalidOrder) {
-				t.Fatalf("CreateOrder devolvió %v, se esperaba %v", err, store.ErrInvalidOrder)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("CreateOrder devolvió %v, se esperaba %v", err, store.ErrInvalid)
 			}
 
 			if _, err := m.LoadOrder(context.Background(), order.ID); !errors.Is(err, store.ErrNotFound) {
@@ -1321,28 +1321,28 @@ func TestMemorySaveLineRejectsLinesThatSQLRejects(t *testing.T) {
 			mutate: func(line *store.Line) {
 				line.Machine.Kind = "express"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "una línea sin familia de máquina",
 			mutate: func(line *store.Line) {
 				line.Machine.Kind = ""
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "un importe negativo",
 			mutate: func(line *store.Line) {
 				line.AmountCents = -1
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "un estado que el esquema no conoce",
 			mutate: func(line *store.Line) {
 				line.State = "cancelled"
 			},
-			want: store.ErrInvalidLine,
+			want: store.ErrInvalid,
 		},
 		{
 			name: "una posición que ya usa otra línea de la orden",
@@ -1404,8 +1404,8 @@ func TestMemorySaveOrderRejectsHeadersThatSQLRejects(t *testing.T) {
 			changed := before
 			tc.mutate(&changed)
 
-			if _, err := m.SaveOrder(context.Background(), changed); !errors.Is(err, store.ErrInvalidOrder) {
-				t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrInvalidOrder)
+			if _, err := m.SaveOrder(context.Background(), changed); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("SaveOrder devolvió %v, se esperaba %v", err, store.ErrInvalid)
 			}
 
 			after := mustOrder(t, m, "order-1")
@@ -1450,8 +1450,8 @@ func TestMemoryChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema(t *t
 	repeated := fixtureOrder()
 	repeated.AmountCents = -1
 
-	if err := m.CreateOrder(ctx, repeated); !errors.Is(err, store.ErrInvalidOrder) {
-		t.Fatalf("una orden repetida y además inválida devolvió %v, se esperaba %v: el CHECK va antes que la clave", err, store.ErrInvalidOrder)
+	if err := m.CreateOrder(ctx, repeated); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("una orden repetida y además inválida devolvió %v, se esperaba %v: el CHECK va antes que la clave", err, store.ErrInvalid)
 	}
 
 	staleLine := mustOrder(t, m, "order-1").Lines[0]
@@ -1468,5 +1468,260 @@ func TestMemoryChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema(t *t
 
 	if _, err := m.SaveOrder(ctx, staleOrder); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("una orden con la versión vieja y un estado inválido devolvió %v, se esperaba %v: la versión va antes que el CHECK", err, store.ErrStale)
+	}
+}
+
+func TestMemoryAppendAttemptRejectsInvalidOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome store.AttemptOutcome
+	}{
+		{name: "outcome desconocido", outcome: "maybe"},
+		{name: "outcome vacío", outcome: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := store.NewMemory()
+			ctx := context.Background()
+			mustCreate(t, m, fixtureOrder())
+
+			invalid := store.Attempt{
+				ID:             "attempt-invalid",
+				LineID:         drinkLineID,
+				Number:         1,
+				IdempotencyKey: "key-invalid",
+				Outcome:        tc.outcome,
+				StartedAt:      baseTime,
+			}
+
+			err := m.AppendAttempt(ctx, invalid)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("AppendAttempt con outcome %q devolvió %v, se esperaba %v", tc.outcome, err, store.ErrInvalid)
+			}
+
+			valid := invalid
+			valid.ID = "attempt-valid"
+			valid.Outcome = "accepted"
+			if err := m.AppendAttempt(ctx, valid); err != nil {
+				t.Fatalf("un intento posterior válido con la misma clave y número falló: %v", err)
+			}
+		})
+	}
+}
+
+func TestMemoryRegisterWebhookRejectsInvalidSource(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{name: "fuente desconocida", source: "stripe"},
+		{name: "fuente vacía", source: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := store.NewMemory()
+			ctx := context.Background()
+
+			invalid := store.Webhook{
+				ID:         "wh-invalid",
+				Source:     tc.source,
+				DedupeKey:  "dedupe-1",
+				ReceivedAt: baseTime,
+			}
+
+			_, err := m.RegisterWebhook(ctx, invalid)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("RegisterWebhook con fuente %q devolvió %v, se esperaba %v", tc.source, err, store.ErrInvalid)
+			}
+
+			valid := store.Webhook{
+				ID:         "wh-valid",
+				Source:     "payment",
+				DedupeKey:  "dedupe-1",
+				ReceivedAt: baseTime,
+			}
+			duplicate, err := m.RegisterWebhook(ctx, valid)
+			if err != nil {
+				t.Fatalf("RegisterWebhook con fuente válida devolvió error: %v", err)
+			}
+			if duplicate {
+				t.Fatalf("el intento rechazado dejó la clave de deduplicación tomada: duplicate=%v, se esperaba false", duplicate)
+			}
+		})
+	}
+}
+
+func TestMemoryAppendAttemptAndWebhookAcceptValidBoundaries(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+
+	outcomes := []store.AttemptOutcome{"accepted", "rejected", "ambiguous", "error"}
+	for i, outcome := range outcomes {
+		attempt := store.Attempt{
+			ID:             fmt.Sprintf("attempt-boundary-%d", i+1),
+			LineID:         drinkLineID,
+			Number:         i + 1,
+			IdempotencyKey: fmt.Sprintf("key-boundary-%d", i+1),
+			Outcome:        outcome,
+			StartedAt:      baseTime,
+		}
+		if err := m.AppendAttempt(ctx, attempt); err != nil {
+			t.Fatalf("AppendAttempt con outcome válido %q falló: %v", outcome, err)
+		}
+	}
+
+	sources := []string{"payment", "batidos", "snacks"}
+	for i, source := range sources {
+		wh := store.Webhook{
+			ID:         fmt.Sprintf("wh-boundary-%d", i+1),
+			Source:     source,
+			DedupeKey:  fmt.Sprintf("dedupe-boundary-%d", i+1),
+			ReceivedAt: baseTime,
+		}
+		duplicate, err := m.RegisterWebhook(ctx, wh)
+		if err != nil {
+			t.Fatalf("RegisterWebhook con fuente válida %q falló: %v", source, err)
+		}
+		if duplicate {
+			t.Fatalf("RegisterWebhook con fuente válida %q devolvió duplicate=true", source)
+		}
+	}
+}
+
+func TestMemoryAppendAttemptRejectsDuplicateAttemptNumberOnSameLine(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+
+	first := store.Attempt{
+		ID:             "attempt-num-1",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-attempt-1",
+		Outcome:        "accepted",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, first); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+
+	sameNumber := store.Attempt{
+		ID:             "attempt-num-2",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-attempt-2",
+		Outcome:        "error",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, sameNumber); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("el mismo número de intento en la misma línea con clave distinta devolvió %v, se esperaba %v", err, store.ErrAlreadyExists)
+	}
+
+	fresh := store.Attempt{
+		ID:             "attempt-num-3",
+		LineID:         drinkLineID,
+		Number:         2,
+		IdempotencyKey: "key-attempt-2",
+		Outcome:        "accepted",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, fresh); err != nil {
+		t.Fatalf("AppendAttempt con la clave del intento rechazado y un número nuevo falló: %v", err)
+	}
+}
+
+func TestMemorySaveAttemptRejectsInvalidOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome store.AttemptOutcome
+	}{
+		{name: "outcome desconocido", outcome: "maybe"},
+		{name: "outcome vacío", outcome: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := store.NewMemory()
+			ctx := context.Background()
+			mustCreate(t, m, fixtureOrder())
+
+			attempt := store.Attempt{
+				ID:             "attempt-1",
+				LineID:         drinkLineID,
+				Number:         1,
+				IdempotencyKey: "key-1",
+				Outcome:        "accepted",
+				StartedAt:      baseTime,
+			}
+			if err := m.AppendAttempt(ctx, attempt); err != nil {
+				t.Fatalf("AppendAttempt: %v", err)
+			}
+
+			invalid := attempt
+			invalid.Outcome = tc.outcome
+			invalid.FinishedAt = baseTime.Add(time.Second)
+
+			err := m.SaveAttempt(ctx, invalid)
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("SaveAttempt con outcome %q devolvió %v, se esperaba %v", tc.outcome, err, store.ErrInvalid)
+			}
+
+			if err := m.AppendAttempt(ctx, attempt); !errors.Is(err, store.ErrAlreadyExists) {
+				t.Fatalf("el intento rechazado alteró la clave de idempotencia: %v", err)
+			}
+
+			valid := attempt
+			valid.Outcome = "rejected"
+			valid.Detail = "rechazo posterior válido"
+			valid.FinishedAt = baseTime.Add(2 * time.Second)
+			if err := m.SaveAttempt(ctx, valid); err != nil {
+				t.Fatalf("SaveAttempt posterior con outcome válido falló: %v", err)
+			}
+		})
+	}
+}
+
+func TestMemoryAppendAttemptChecksTheSchemaBeforeTheConflict(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+	mustCreate(t, m, fixtureOrder())
+
+	first := store.Attempt{
+		ID:             "attempt-1",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-1",
+		Outcome:        "accepted",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, first); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+
+	repeatedKey := store.Attempt{
+		ID:             "attempt-2",
+		LineID:         drinkLineID,
+		Number:         2,
+		IdempotencyKey: "key-1",
+		Outcome:        "maybe",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, repeatedKey); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("un intento con clave repetida y outcome inválido devolvió %v, se esperaba %v", err, store.ErrInvalid)
+	}
+
+	repeatedNumber := store.Attempt{
+		ID:             "attempt-3",
+		LineID:         drinkLineID,
+		Number:         1,
+		IdempotencyKey: "key-2",
+		Outcome:        "",
+		StartedAt:      baseTime,
+	}
+	if err := m.AppendAttempt(ctx, repeatedNumber); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("un intento con número repetido y outcome vacío devolvió %v, se esperaba %v", err, store.ErrInvalid)
 	}
 }
