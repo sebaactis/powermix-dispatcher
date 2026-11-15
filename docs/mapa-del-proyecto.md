@@ -51,7 +51,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `cmd/fakeapi` | levanta los dos sustitutos locales + siembra inicial + guardia de loopback | `main`, `requireLoopback` |
 | `migrations` | los `.sql` del esquema, **dentro del binario** (`//go:embed`) | `Files` |
 | `cmd/migrate` | aplica las migraciones pendientes y termina; es el paso previo del compose | `main`, `run` |
-| `internal/migrate` | qué archivos faltan, en una transacción por archivo, bajo un advisory lock | `Apply`, `versions`, `missing`, `applyOne` |
+| `internal/migrate` | qué archivos faltan y vigila huellas SHA-256 de las ya aplicadas, en una transacción por archivo, bajo un advisory lock | `Apply`, `versions`, `checksum`, `missing`, `applyOne` |
 | `internal/machine` | **vocabulario compartido**: la familia de máquina y la referencia a una máquina concreta | `Kind`, `Batidos`, `Snacks`, `Ref` |
 | `internal/linestate` | **vocabulario compartido**: el estado de una línea | `State`, `Pending`, `Sent`, `Brewing`, `Delivered`, `Failed`, `InDoubt` |
 | `internal/config` | topología del mueble desde JSON + secretos por entorno, validada al arrancar | `Load`, `Config`, `Kiosk`, `Machine`, `validate` |
@@ -191,7 +191,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 
 - **`main` no tiene ni un test.** Los 42 archivos viven en `archive/tests`, así que `go test ./...` responde `[no test files]` en todos los paquetes y nada frena una regresión hasta que vuelvan.
 - **El store de Postgres sólo corre con `TEST_DATABASE_URL` definida**, pero ya se ejecutó contra una base real (L21, L22 y este paso): sus 27 tests (25 en `postgres_test.go` + 2 en `seed_test.go`) pasan sobre un Postgres descartable. Viven en `archive/tests` (regla L16), así que sin la variable se saltean y `main` no los corre.
-- **Lo mismo para el runner de migraciones**: `internal/migrate` (7 tests, en `archive/tests`, regla L16) corre contra un Postgres real cuando `TEST_DATABASE_URL` está definida y ya aplicó las 6 versiones sobre un esquema vacío; en el compose aplicó sólo `0006_notification_sent` sobre la base existente y la segunda corrida informó «El esquema ya está al día». Un volumen anterior a este cambio necesita `docker compose down -v` una vez.
+- **Lo mismo para el runner de migraciones**: `internal/migrate` corre contra un Postgres real cuando `TEST_DATABASE_URL` está definida y ya aplicó las 6 versiones sobre un esquema vacío; en el compose aplicó sólo `0006_notification_sent` sobre la base existente y la segunda corrida informó «El esquema ya está al día». `schema_migrations` guarda versión, fecha y huella SHA-256 (`checksum`); las migraciones ya aplicadas son inmutables (cualquier cambio requiere una migración nueva). Un volumen creado antes de que existiera el runner (sin `schema_migrations`) necesita `docker compose down -v` una vez; una base migrada antes del checksum recibe sus huellas en la primera corrida (*trust on first use*: el runner agrega la columna y completa cada fila con el hash del archivo actual).
 - **`go test -race` no corre** en esta máquina. Casi toda la concurrencia se demuestra de forma determinista (copias viejas inyectadas); la excepción es el chequeo previo, que sí corre sus dos goroutines contra una barrera (`preflight/checker_parallel_test.go`), pero sin detector de carreras.
 - **El end-to-end es manual**: `POST /orders` → `pay` → callbacks → `delivered` se corrió a mano contra los falsos, no está automatizado.
 - Los webhooks de callback **no** se verificaron contra los proveedores reales: no hay credenciales ni sandbox.
@@ -202,7 +202,7 @@ Si un cambio rompe alguna de estas, el cambio está mal.
 | --- | --- |
 | Decisiones de dinero (proveedor de pago, política de devolución, quién asume la pérdida) | **abiertas**, son del dueño del producto; el código ya tiene los ganchos |
 | Hosting + `PUBLIC_BASE_URL` | sin definir; sin eso el callback de batidos nunca llega |
-| Migraciones sin volver atrás | el runner sólo aplica; no hay `down` ni checksum del archivo ya aplicado, así que editar un `.sql` que ya corrió no cambia nada y no avisa |
+| Migraciones sin volver atrás | el runner sólo aplica hacia adelante; no hay `down`, pero el `checksum` en `schema_migrations` vigila la integridad y corta si un archivo aplicado cambia |
 | El reclamo es un plazo, no un lease | si un despacho tarda más que el plazo (2 min), el barrido reconcilia una llamada que sigue en vuelo; sin latido no hay forma de distinguir «trabado» de «lento» |
 | Callback de snacks sin firma | el proveedor no documenta firma en el aviso; sólo lo protege el secreto de la ruta. Quien conozca esa URL puede cerrar líneas como entregadas. Mitigación posible: lista de IPs del proveedor, a pedir cuando haya credenciales reales |
 

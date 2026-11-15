@@ -121,7 +121,7 @@ callback secrets and the fake providers. No real credential is involved.
 | Service | What it does |
 | --- | --- |
 | `db` | PostgreSQL 16, named volume `pgdata`, `pg_isready` healthcheck |
-| `migrate` | builds the `migrate` target; applies the pending `migrations/*.sql` from inside the binary, one transaction per file, tracked in `schema_migrations`; exits when done |
+| `migrate` | builds the `migrate` target; applies the pending `migrations/*.sql` from inside the binary, one transaction per file, tracked in `schema_migrations` with SHA-256 checksums; exits when done |
 | `api` | builds the `runtime` target of the `Dockerfile` and serves the tablet backend, store on PostgreSQL |
 | `fakeapi` | builds the `fakeapi` target; both stand-in provider APIs, with `DEMO-BATIDO-VAINILLA` seeded so the drink half of a combo exists |
 
@@ -134,11 +134,13 @@ is safe.
 `.sql` files are embedded in the binary, so the container applies exactly the
 files it was built with. It keeps `schema_migrations`, takes an advisory lock so
 two runners never migrate at once, and runs each pending file in one transaction
-together with its version row. A second `up` is a no-op (`el esquema ya está al
-día`) instead of failing on DDL that is already applied, and a broken file rolls
-back and exits non-zero, which keeps `api` from starting. A volume created before
-the runner existed has the tables but no `schema_migrations`: run
-`docker compose down -v` once.
+together with its version row and its content checksum (normalizing CRLF to LF).
+Applied migrations are immutable: if a previously applied migration file differs
+from its stored checksum, the runner aborts before running any pending migrations.
+A second `up` is a no-op (`el esquema ya está al día`) instead of failing on DDL
+that is already applied, and a broken file rolls back and exits non-zero, which
+keeps `api` from starting. A volume created before the runner existed has the tables
+but no `schema_migrations`: run `docker compose down -v` once.
 
 The fake's admin port (9403) is not published. The fake refuses to bind its admin
 surface outside loopback, and a process bound to `127.0.0.1` inside a container
