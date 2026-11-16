@@ -48,6 +48,14 @@ decision lives in `docs/comentarios-codigo.md`, indexed by symbol
 (`Símbolo --> "texto"`). Keep it updated when behaviour changes; a stale note is
 worse than none.
 
+## Documentation
+
+- `docs/arquitectura.md`: Architecture overview and detailed step-by-step flow with `file:line` references.
+- `docs/flujo-del-sistema.svg`: Visual diagram of architecture layers, HTTP routes, and purchase flow.
+- `docs/pendientes.md`: Current backlog, technical debts, external blockers, unverified areas, and recommended work order.
+- `docs/comentarios-codigo.md`: Detailed rationale and code explanation indexed by file and symbol.
+- `docs/proveedores/`: Original vendor specifications and plain-text extractions (local only, git-ignored, copy manually).
+
 ## Run
 
 ```bash
@@ -194,18 +202,18 @@ of why the code looks the way it does.
 
 | Kept out | Why |
 | --- | --- |
-| `Batidos-Remoto-API.md`, the Snacks PDF, `ys-vending.txt` | Third-party material with the vendor's copyright notice |
+| `docs/proveedores/` (`batidos-api.md`, `snacks-api.pdf`, `snacks-api.txt`) | Third-party vendor documents with copyright notices |
 | `design/` | Internal design boards and their screenshots |
 | `.env`, `*.local.json` | Real credentials and real topology |
 
-Consequence: a fresh clone cannot read the source contracts. The wire rules those
+Consequence: a fresh clone cannot read the vendor contracts directly without copying them manually into `docs/proveedores/`. See `docs/pendientes.md` for instructions on acquiring them and the open questions. The wire rules those
 documents define live in code and in tests (`internal/dispenser/*/sign*.go`, the
 `openssl` vectors), which is what actually prevents a regression.
 
 ## Tests that exist because the docs were ambiguous
 
 All of them live in branch `archive/tests`, not in `main` (see
-`docs/mapa-del-proyecto.md`).
+`docs/arquitectura.md`).
 
 - Two Base64 HMAC vectors and two MD5 vectors computed with `openssl`, not with Go,
   so the test cannot agree with the implementation by accident.
@@ -216,7 +224,4 @@ All of them live in branch `archive/tests`, not in `main` (see
 
 ## Known open questions
 
-These still block real integration: the real Batidos API domain, whether a
-redemption code is single use, whether `deviceNo` is really required, the exact
-JSON of the Snacks remote shipment call, and whether `PaymentOrderId` is an
-idempotency key. They are tracked in `odd/tasks/combos-remotos.md`.
+Open questions regarding real provider integration (domains, signatures, parameters, and idempotency) and remaining technical debts are tracked in `docs/pendientes.md` and `odd/tasks/combos-remotos.md`.

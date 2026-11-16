@@ -5,7 +5,7 @@ El código fuente no lleva comentarios a propósito: acá se consulta, se busca 
 
 Formato: `Símbolo --> "texto del comentario"`.
 
-> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 42 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/mapa-del-proyecto.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
+> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 42 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/arquitectura.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
 
 ## cmd/api/main.go
 
@@ -103,7 +103,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### const
 
-> Documentado en "YS Vending Management Platform API Document V1.0.1".
+> Documentado en `docs/proveedores/snacks-api.pdf` ("YS Vending Management Platform API Document V1.0.1").
 > El host de producción es el que documenta el proveedor. No se renombra con
 > el nombre de la máquina: es un contrato ajeno.
 
@@ -673,7 +673,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### isRejected
 
-> Decide si una respuesta es un rechazo del proveedor: status HTTP fuera de 2xx, `code` distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`ys-vending.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir.
+> Decide si una respuesta es un rechazo del proveedor: status HTTP fuera de 2xx, `code` distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`docs/proveedores/snacks-api.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir.
 
 ## internal/dispenser/snacks/client_test.go
 
@@ -791,7 +791,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > VerifySignature revisa presencia de headers, ventana de reloj y firma. Sólo lo
 > usa el servidor falso local. Nuestro callback de snacks **no** lo usa: la
-> documentación del aviso de despacho (`ys-vending.txt:2023-2075`) describe
+> documentación del aviso de despacho (`docs/proveedores/snacks-api.txt:2023-2075`) describe
 > sólo el cuerpo y ningún header de firma, y exigir una firma que el proveedor
 > no manda rechazaría todos sus avisos. El callback se autentica sólo con el
 > secreto de la ruta.
@@ -2186,7 +2186,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/migrate/migrate_test.go
 
-> Este archivo **no está en `main`**: vive en la rama `archive/tests` como el resto de los tests, y vuelve con el `git checkout` de `docs/mapa-del-proyecto.md`. Se documenta acá porque es el porqué del test, y viaja con él.
+> Este archivo **no está en `main`**: vive en la rama `archive/tests` como el resto de los tests, y vuelve con el `git checkout` de `docs/arquitectura.md`. Se documenta acá porque es el porqué del test, y viaja con él.
 >
 > Seis tests, dos sin base y cuatro contra Postgres. Los dos que corren siempre prueban la parte pura: el orden y el nombre de la versión a partir de un `fstest.MapFS` con un `.txt` colado, y la resta de `missing`.
 >
