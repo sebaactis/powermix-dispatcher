@@ -2401,3 +2401,33 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## internal/payments/mercadopago — tests (rama `tests/mercadopago`)
 
 > El vector de la firma se calculó fuera de Go, con Python (`hmac`) y `openssl dgst -hmac`, que coincidieron; así el test no se valida contra la misma implementación que prueba. El `data.id` del vector está en mayúsculas a propósito: sacar el `ToLower` pone en rojo cinco tests, y eso se verificó mutando el código. Los tests del cliente usan `httptest` y fijan el cuerpo enviado campo por campo, la clave de idempotencia, que un pedido inválido no sale de la máquina, que el token no aparece en los errores y que un id con `../` no escapa de `/v1/orders`.
+
+## internal/fakeapi/mercadopago.go — el Mercado Pago falso
+
+### MercadoPago
+
+> Sustituto local de la Orders API para probar el circuito completo sin credenciales. Responde las tres rutas que usa el adaptador (`POST /v1/orders`, `GET /v1/orders/{id}`, `POST /v1/orders/{id}/cancel`) con la misma forma de JSON que la real, y exige `Authorization: Bearer` y `X-Idempotency-Key` como la real. Sólo acepta QR dinámico con un pago por el total: el falso refleja lo que nuestro sistema pide, no todo lo que Mercado Pago admite.
+
+### createOrder
+
+> Idempotente por `X-Idempotency-Key`: la misma clave devuelve la misma orden, que es lo que permite que la tablet reintente un `POST /orders` sin duplicar el QR. `expiration_time` se interpreta (`PT3M`, `PT90S`, `PT1H2M3S`); sin él vence a los 15 minutos, como la real.
+
+### expireLocked
+
+> El vencimiento es perezoso: una orden `created` pasa a `expired` cuando alguien la mira después de `expiresAt`. No hay goroutines ni relojes de fondo, y con `SetClock` los tests mueven el tiempo sin dormir.
+
+### cancelOrder
+
+> Cancela sólo una orden `created`; cancelar una ya cancelada devuelve la misma orden (la clave de idempotencia fija del adaptador hace que un reintento sea inocuo); en cualquier otro estado responde `409`, que es lo que el adaptador traduce a `ErrNotCancelable`. Que la real use `409` está por confirmar en el sandbox.
+
+### Pay / Expire / Notify
+
+> Las tres acciones de la administración (`/admin/mercadopago/pay`, `/expire`, `/notify`). La orden se identifica por el id `ORD…` o por el `external_reference`, que es nuestro id de orden y el que se tiene a mano en una prueba manual. `Pay` con `amount_cents` distinto del total simula el pago con monto equivocado (`payment_mismatch`). `Pay` y `Expire` cambian el estado y la administración después llama a `Notify`; `Notify` solo sirve para repetir un aviso y probar que el webhook es idempotente.
+
+### Notify
+
+> Arma el aviso como el real: `POST <-mp-webhook-url>?data.id=<ORD…>&type=order`, con `X-Request-Id` aleatorio por envío y `X-Signature` firmado con `mercadopago.SignatureHeader`, la misma función que valida del otro lado. Cuerpo mínimo, porque nuestra API no lo lee: la firma no lo cubre. El estado se copia bajo el candado y el envío sale sin el candado, así un webhook lento no bloquea la API falsa. La respuesta de la administración informa el código HTTP que devolvió nuestra API y la URL **con el secreto de ruta tapado**. Sin `-mp-webhook-url` no envía nada y lo dice (`"sent": false`).
+
+## internal/fakeapi/mercadopago_test.go (rama `tests/mercadopago`)
+
+> Los tests conectan el adaptador real de la unidad 2a con el falso y un receptor `httptest` que valida cada aviso con `mercadopago.VerifySignature`: es la prueba de que el cliente, el falso y la firma hablan el mismo idioma. Cubren la idempotencia del alta, el pago con y sin monto distinto, el vencimiento en el borde exacto de 180 s, la cancelación repetida, la cancelación de una orden pagada (`ErrNotCancelable`), el reenvío con un `x-request-id` nuevo, el token equivocado y que la URL devuelta no expone el secreto. Firmar con un secreto equivocado pone en rojo el test del aviso; eso se verificó mutando el código.

@@ -11,8 +11,8 @@ import (
 	"compras-remotas/internal/dispenser/snacks"
 )
 
-func NewAdmin(batidos *Batidos, snacks *Snacks) http.Handler {
-	return &adminHandler{batidos: batidos, snacks: snacks}
+func NewAdmin(batidos *Batidos, snacks *Snacks, mp *MercadoPago) http.Handler {
+	return &adminHandler{batidos: batidos, snacks: snacks, mp: mp}
 }
 
 const adminMaxBodyBytes = 64 << 10
@@ -26,11 +26,15 @@ const (
 	adminSnacksDevicePath      = "/admin/snacks/device"
 	adminSnacksSlotPath        = "/admin/snacks/slot"
 	adminSnacksOrderPath       = "/admin/snacks/order"
+	adminMPPayPath             = "/admin/mercadopago/pay"
+	adminMPExpirePath          = "/admin/mercadopago/expire"
+	adminMPNotifyPath          = "/admin/mercadopago/notify"
 )
 
 type adminHandler struct {
 	batidos *Batidos
 	snacks  *Snacks
+	mp      *MercadoPago
 }
 
 func (a *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +60,12 @@ func (a *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.setSnacksSlot(w, r)
 	case adminSnacksOrderPath:
 		a.setSnacksOrder(w, r)
+	case adminMPPayPath:
+		a.mpAction(w, r, func(ref string, body mpAdminBody) (string, error) { return a.mp.Pay(ref, body.AmountCents) })
+	case adminMPExpirePath:
+		a.mpAction(w, r, func(ref string, _ mpAdminBody) (string, error) { return a.mp.Expire(ref) })
+	case adminMPNotifyPath:
+		a.mpAction(w, r, func(ref string, _ mpAdminBody) (string, error) { return ref, nil })
 	default:
 		respondAdminError(w, http.StatusNotFound, "ruta de administración desconocida")
 	}
@@ -300,6 +310,51 @@ func (a *adminHandler) setSnacksOrder(w http.ResponseWriter, r *http.Request) {
 
 	a.snacks.SetOrderStatus(*body.Status, *body.Name)
 	respondAdminOK(w)
+}
+
+type mpAdminBody struct {
+	Order       string `json:"order"`
+	AmountCents int64  `json:"amount_cents"`
+}
+
+func (a *adminHandler) mpAction(w http.ResponseWriter, r *http.Request, action func(string, mpAdminBody) (string, error)) {
+	if a.mp == nil {
+		respondAdminError(w, http.StatusNotFound, "el Mercado Pago falso no está activo")
+		return
+	}
+
+	body, ok := decodeAdmin[mpAdminBody](w, r)
+	if !ok {
+		return
+	}
+
+	if body.Order == "" {
+		respondAdminError(w, http.StatusBadRequest, "hace falta la orden (order): el id ORD… o el external_reference")
+		return
+	}
+
+	if body.AmountCents < 0 {
+		respondAdminError(w, http.StatusBadRequest, "amount_cents no puede ser negativo")
+		return
+	}
+
+	orderID, err := action(body.Order, body)
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, errMPNotFound) {
+			status = http.StatusNotFound
+		}
+		respondAdminError(w, status, err.Error())
+		return
+	}
+
+	delivery, err := a.mp.Notify(orderID)
+	if err != nil {
+		respondAdminError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondAdmin(w, http.StatusOK, map[string]any{"ok": true, "order_id": orderID, "webhook": delivery})
 }
 
 func decodeAdmin[T any](w http.ResponseWriter, r *http.Request) (T, bool) {

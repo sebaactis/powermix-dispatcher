@@ -28,7 +28,7 @@ git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep 
 git rm -q -f $(git ls-files '*_test.go')   # índice y archivo en un solo paso; -f cubre la copia editada
 
 # local, contra los servidores falsos
-go run ./cmd/fakeapi                   # 9401 batidos, 9402 snacks, 9403 administración
+go run ./cmd/fakeapi                   # 9401 batidos, 9402 snacks, 9403 administración, 9404 Mercado Pago
 go run ./cmd/api -config config.local.json -combos combos.local.json
 
 # esquema: una vez por base, antes de arrancar la API con STORE=postgres
@@ -78,7 +78,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/notify` | Puerto de avisos + transporte por log | `Notifier`, `Kind`, `Event` |
 | `internal/sweep` | Barrido periódico que dispara `ReconcileDue` | `Runner`, `New` |
 | `internal/logging` | `slog` con mensajes capitalizados en el borde | `New`, `Capitalize` |
-| `internal/fakeapi` | Implementación de los dos proveedores falsos + administración | `NewBatidos`, `NewSnacks`, `NewAdmin` |
+| `internal/fakeapi` | Implementación de los proveedores falsos (batidos, snacks, Mercado Pago) + administración | `NewBatidos`, `NewSnacks`, `NewMercadoPago`, `NewAdmin` |
 
 ## Dirección de las dependencias
 
@@ -200,7 +200,7 @@ main (:38)
  └─ SIGINT/SIGTERM → Shutdown 10 s y espera al barrido ......... :184
 ```
 
-Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` levanta máquinas falsas (puertos 9401 batidos, 9402 snacks, 9403 administración local).
+Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` levanta máquinas falsas (puertos 9401 batidos, 9402 snacks, 9403 administración local, 9404 Mercado Pago).
 
 ## 2. Rutas HTTP
 

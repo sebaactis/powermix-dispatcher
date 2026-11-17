@@ -29,12 +29,12 @@ port: it never learns that a drink needs a code.
 ```
 cmd/api          backend for the tablet: catalog, orders, live status, simulated pay
 cmd/migrate      one-shot schema runner: applies the embedded `migrations/*.sql`
-cmd/fakeapi      runs both local stand-ins plus their test-only admin surface
+cmd/fakeapi      runs the local stand-ins (Batidos, Snacks, Mercado Pago) plus their test-only admin surface
 internal/config  topology from JSON, secrets from env, validated at startup
 internal/dispenser          the port: Check / Dispatch / Reconcile
 internal/dispenser/batidos       signature and UTC+8 campaign dates
 internal/dispenser/snacks  HMAC signature, nonce, clock window
-internal/fakeapi            local Batidos and Snacks, with their real rules enforced
+internal/fakeapi            local Batidos, Snacks and Mercado Pago, with their real rules enforced
 internal/httpapi            the four tablet endpoints, mapped onto catalog + engine + store
 internal/payments           Refunder port + mock that never moves money
 internal/notify             Notifier port + structured log transport
@@ -81,6 +81,7 @@ Local stand-ins, so integration work can start without credentials:
 go run ./cmd/fakeapi
 # fake batidos API  -> http://127.0.0.1:9401
 # fake snacks API   -> http://127.0.0.1:9402
+# fake Mercado Pago -> http://127.0.0.1:9404   (Orders API: create, get, cancel)
 # admin surface     -> http://127.0.0.1:9403   (POST only, loopback only)
 ```
 
@@ -109,6 +110,9 @@ fake forgets them.
 | `/admin/snacks/device` | `{"online":true,"sell_status":1,"fault_state":0,"lock_type":0,"stockout_state":0}` | applies only the fields present |
 | `/admin/snacks/slot` | `{"slot_no":"1","stock":5,"slot_status":1}` | sets the stock and/or the status of one slot |
 | `/admin/snacks/order` | `{"status":1,"name":"…"}` or `{"empty":true}` | changes what the orders page reports, or empties it |
+| `/admin/mercadopago/pay` | `{"order":"<ORD… or external_reference>","amount_cents":150050}` | the customer pays: the order goes to `processed`/`accredited` and a signed webhook goes to `-mp-webhook-url`; `amount_cents` is optional (defaults to the order total) and a different value simulates a wrong amount |
+| `/admin/mercadopago/expire` | `{"order":"…"}` | expires a `created` order now and sends the webhook |
+| `/admin/mercadopago/notify` | `{"order":"…"}` | sends the webhook again with the current state and a new `x-request-id` |
 
 > Local tests only. There is no authentication, so the admin server must never be
 > reachable from another machine: `-admin-addr` defaults to `127.0.0.1:9403` and
