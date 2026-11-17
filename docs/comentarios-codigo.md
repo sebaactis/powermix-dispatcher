@@ -2345,3 +2345,59 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### TestEngineDoesNotNotifyWhenItCannotTellWhetherTheNoticeWentOut
 
 > `failingNoticeStore` envuelve la memoria y hace fallar `NotificationSent`. El caso fija la decisión ante la duda: sin respuesta del registro, `settleOrder` devuelve el error y **no** avisa, porque avisar sin saber si ya se avisó es exactamente el problema que S9 vino a resolver. La orden queda `failed` y el webhook no se registra, así que el reintento del proveedor encuentra el trabajo pendiente.
+
+## internal/payments/gateway.go — el puerto del cobro
+
+### Gateway
+
+> Las tres cosas que el motor le pide a un cobrador de QR: crear el cobro, preguntar en qué estado está y pedir que se cancele. No hay «confirmar»: la confirmación la da el proveedor, y el motor sólo la lee con `Lookup`. El puerto no importa `store` ni conoce `PaymentIntent`; traducir un `Charge` al registro guardado es trabajo del motor.
+
+### ChargeStatus
+
+> El vocabulario del proveedor, reducido a lo que el motor decide: `pending`, `approved`, `expired`, `cancelled` y `unknown`. `unknown` no estaba en el diseño y se agregó a propósito: Mercado Pago tiene estados (`refunded`, `failed`, `action_required`) que no deben caer en silencio en ninguno de los otros cuatro. Ante `unknown` el motor no despacha ni cancela: avisa. `amount_mismatch` no está acá porque no lo dice el proveedor; lo decide el motor comparando montos.
+
+### QRRequest
+
+> `OrderID` es a la vez el `external_reference` y la clave de idempotencia: reintentar con la misma orden devuelve el mismo QR. `ExpiresIn` es una duración y no un instante, porque así lo pide Mercado Pago (`expiration_time`, ISO 8601).
+
+### Charge
+
+> `ProviderStatus` y `ProviderStatusDetail` llevan el texto crudo del proveedor para los logs y los avisos: si el mapeo está mal, el dato original permite verlo. `PaidAmountCents` es lo que el proveedor dice que se pagó, que el motor compara con `AmountCents` del catálogo.
+
+### ErrNotFound / ErrNotCancelable
+
+> Los dos errores que el motor necesita distinguir. `ErrNotCancelable` significa «el proveedor no quiso cancelar en el estado en que está»: la respuesta correcta es un `Lookup` y obedecer lo que diga, nunca cancelar la orden por cuenta propia.
+
+## internal/payments/mercadopago — el adaptador de la Orders API
+
+### Client
+
+> `net/http` sin el SDK, con el mismo esqueleto que el cliente de snacks: timeout de 10 s, respuesta acotada a 1 MB y errores en castellano. El access token sólo viaja en el `Authorization` y nunca entra en un mensaje de error. Con `baseURL` vacía usa `https://api.mercadopago.com`; el falso de la unidad 2b se conecta cambiando esa URL.
+
+### CreateQR
+
+> Valida el pedido **antes** de llamar: un `external_reference` fuera de `[A-Za-z0-9_-]{1,64}`, una caja vacía o un monto no positivo no llegan a Mercado Pago. Manda `type: "qr"`, `config.qr.mode: "dynamic"`, el monto en `total_amount`, en el único pago y en el único ítem (la documentación de la migración desde Instore marca `items` como obligatorio). Rechaza dos respuestas que serían un 200 inútil: una orden sin `type_response.qr_data` —no hay nada que dibujar— y una con otro `external_reference`, que sólo puede ser una colisión de la clave de idempotencia.
+
+### Cancel
+
+> `POST /v1/orders/{id}/cancel` con la clave de idempotencia `cancel-<id>`, fija, para que un reintento no pida dos cancelaciones. **Provisorio hasta el sandbox:** un `409` se traduce a `ErrNotCancelable`; la documentación dice que sólo se cancela una orden en `created` pero no qué código devuelve en otro estado.
+
+### toCharge / paidAmount
+
+> El monto pagado sale de `total_paid_amount` si viene; si no, de la suma de los pagos en `processed`, con `paid_amount` cuando existe y `amount` si no. Un monto ilegible es un error y no un cero: un cero silencioso sería un `amount_mismatch` falso.
+
+### amount.go
+
+> Los montos de Mercado Pago son texto decimal (`"1500.50"`). Se parsean a centavos sin pasar por `float64` y se rechaza cualquier cosa que no sea `dígitos[.d[d]]`: signo, coma, exponente, tres decimales. `formatExpiration` usa minutos cuando la duración es exacta (`PT3M`, la forma de los ejemplos) y segundos si no.
+
+### mapStatus
+
+> `created` → pending, `processed` → approved, `expired` → expired, `canceled` → cancelled; cualquier otro → unknown. Los cinco estados de una orden QR salen de la tabla «Status da order» de la documentación; **queda por confirmar en el sandbox** que una orden pagada llegue a `processed` y no se quede en un estado intermedio.
+
+### signature.go
+
+> `VerifySignature` reproduce el validador oficial: arma `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`, omite un par vacío, calcula HMAC-SHA256 con el secreto del webhook y compara en tiempo constante (`hmac.Equal` sobre los bytes, no sobre el texto hex). Dos detalles que el diseño no tenía y salen del SDK oficial de Go: **`data.id` va en minúsculas** dentro del manifiesto, y el encabezado puede traer espacios y los pares en cualquier orden. La ventana de `ts` es de 5 minutos para los dos lados: un aviso del futuro también es sospechoso. Un `data.id` vacío se rechaza aunque el SDK lo admita, porque sin él no hay qué consultar. `SignatureHeader` es la operación inversa y existe para el Mercado Pago falso.
+
+## internal/payments/mercadopago — tests (rama `tests/mercadopago`)
+
+> El vector de la firma se calculó fuera de Go, con Python (`hmac`) y `openssl dgst -hmac`, que coincidieron; así el test no se valida contra la misma implementación que prueba. El `data.id` del vector está en mayúsculas a propósito: sacar el `ToLower` pone en rojo cinco tests, y eso se verificó mutando el código. Los tests del cliente usan `httptest` y fijan el cuerpo enviado campo por campo, la clave de idempotencia, que un pedido inválido no sale de la máquina, que el token no aparece en los errores y que un id con `../` no escapa de `/v1/orders`.
