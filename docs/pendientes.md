@@ -1,6 +1,6 @@
 # Pendientes
 
-Estado al 2026-11-15; se actualiza al cerrar cada paso.
+Estado al 2026-11-16; se actualiza al cerrar cada paso.
 
 Para la visión de arquitectura y detalle técnico del sistema, consulta [arquitectura.md](arquitectura.md).
 
@@ -8,13 +8,16 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 ## A. Funcionalidades pendientes
 
-| # | Qué falta | Qué hay hoy | Quién decide |
+| # | Qué falta | Qué hay hoy | Estado |
 | --- | --- | --- | --- |
-| 1 | **Cobro real**: generar el QR (Mercado Pago, MODO u otro), recibir el webhook de cobro y validarlo | `POST /orders/{id}/pay` simulado; responde 403 fuera del entorno `sandbox` (`internal/httpapi/orders.go:54-58`) | Dueño del producto (elegir pasarela de pago) |
-| 2 | **Devoluciones**: política (qué se devuelve si falla una de las dos máquinas, plazos, quién absorbe la pérdida) y su ejecución | `MockRefunder` sólo escribe un log (`internal/payments/refund.go:25-46`) y nadie lo llama: ningún paquete importa `internal/payments` | Política: dueño del producto; conectarlo al motor de órdenes: técnico |
-| 3 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt` | `LogNotifier` sólo escribe un WARN en el log (`internal/notify/notify.go:26-42`); la deduplicación con la tabla `notification_sent` ya funciona | Canal (Telegram, Slack, email): dueño del producto; adaptador: técnico |
-| 4 | **App de la tablet** (Android, modo kiosco): combos, QR, progreso del despacho, resultado | No existe en este repositorio; proyecto planeado en un repo independiente `../compras-remotas-app` | Técnico |
-| 5 | **Prueba de punta a punta automatizada** | Probado a mano contra el servidor local `cmd/fakeapi` | Técnico |
+| 1 | **Cobro real con QR de Mercado Pago**: generar el QR, recibir el webhook de cobro y validarlo | `POST /orders/{id}/pay` simulado; responde 403 fuera del entorno `sandbox` (`internal/httpapi/orders.go:54-58`) | Diseño acordado: [diseno-mercadopago.md](diseno-mercadopago.md). Sin implementar |
+| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt` | `LogNotifier` sólo escribe un WARN en el log (`internal/notify/notify.go:26-42`); la deduplicación con la tabla `notification_sent` ya funciona | Canal: WhatsApp o similar; falta elegir proveedor y escribir el adaptador |
+| 3 | **Prueba de punta a punta automatizada** | Probado a mano contra el servidor local `cmd/fakeapi` | Técnico |
+
+### Fuera del MVP
+
+- **Devoluciones**: no entran en el primer MVP. `MockRefunder` (`internal/payments/refund.go:25-46`) queda sin conectar a propósito: ningún paquete importa `internal/payments`.
+- **App de la tablet**: ya existe en el repo `../compras-remotas-app` y no se sigue desde este documento.
 
 ---
 
@@ -34,10 +37,10 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 ## C. Bloqueos externos
 
-- **Hosting y `PUBLIC_BASE_URL`**: Sin una URL pública con HTTPS, el proveedor de batidos nunca puede enviar su webhook de callback (`cmd/api/main.go:85-88`).
-- **Credenciales y sandbox de los dos proveedores**: Actualmente no se dispone de credenciales reales ni acceso a entornos de prueba oficiales de Batidos ni Snacks.
-- **Dudas de la documentación de proveedores** (detalle en `odd/tasks/combos-remotos.md:140-157`):
-  - *Batidos*: dominio real de la API en producción, uso de mayúsculas en `key-md5`, obligatoriedad de `deviceNo`.
+- **Hosting y `PUBLIC_BASE_URL`**: El destino es Render (donde ya corren `backend-powermix` y `powermix-pvs`), pero el servicio todavía no existe. Sin una URL pública con HTTPS, ni el proveedor de batidos (`cmd/api/main.go:85-88`) ni Mercado Pago pueden enviar sus webhooks.
+- **Credenciales y sandbox de los dos proveedores**: Actualmente no se dispone de credenciales reales ni acceso a entornos de prueba oficiales de Batidos ni Snacks. Al pedirlas a Batidos, confirmar si la Merchant Open API usa el mismo par `key`/`secret` que la integración de pago de `vps-powermix`.
+- **Dudas de la documentación de proveedores** (detalle en `odd/tasks/combos-remotos.md`, sección «Huecos abiertos»):
+  - *Batidos*: dominio real de la API en producción y obligatoriedad de `deviceNo`. El formato de `key-md5` quedó resuelto (L46): MD5 hex en minúsculas, igual que en `vps-powermix`.
   - *Snacks*: estructura JSON real de la respuesta de `shipment`, si `PaymentOrderId` actúa efectivamente como clave de idempotencia, y si el campo `retailPrice` descuenta saldo de la cuenta comercial.
 
 ---
@@ -56,10 +59,12 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 ## Orden recomendado
 
-1. **Decisiones del dueño del producto**: Pasarela de pago definitiva, política de devoluciones comerciales, canal oficial de alertas a soporte y contratación de hosting con dominio HTTPS.
-2. **Antes de producción**: Integrar los tests en `main` y configurar el pipeline de integración continua (CI).
-3. **Deudas técnicas menores**: Incluir `Ref` en la respuesta de `GET /orders/{id}`; conectar el adaptador de devoluciones (`Refunder`) una vez definida la política comercial.
-4. **Implementación de lease**: Sustituir el plazo fijo de 2 minutos por un mecanismo de lease/latido cuando se opere con proveedores reales y se conozcan sus latencias efectivas.
+1. **Cobro con QR de Mercado Pago**: implementar las cinco unidades de [diseno-mercadopago.md](diseno-mercadopago.md).
+2. **Alertas a soporte**: elegir el proveedor de WhatsApp (o alternativa) y escribir el adaptador del `Notifier`.
+3. **Despliegue en Render**: crear el servicio con Postgres y fijar `PUBLIC_BASE_URL`.
+4. **Antes de producción**: Integrar los tests en `main` y configurar el pipeline de integración continua (CI).
+5. **Deudas técnicas menores**: Incluir `Ref` en la respuesta de `GET /orders/{id}`.
+6. **Implementación de lease**: Sustituir el plazo fijo de 2 minutos por un mecanismo de lease/latido cuando se opere con proveedores reales y se conozcan sus latencias efectivas.
 
 ---
 

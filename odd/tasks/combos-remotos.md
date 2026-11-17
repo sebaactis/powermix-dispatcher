@@ -124,14 +124,14 @@ Ruta: `inline` = la hace el orquestador; `worker` = delegable a un subagente. Co
 - [x] **T2** Cliente de Batidos — campaña, canje y consulta; 6 tests
 - [x] **T3** Cliente de Snacks — despacho remoto con nonce por intento; 7 tests
 - [x] **T6** Catálogo y chequeo previo — lecturas de dispositivo y producto en las dos APIs (GET firmado) más el paquete `internal/preflight` con la regla de decisión; 33 tests nuevos. Queda pendiente el adaptador por máquina del puerto (`Dispenser.Check`), que sigue sin implementación.
-- [ ] T7 Pagos + reembolso mock
+- [ ] T7 Pagos + reembolso mock — proveedor decidido: QR de Mercado Pago (L46); el reembolso queda fuera del MVP
 - [x] **T8** Motor de orden — `Place`, `ConfirmPayment` con despacho en paralelo por línea, derivación del estado desde las líneas y tabla de transiciones; el aviso sale sólo para duda o fallo
 - [x] **T9** Reintentos y reconciliación — reintento sólo ante rechazo explícito, código nuevo por intento, plazo de 2 minutos, ventana de reconciliación de 2 minutos y barrido cada 30 s
 - [x] **T10** Callbacks — `POST /callbacks/snacks/{secret}` cierra una línea por suborden; `POST /callbacks/batidos/{secret}/{orden}` no cierra: confirma contra `getOrderInfo` (R6). Deduplicación en el store por `(origen, clave)`. T10b (el `notifyUrl` de la campaña) está armado de punta a punta: sólo falta el valor de `PUBLIC_BASE_URL`, que depende de S13.
 - [x] **T11** API para la tablet — `internal/httpapi`: `GET /combos`, `POST /orders` (idempotente por `client_key`), `GET /orders/{id}` y `POST /orders/{id}/pay`. El pago simulado se niega en producción. Sigue sin conectarse el chequeo previo al motor.
-- [ ] T12 App Android kiosco
+- [x] **T12** App Android kiosco — vive en el repo `../compras-remotas-app`, fuera del alcance de este documento (L46)
 - [ ] T13 Pruebas end-to-end + manual
-- [ ] T14 Notificador — el puerto y el transporte por log existen; faltan el canal real (S18) y deduplicar los avisos repetidos
+- [ ] T14 Notificador — el puerto, el transporte por log y la deduplicación (`notification_sent`) existen; falta el canal real: WhatsApp o similar (L46)
 
 ## Huecos abiertos
 
@@ -139,7 +139,7 @@ Lo que todavía no se puede programar sin una respuesta. Nada de esto se asume.
 
 ### Bloqueantes con Batidos
 1. Dominio real de la API (la documentación sólo muestra el del panel de gestión).
-2. ¿El `key-md5` va en minúsculas? ¿Es MD5 hex estándar?
+2. ~~¿El `key-md5` va en minúsculas? ¿Es MD5 hex estándar?~~ **Resuelto (L46):** MD5 hex en minúsculas de `key + secret + timestamp_ms`, igual que en producción en `vps-powermix`.
 3. ¿`deviceNo` es obligatorio en `produceCoffee`? La tabla dice sí, el ejemplo lo omite.
 4. ¿Se pueden crear códigos en tiempo real, uno por venta, sin intervención del panel? ¿Hay límite?
 5. ¿Un código es de un solo uso? ¿Caduca? ¿Es canjeable en el instante en que se crea?
@@ -177,11 +177,11 @@ Esto es lo que hay que responder antes de escribir el motor de órdenes. No es u
 3. **E4 — caso incierto:** reconciliar contra la API hasta obtener respuesta, con timeout (S16). Nunca se reintenta a ciegas.
 4. **Avisos:** automáticos (S18), canal a definir.
 
-**Sigue abierto:** qué se devuelve y con qué criterio (S17), y por qué canal se avisa (S18). Ninguno de los dos bloquea el motor de órdenes.
+**Sigue abierto:** qué se devuelve y con qué criterio (S17) queda fuera del primer MVP; el canal de avisos (S18) apunta a WhatsApp o similar, falta elegir el proveedor (L46). Ninguno de los dos bloquea el motor de órdenes.
 
 ### Decisiones de negocio pendientes
-1. Proveedor de pagos QR (S5).
-2. Hosting del backend (S13) — obligatorio que sea alcanzable por HTTPS público para recibir webhooks.
+1. ~~Proveedor de pagos QR (S5).~~ **Decidido (L46):** QR de Mercado Pago.
+2. ~~Hosting del backend (S13).~~ **Decidido (L46):** Render, donde ya corren `backend-powermix` y `powermix-pvs`. Falta crear el servicio y fijar `PUBLIC_BASE_URL` (HTTPS público, necesario para los webhooks).
 3. Qué pasa con un combo cuando la tablet se corta en medio del despacho: hoy la venta se bloquea (S10), pero el despacho ya iniciado sigue su curso.
 
 ## Log
@@ -659,6 +659,39 @@ Lo que había: `store.Line` guardaba `MachineType` **y** `Line.Machine.Type`. La
 Lo que se hizo: se borró `Line.MachineType` y `MachineRef.Type` pasó a `MachineRef.Kind` — `Type` mentía, porque el tipo de dispositivo es `DeviceTypeID`. Todo el motor lee ahora `line.Machine.Kind`: el lookup del driver, el mensaje de error, las dos reglas de correlación de callbacks y el DTO de la API. En Postgres la columna `order_line.machine_type` **sobrevive** sin migración: la columna es el dato persistido, el campo Go era la duplicación; al escanear se reconstruye directamente la `MachineRef`.
 
 Decisión tomada junto al dueño del producto, y vale registrarla porque es una omisión deliberada: **no se agregó validación en el store** para una línea sin familia. `validateDraft` ya rechaza un ítem sin tipo de máquina y el `CHECK` de `machine_type` es la última red. El store en memoria queda más permisivo que Postgres; se acepta la asimetría antes que sumar código para un caso que no puede llegar desde el motor.
+
+**L46 — Decisiones del MVP: pago, devoluciones, avisos, app y hosting.** Respuestas del dueño del producto (2026-11-16):
+
+> "Vamos a usar en principio QR de Mercado Pago."
+> "Devoluciones de momento no, ya que no es para el primer MVP."
+> "Podemos ir pensando recibir un Whatsapp o algo similar con una alerta para estos casos."
+> "La app ya existe, un directorio por encima de este tenemos la app compras-remotas-app. Ese olvidate."
+> "De momento no tenemos hosting pero vamos camino a render (ya tenemos backend-powermix y powermix-pvs ahi)."
+> "De momento no tengo las credenciales."
+
+Consecuencias:
+
+- **S5** queda resuelto: el pago real es QR de Mercado Pago (T7). El diseño de la integración se discute antes de programar.
+- **S17** sigue abierto pero sale del MVP: el `MockRefunder` se queda sin conectar a propósito.
+- **S18** apunta a WhatsApp o similar; falta elegir el proveedor del canal.
+- **T12** sale de este documento: la app vive en `../compras-remotas-app`.
+- **S13** apunta a Render. Todavía no hay servicio creado ni credenciales de los proveedores.
+
+Duda 2 de Batidos, resuelta por evidencia y no por supuesto: `vps-powermix` (el backend en producción que ya habla con el mismo proveedor) firma en `internal/client/gs/client.go:48-60` con `hex(md5(key + secret + timestamp_ms))` en minúsculas y los headers `key`, `key-md5` y `timestamp`. Es idéntico a `internal/dispenser/batidos/sign.go`, así que no hay cambio de código. Ese proyecto **no** resuelve el dominio de la API (duda 1): sólo hace POST a la `notifyUrl` absoluta que recibe y su `GS_BASE_URL` apunta a localhost. Queda por confirmar con el proveedor si las credenciales de la Merchant Open API son las mismas que las del canal de pago.
+
+**L47 — Diseño del cobro con QR de Mercado Pago.** Acordado con el dueño del producto; el detalle vive en `docs/diseno-mercadopago.md`.
+
+> "1. Dinamico. 2. 180s es razonable por ahora. 3. Por ahora si, despachemos. 4. Perfecto."
+> "Me parece bien una separada."
+> "1. Coincido con tu propuesta. 2. Si 3. Cada 2s esta ok."
+
+Decisiones: QR dinámico de la Orders API; vencimiento de 180 s; si Mercado Pago confirma el pago, se despacha aunque haya vencido el plazo; el monto pagado se compara con el del catálogo; una aplicación de Mercado Pago propia; el webhook responde enseguida y el despacho corre en segundo plano; secreto en la ruta además de la firma `x-signature`; la tablet consulta el estado cada 2 s.
+
+Regla que sale del diseño y no se negocia: **nunca se cancela una orden por nuestro reloj.** Al vencer se le pide a Mercado Pago que cancele y se obedece su respuesta. Así no se abre la transición `cancelled → paid`.
+
+Verificado en la documentación de Mercado Pago, no supuesto: `config.qr.external_pos_id` es obligatorio también en modo dinámico (una sucursal y una caja por mueble), la URL del webhook se configura en la aplicación y no en cada orden, y `POST /v1/orders` exige `X-Idempotency-Key`. Sigue sin verificar, hasta tener sandbox: el mapeo exacto de `status`/`status_detail`.
+
+Hallazgo: la tabla `payment_intent` existe desde `0001` y nunca se usó; la migración `0007` la completa en vez de crear otra.
 
 Evidencia: el rojo fueron los errores de compilación que enumeraron los 17 sitios de test con literales de `MachineType`/`Type`; después `gofmt` y `vet` sin salida, `go build` ok y `go test ./...` con **18 paquetes en verde y 311 funciones de test** (las mismas, ninguna aserción cambiada). Un helper `dueLine` en `internal/store/memory_test.go` evitó diez literales largos.
 
