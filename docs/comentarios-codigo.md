@@ -2130,6 +2130,46 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `notification_sent (order_id, kind)` con la clave primaria en la pareja: es el registro de avisos de excepción, no una tabla de eventos, así que cada aviso existe una vez y lo garantiza la base y no un `SELECT` previo. `ON DELETE CASCADE` cuelga la fila de su orden igual que `order_line`: sin orden no hay a quién avisar. `sent_at` es `NOT NULL` sin `DEFAULT` porque el dominio manda el instante del aviso —el mismo `now` con el que decidió— y una fecha puesta por la base diría «cuándo llegó el `INSERT`», que no es el dato. No lleva índice aparte porque la clave primaria ya resuelve la única búsqueda que se hace, la de la pareja. No lleva `BEGIN`/`COMMIT` porque la transacción la pone el runner, como en las anteriores.
 
+## migrations/0007_payment_intent.sql
+
+> Completa `payment_intent`, que existe desde `0001` y nunca se usó, para el cobro con QR de Mercado Pago (`docs/diseno-mercadopago.md`). No se crea una tabla nueva: la que había ya tenía proveedor, id del proveedor, importe, estado y el texto del QR.
+>
+> - **FK de `order_id` a `orders`** con `ON DELETE CASCADE`: en `0001` la columna no tenía FK y se podía guardar un pago de una orden inexistente.
+> - **Índice único por `order_id`**: un QR por orden. Si el QR vence, la orden se cancela y el cliente arranca una orden nueva; nunca hay dos QR vivos para la misma orden.
+> - **`expires_at`**: cuándo vence el QR según lo que le pedimos a Mercado Pago. El barrido lo usa para decidir cuándo pedir la cancelación; nunca para cancelar por su cuenta.
+> - **`paid_amount_cents`**: lo que Mercado Pago dice que se pagó. Sin ese dato, un monto distinto no se puede investigar. Es nullable porque un pago pendiente no pagó nada todavía.
+> - **`version`**: guardado condicional igual que `orders` y `order_line`; el webhook y el barrido pueden tocar el mismo pago a la vez.
+> - **Estados nuevos `cancelled` y `amount_mismatch`**. `amount_mismatch` es terminal y separado de `approved` a propósito: si fuera `approved`, el barrido no distinguiría «pagado y en curso» de «pagado mal, no despachar». `rejected` queda en el `CHECK` sólo para no romper el esquema original; el código no lo usa.
+> - **Índice parcial sobre `created_at` de los pendientes**: es la única búsqueda del barrido, y la gran mayoría de las filas no va a estar pendiente.
+>
+> El nombre `payment_intent_status_check` del `DROP CONSTRAINT` es el que Postgres le puso al `CHECK` en línea de `0001` (`<tabla>_<columna>_check`).
+
+## internal/store — PaymentIntent
+
+### PaymentStatus
+
+> Estado del cobro de una orden: `pending` (QR emitido, sin pagar), `approved` (pagado con el monto correcto), `expired` y `cancelled` (Mercado Pago confirmó que ya no se puede pagar), `amount_mismatch` (pagado con un monto distinto al del catálogo: no se despacha y se avisa). El `rejected` del esquema no tiene constante: ningún camino del código lo produce, y el store en memoria lo rechaza aunque SQL lo acepte.
+
+### PaymentIntent
+
+> El QR de una orden. `ProviderID` es el id de la orden en Mercado Pago (`ORD…`), el `data.id` del webhook. `AmountCents` es lo que se cobró según el catálogo y `PaidAmountCents` lo que Mercado Pago informa como pagado; la comparación entre los dos es la que decide `amount_mismatch`.
+
+### CreatePaymentIntent
+
+> Crea el pago con versión 0, venga la que venga. `ErrNotFound` si la orden no existe (la FK en Postgres) y `ErrAlreadyExists` si se repite el id, la orden o el id del proveedor. El motor crea el QR en Mercado Pago **antes** de guardarlo: si el guardado falla, el reintento vuelve a llamar a Mercado Pago con la misma clave de idempotencia y recibe el mismo QR.
+
+### PaymentIntentByOrder
+
+> La única búsqueda puntual que hace falta: el webhook trae el id de Mercado Pago, pero el `Lookup` devuelve el `external_reference`, que es nuestro id de orden. Por eso no hay búsqueda por id del proveedor.
+
+### SavePaymentIntent
+
+> Guardado condicional por versión, igual que `SaveLine`: `ErrStale` si la copia es vieja, sin escribir nada. `order_id` no se puede cambiar: el pago pertenece a su orden para siempre, y en memoria se ignora el valor que venga.
+
+### PendingPaymentIntents
+
+> Los pagos `pending` creados hasta `createdBefore`, del más viejo al más nuevo y con desempate por id, para que el barrido sea determinista. El corte por antigüedad evita consultar a Mercado Pago un QR que la tablet acaba de mostrar.
+
 ## migrations/0001–0005 — sin `BEGIN;` / `COMMIT;`
 
 > Los cinco archivos perdieron su `BEGIN;` y su `COMMIT;` y nada más cambió. La transacción pasó a ser del runner (`internal/migrate/applyOne`), que abre una por archivo y confirma el cuerpo **junto con** el `INSERT` de la versión en `schema_migrations`.

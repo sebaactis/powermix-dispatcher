@@ -74,6 +74,31 @@ type Attempt struct {
 	FinishedAt     time.Time
 }
 
+type PaymentStatus string
+
+const (
+	PaymentPending        PaymentStatus = "pending"
+	PaymentApproved       PaymentStatus = "approved"
+	PaymentExpired        PaymentStatus = "expired"
+	PaymentCancelled      PaymentStatus = "cancelled"
+	PaymentAmountMismatch PaymentStatus = "amount_mismatch"
+)
+
+type PaymentIntent struct {
+	ID              string
+	OrderID         string
+	Provider        string
+	ProviderID      string
+	AmountCents     int64
+	PaidAmountCents int64
+	Status          PaymentStatus
+	QRData          string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	ApprovedAt      time.Time
+	Version         int64
+}
+
 type Webhook struct {
 	ID         string
 	Source     string
@@ -101,4 +126,8 @@ type Store interface {
 	RecordNotification(ctx context.Context, orderID, kind string, at time.Time) error
 	DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error)
 	StalledLines(ctx context.Context, paidBefore time.Time, limit int) ([]Line, error)
+	CreatePaymentIntent(ctx context.Context, intent PaymentIntent) error
+	PaymentIntentByOrder(ctx context.Context, orderID string) (PaymentIntent, error)
+	SavePaymentIntent(ctx context.Context, intent PaymentIntent) (PaymentIntent, error)
+	PendingPaymentIntents(ctx context.Context, createdBefore time.Time, limit int) ([]PaymentIntent, error)
 }

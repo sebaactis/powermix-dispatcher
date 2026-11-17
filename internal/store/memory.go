@@ -38,6 +38,9 @@ type Memory struct {
 	lineAttempts  map[lineAttemptKey]struct{}
 	webhooks      map[webhookKey]struct{}
 	notifications map[notificationKey]time.Time
+	intents       map[string]PaymentIntent
+	orderIntents  map[string]string
+	providerIDs   map[providerKey]string
 }
 
 var _ Store = (*Memory)(nil)
@@ -51,6 +54,9 @@ func NewMemory() *Memory {
 		lineAttempts:  make(map[lineAttemptKey]struct{}),
 		webhooks:      make(map[webhookKey]struct{}),
 		notifications: make(map[notificationKey]time.Time),
+		intents:       make(map[string]PaymentIntent),
+		orderIntents:  make(map[string]string),
+		providerIDs:   make(map[providerKey]string),
 	}
 }
 
