@@ -2479,3 +2479,67 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## internal/order/charge_test.go (rama `tests/mercadopago`)
 
 > Fixtures propios (gateway programable, dispenser que cuenta despachos, notificador que registra) porque los helpers del motor viven en `archive/tests`. Fijan la idempotencia de `RequestQR`, el pago correcto con un despacho por línea aunque el webhook se repita, el monto de más y de menos, el vencimiento y la cancelación, el estado desconocido, los cobros ajenos, la recuperación de un corte entre la orden y el pago, el cobro de una orden cancelada, que el webhook responde con la orden en `dispatching` **antes** de que termine el despacho, y los bordes del barrido (10 s de antigüedad, 30 s de margen). Cuatro mutaciones verificadas en rojo: sacar la comparación de montos, el margen de cancelación, la obediencia ante `ErrNotCancelable` y el chequeo de pago cerrado.
+
+## internal/config — Mercado Pago (unidad 4)
+
+### MercadoPagoEnabled
+
+> Mercado Pago está prendido si y sólo si hay access token. Todo lo demás (secretos, cajas) se valida a partir de eso.
+
+### mercadoPagoProblems
+
+> Regla del dueño del producto: **o se cobra simulado o con Mercado Pago completo**. En producción el token es obligatorio. En sandbox, sin token y sin secretos queda el pago simulado; con secretos y sin token, o con token y sin secretos o sin `mp_pos_id` en algún mueble, el arranque falla. Un servicio que arranca con Mercado Pago a medias no cobra ni avisa por qué; fallar al arrancar lo deja a la vista en el deploy.
+
+### Kiosk.MPPosID
+
+> El `external_pos_id` de la caja de Mercado Pago del mueble. La Orders API lo exige también en modo dinámico: sin caja no hay QR.
+
+## internal/config/mercadopago_test.go (rama `tests/mercadopago`)
+
+> Escribe un JSON mínimo por caso y limpia las variables `MP_*` para que el entorno de quien corre los tests no se cuele. Cubre el modo simulado, la configuración completa con la URL por defecto, que las variables pisan al archivo y los ocho caminos de error.
+
+## internal/httpapi — cobro con QR (unidad 4)
+
+### Deps.Charger / Deps.Payments
+
+> Van juntos o no va ninguno: con los dos se cobra con QR, sin ninguno se cobra con el pago simulado. Uno solo es un error de armado y `New` lo rechaza. `simulated` queda prendido sólo en sandbox **y** sin `Charger`.
+
+### createOrder
+
+> Con Mercado Pago, después de `Place` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo.
+
+### readOrder
+
+> Suma el bloque `payment` si la orden tiene cobro guardado. Que no lo tenga no es un error (una orden simulada o una cuyo QR falló); un error del store sí lo es.
+
+### newPaymentResponse
+
+> `qr_data` sólo viaja con el cobro `pending`: un QR vencido, cancelado o pagado no se vuelve a dibujar.
+
+### fail — ErrNotPayable / ErrQRUnavailable
+
+> `ErrNotPayable` es 409: la orden ya no espera el pago. `ErrQRUnavailable` es 502: falló Mercado Pago, no nosotros; se loguea y la tablet reintenta.
+
+### MercadoPagoWebhook.receive
+
+> El orden de los chequeos es de más barato a más caro: secreto de ruta (404, igual que una ruta inexistente), `data.id` (400), firma con su ventana de 5 minutos (401), tópico (200 sin hacer nada si no es `order`), y recién ahí `ConfirmFromGateway`, que consulta a Mercado Pago. El cuerpo no se lee: la firma no lo cubre. Un cobro ajeno responde 200 porque reintentar no lo arregla; cualquier otro error responde 500 para que Mercado Pago reintente, y como `ConfirmFromGateway` es idempotente el reintento es seguro.
+
+## internal/httpapi/mercadopago_test.go (rama `tests/mercadopago`)
+
+> Fixtures propios porque los del paquete viven en `archive/tests`. Firma los avisos con `mercadopago.SignatureHeader`, así el test usa la misma firma que el adaptador real. Cubre los ocho casos del webhook, que el id llega sin tocar al motor, la ruta ausente sin confirmador, `POST /orders` con y sin Mercado Pago y sus tres errores, el bloque `payment` de `GET` (pendiente, vencido, ausente, error), el pago simulado apagado con Mercado Pago y las `Deps` a medias. Mutaciones verificadas en rojo: prender el simulado con Mercado Pago, exponer el QR vencido e ignorar el tópico.
+
+## internal/order/qr.go — ErrQRUnavailable
+
+> Envuelve sólo la falla de `CreateQR`, para que el borde HTTP distinga «Mercado Pago no respondió» (502) de una falla propia (500).
+
+## internal/sweep — WithPayments
+
+> Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro.
+
+## internal/sweep/payments_test.go (rama `tests/mercadopago`)
+
+> Un sweeper que cuenta llamadas y límites. Cubre que los dos barridos corren con el mismo límite, que sin `WithPayments` el de pagos no corre y que un error en las líneas no frena a los pagos. Mutación verificada en rojo: pasar otro límite al barrido de pagos.
+
+## cmd/api/main.go — Mercado Pago (unidad 4)
+
+> Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithPayments`), al handler (`Charger` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.

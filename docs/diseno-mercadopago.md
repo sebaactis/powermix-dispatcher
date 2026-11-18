@@ -1,6 +1,13 @@
 # Diseño: cobro con QR de Mercado Pago
 
-Estado: diseño acordado el 2026-11-16 (L47 en `odd/tasks/combos-remotos.md`). Sin implementar.
+Estado: diseño acordado el 2026-11-16 (L47 en `odd/tasks/combos-remotos.md`). **Implementado el 2026-11-18** y probado de punta a punta contra el Mercado Pago falso de `cmd/fakeapi`. Falta validarlo contra el sandbox real de Mercado Pago (ver «A confirmar» y [pendientes.md](pendientes.md)).
+
+Decisiones tomadas al implementar, que no estaban en el diseño original:
+
+- **O se cobra simulado o con Mercado Pago completo.** Con Mercado Pago configurado, `POST /orders/{id}/pay` responde 403 también en `sandbox`. Una configuración a medias (secretos sin token, token sin secretos o un mueble sin `mp_pos_id`) hace fallar el arranque.
+- **`qr_data` sólo viaja mientras el cobro está `pending`**, así la tablet nunca dibuja un QR que ya no se puede pagar.
+- **Errores de `POST /orders`**: si Mercado Pago no crea el QR, 502 (`order.ErrQRUnavailable`); si la orden ya no espera el pago, 409 (`order.ErrNotPayable`); cualquier otra falla, 500.
+- **El barrido de pagos usa el mismo tick de 30 s y el mismo lote** que el de líneas. Un QR vencido se cancela entre 210 y 240 s después de creado.
 
 Para el contexto general, consulta [arquitectura.md](arquitectura.md); para el estado de las tareas, [pendientes.md](pendientes.md).
 

@@ -62,21 +62,22 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/migrate` | Detecta qué archivos faltan y vigila huellas SHA-256 de las ya aplicadas, en una transacción por archivo, bajo un advisory lock | `Apply`, `versions`, `checksum`, `missing`, `applyOne` |
 | `internal/machine` | **Vocabulario compartido**: la familia de máquina y la referencia a una máquina concreta | `Kind`, `Batidos`, `Snacks`, `Ref` |
 | `internal/linestate` | **Vocabulario compartido**: el estado de una línea | `State`, `Pending`, `Sent`, `Brewing`, `Delivered`, `Failed`, `InDoubt` |
-| `internal/config` | Topología del mueble desde JSON + secretos por entorno, validada al arrancar | `Load`, `Config`, `Kiosk`, `Machine`, `validate` |
+| `internal/config` | Topología del mueble desde JSON + secretos por entorno, validada al arrancar | `Load`, `Config`, `Kiosk` (con `MPPosID`), `Machine`, `validate`, `MercadoPagoEnabled` |
 | `internal/catalog` | El menú: carga, valida y sirve combos | `Combo`, `Item`, `LoadFile`, `Memory` |
 | `internal/dispenser` | **El puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
 | `internal/dispenser/batidos` | Adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | Adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
-| `internal/store` | **El puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `OrderStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalid`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines` |
+| `internal/store` | **El puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `PaymentIntent`, `OrderStatus`, `PaymentStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalid`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines`, `PendingPaymentIntents` |
 | `internal/store/postgres` | Implementación sobre Postgres (importa también `catalog` y `config` para `seed.go`) | `Open`, `Store`, `Seed` |
 | `internal/topology` | Upsert de muebles/máquinas/combos al arrancar (Postgres tiene FK) | `Seed` |
-| `internal/order` | **El dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
+| `internal/order` | **El dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `RequestQR`, `ConfirmFromGateway`, `ReconcilePayments`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
 | `internal/gate` | Adaptador `order.Gate` sobre `preflight` | `New`, `Check` |
 | `internal/preflight` | La regla de disponibilidad (consulta las dos máquinas y sus productos) | `Checker`, `Request`, `Result`, `Reason` |
-| `internal/httpapi` | El borde: **dos contratos separados** (tablet y callbacks de proveedores) | `Handler`, `Callbacks`, `Deps`, `BatidosCallbackURL` |
-| `internal/payments` | Puerto de devoluciones + mock (`MockRefunder`) que sólo escribe un log. **Nota:** actualmente ningún paquete lo importa ni está conectado al motor | `Refunder`, `MockRefunder` |
+| `internal/httpapi` | El borde: **tres contratos separados** (tablet, callbacks de máquinas y webhook de Mercado Pago) | `Handler`, `Callbacks`, `MercadoPagoWebhook`, `Deps`, `BatidosCallbackURL` |
+| `internal/payments` | **El puerto** de cobro (`Gateway`: crear QR, consultar, cancelar). También el puerto de devoluciones con su mock, que sigue sin conectar (fuera del MVP) | `Gateway`, `Charge`, `ChargeStatus`, `QRRequest`, `Refunder`, `MockRefunder` |
+| `internal/payments/mercadopago` | Adaptador de la Orders API de Mercado Pago (`net/http`, sin SDK) + validación de la firma del webhook | `Client`, `VerifySignature`, `SignatureHeader` |
 | `internal/notify` | Puerto de avisos + transporte por log | `Notifier`, `Kind`, `Event` |
-| `internal/sweep` | Barrido periódico que dispara `ReconcileDue` | `Runner`, `New` |
+| `internal/sweep` | Barrido periódico que dispara `ReconcileDue` y, con Mercado Pago, `ReconcilePayments` | `Runner`, `New`, `WithPayments` |
 | `internal/logging` | `slog` con mensajes capitalizados en el borde | `New`, `Capitalize` |
 | `internal/fakeapi` | Implementación de los proveedores falsos (batidos, snacks, Mercado Pago) + administración | `NewBatidos`, `NewSnacks`, `NewMercadoPago`, `NewAdmin` |
 
@@ -85,17 +86,17 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 Todas las flechas apuntan **hacia adentro**. Los puertos no conocen adaptadores:
 
 ```
-cmd/api ──► httpapi ──► order ──► store (puerto) · dispenser (puerto) · machine · linestate · notify
-                │           │                ▲            ▲
-                │           └──► gate ──► preflight      │
-                └──► catalog, config          batidos ───┘
+cmd/api ──► httpapi ──► order ──► store (puerto) · dispenser (puerto) · payments (puerto) · machine · linestate · notify
+                │           │                ▲            ▲                    ▲
+                │           └──► gate ──► preflight      │                    │
+                └──► catalog, config          batidos ───┘   payments/mercadopago
                                               snacks ────┘
 store/postgres ──► store (tipos) · topology · machine · linestate · catalog · config
 ```
 
 Reglas que no se rompen:
 
-- `order` **no** importa `batidos` ni `snacks` ni `httpapi` ni `config`.
+- `order` **no** importa `batidos` ni `snacks` ni `payments/mercadopago` ni `httpapi` ni `config`. Sí importa el puerto `payments`.
 - `catalog` no importa `dispenser`.
 - `machine` y `linestate` no importan nada del proyecto: son vocabulario, no comportamiento.
 - `store` **no** importa `dispenser`: la referencia de la máquina es `machine.Ref` y el estado de la línea, `linestate.State`. El puerto no dicta cómo se guarda una fila.
@@ -114,8 +115,11 @@ Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 8. **Reintento sólo ante rechazo explícito.** Un timeout o una respuesta ilegible van a «en duda» (`in_doubt`) y se reconcilian; nunca se reintentan a ciegas.
 9. **El callback de batidos no cierra nada por sí solo**: confirma la entrega consultando directamente al proveedor (R6).
 10. **Los secretos de callback viajan en la ruta del path** y se comparan en tiempo constante; sin secreto configurado se responde 404 igual que una ruta inexistente. El path se redacta en los logs.
-11. **El pago simulado sólo existe en `sandbox`.** Cualquier otro entorno lo rechaza antes de tocar el motor de órdenes.
+11. **El pago simulado sólo existe en `sandbox` y sin Mercado Pago.** O se cobra simulado o con Mercado Pago completo; cualquier otro caso lo rechaza antes de tocar el motor de órdenes.
 12. **Si el pago se registró y el despacho falló, la respuesta es 200 con el estado real**, no un 5xx que invite al cliente a pagar dos veces.
+13. **Manda Mercado Pago, no nuestro reloj.** Nunca se cancela una orden por cuenta propia: al vencer el QR se le pide a Mercado Pago que lo cancele y se obedece su respuesta. Si dice «pagada», se despacha.
+14. **El webhook de Mercado Pago no se cree por su cuerpo**: la firma prueba de quién viene, y lo que pasó se le pregunta a Mercado Pago (`Lookup`).
+15. **Un monto pagado distinto al del catálogo no se despacha**: la orden queda en `pending_payment`, el pago en `amount_mismatch` y se avisa a soporte.
 
 ## Vocabularios: dónde vive cada uno
 
@@ -125,7 +129,9 @@ Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 | `linestate.State` | `internal/linestate` | `pending`, `sent`, `brewing`, `delivered`, `failed`, `in_doubt` |
 | `store.OrderStatus` | `internal/store` | `pending_payment`, `paid`, `dispatching`, `delivered`, `partial`, `failed`, `in_doubt`, `refunded`, `cancelled` |
 | `store.AttemptOutcome` | `internal/store` | `ambiguous`, `accepted`, `rejected`, `error` |
-| `notify.Kind` | `internal/notify` | `order_in_doubt`, `order_failed` |
+| `store.PaymentStatus` | `internal/store` | `pending`, `approved`, `expired`, `cancelled`, `amount_mismatch` |
+| `payments.ChargeStatus` | `internal/payments` | `pending`, `approved`, `expired`, `cancelled`, `unknown` |
+| `notify.Kind` | `internal/notify` | `order_in_doubt`, `order_failed`, `payment_mismatch`, `payment_unknown` |
 | `preflight.Reason` | `internal/preflight` | `batidos_device_offline`, `snacks_sku_out_of_stock`, … |
 
 ## Valores por defecto que no están en configuración
@@ -136,7 +142,11 @@ Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 | Ventana de reconciliación | 2 min | `order/reconcile.go` |
 | Intervalo de reconciliación | 30 s | `order/reconcile.go` |
 | Intentos máximos por línea | 2 | `order/dispatch.go` |
-| Barrido periódico | Cada 30 s, 10 líneas | `cmd/api/main.go` |
+| Barrido periódico | Cada 30 s, 10 líneas y 10 pagos | `cmd/api/main.go` |
+| Vencimiento del QR | 180 s | `order/qr.go` (`defaultQRExpiry`) |
+| Antigüedad mínima para revisar un QR en el barrido | 10 s | `order/reconcile_payments.go` |
+| Margen tras el vencimiento antes de pedir la cancelación | 30 s | `order/reconcile_payments.go` |
+| Ventana de la firma del webhook de Mercado Pago | 5 min | `payments/mercadopago/signature.go` (`SignatureTolerance`) |
 | Tiempo de lectura de encabezados HTTP (`ReadHeaderTimeout`) | 5 s | `cmd/api/server.go:9` |
 | Tiempo de lectura del servidor HTTP (`ReadTimeout`) | 10 s | `cmd/api/server.go:10` |
 | Tiempo de escritura del servidor HTTP (`WriteTimeout`) | 60 s | `cmd/api/server.go:11` |
@@ -181,9 +191,9 @@ Un **puerto** es una interfaz que `order` usa sin saber quién la implementa (`s
 ## 1. Arranque: `cmd/api/main.go`
 
 ```
-main (:38)
- ├─ flags -config / -combos ............................... :38
- ├─ config.Load ........................ internal/config/config.go:95
+main (:41)
+ ├─ flags -config / -combos ............................... :41
+ ├─ config.Load ........................ internal/config/config.go:115
  ├─ catalog.LoadFile → catalog.NewMemory  catalog/catalog.go:37, memory.go:14
  ├─ batidos.NewClient / snacks.NewClient  dispenser/batidos/client.go:59
  │                                        dispenser/snacks/client.go:227
@@ -192,12 +202,15 @@ main (:38)
  │                                │        + Seed (postgres/seed.go:12)
  │                                └ no → store.NewMemory (store/memory.go:45)
  ├─ gate.New(preflight.New) ............ gate/gate.go:23, preflight/checker.go:68
- ├─ order.New(store, machines, notifier, gate) .... order/engine.go:48
- ├─ sweep.New(engine)  (30 s, lote 10) ............ sweep/runner.go:44
- ├─ httpapi.New + rutas en el mux ................. main.go:107, :135
+ ├─ ¿Mercado Pago? → mercadopago.NewClient + order.WithPayments ... main.go:117
+ ├─ order.New(store, machines, notifier, gate, pagos) .. order/engine.go:55
+ ├─ sweep.New(engine) (30 s, lote 10; + pagos con MP) .. sweep/runner.go:57
+ ├─ httpapi.New (+ Charger/Payments con MP) ...... main.go:150
+ ├─ rutas en el mux (+ webhook de MP) ............ main.go:189, :196
  ├─ newServer (timeouts) .......................... cmd/api/server.go:16
- ├─ go sweep.Run ........ :168        go ListenAndServe ........ :176
- └─ SIGINT/SIGTERM → Shutdown 10 s y espera al barrido ......... :184
+ ├─ go sweep.Run ........ :209        go ListenAndServe ........ :217
+ └─ SIGINT/SIGTERM → Shutdown 10 s, espera al barrido y a los despachos
+    en segundo plano (engine.Wait) ................................ :225
 ```
 
 Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` levanta máquinas falsas (puertos 9401 batidos, 9402 snacks, 9403 administración local, 9404 Mercado Pago).
@@ -208,9 +221,10 @@ Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migr
 | --- | --- | --- |
 | `GET /healthz` | `cmd/api/main.go:137` | Retorna 200 OK |
 | `GET /combos` | `httpapi/combos.go:7 listCombos` | `catalog/memory.go:40 Combos` |
-| `POST /orders` | `httpapi/orders.go:10 createOrder` | `order/place.go:12 Place` |
-| `GET /orders/{id}` | `httpapi/orders.go:44 readOrder` | `store.LoadOrder` |
-| `POST /orders/{id}/pay` | `httpapi/orders.go:54 payOrder` | `order/payment.go:12 ConfirmPayment` (simulado; 403 fuera de sandbox) |
+| `POST /orders` | `httpapi/orders.go:10 createOrder` | `order/place.go:12 Place` + (con MP) `order/qr.go:21 RequestQR` |
+| `GET /orders/{id}` | `httpapi/orders.go:56 readOrder` | `store.LoadOrder` + (con MP) `store.PaymentIntentByOrder` |
+| `POST /orders/{id}/pay` | `httpapi/orders.go:79 payOrder` | `order/payment.go:12 ConfirmPayment` (simulado; 403 fuera de sandbox o con MP) |
+| `POST /callbacks/mercadopago/{secret}` | `httpapi/mercadopago.go:77 receive` | `order/charge.go:15 ConfirmFromGateway` |
 | `POST /callbacks/batidos/{secret}/{orderId}` | `httpapi/callbacks.go:116` | `order/callback.go:55 ConfirmFromCallback` |
 | `POST /callbacks/snacks/{secret}` | `httpapi/callbacks.go:155` | `order/callback.go:38 CloseFromCallback` |
 
@@ -232,12 +246,32 @@ order/place.go:12 Place
   │     plazo total 8 s, una goroutine por máquina:
   │       checkBatidos :125  (Device + DeviceGoods)
   │       checkSnacks  :157  (Devices + Slots)
-  │     no vendible → NotSellableError → 409 (httpapi/errors.go:43)
+  │     no vendible → NotSellableError → 409 (httpapi/errors.go:59)
   └─ CreateOrder: orden pending_payment, líneas pending (:60)
   ▼
-TABLET  POST /orders/{id}/pay   (solo env sandbox; si no, 403)
+  └─ (con MP) RequestQR (order/qr.go:21): crea el QR en MP (idempotencia = id de orden),
+     guarda el payment_intent y la respuesta suma payment {status, qr_data, expires_at}
   ▼
-order/payment.go:12 ConfirmPayment
+COBRO, por uno de dos caminos:
+
+  a) Con Mercado Pago: el cliente paga el QR
+     MP ──► POST /callbacks/mercadopago/{secret} (httpapi/mercadopago.go:77)
+            secreto de ruta → firma → type == order
+       ▼
+     order/charge.go:15 ConfirmFromGateway
+       ├─ Lookup en MP (no se usa el cuerpo del aviso)
+       ├─ external_reference → payment_intent de la orden, mismo cobro
+       └─ applyCharge (:45)
+            approved + monto correcto → markPaid y despacho en segundo plano (spawn)
+            approved + monto distinto → no despacha, aviso payment_mismatch
+            expired / cancelled       → orden cancelled
+            unknown                   → aviso payment_unknown, no toca nada
+     El webhook responde 200 sin esperar el despacho. Si el aviso se pierde, lo
+     recupera ReconcilePayments (order/reconcile_payments.go:17) en el barrido.
+
+  b) Sin Mercado Pago (sólo sandbox): TABLET POST /orders/{id}/pay
+  ▼
+order/payment.go:12 ConfirmPayment = markPaid (:21) + dispatchLines (:58)
   ├─ si no está pending_payment → no hace nada (:18)
   ├─ SaveOrder → paid       (ErrStale: otro /pay ganó → termina sin despachar)
   ├─ AdvanceOrder → dispatching (order/status.go:92)
@@ -352,14 +386,17 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49   (se deriva con DeriveOrderSt
 - **Puerto** `internal/store/store.go:91-104`, 12 métodos: `CreateOrder`, `LoadOrder`, `OrderByClientKey`, `SaveOrder`, `SaveLine`, `AppendAttempt`, `SaveAttempt`, `RegisterWebhook`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines`.
 - **Errores** `store.go:85-88`: `ErrNotFound`, `ErrAlreadyExists`, `ErrStale` (escritura concurrente detectada), `ErrInvalid` (violación de invariante o `CHECK`).
 - **Implementaciones**: `store/memory.go:32` (mutex y copias profundas) y `store/postgres/postgres.go:31` (`WHERE version = $n`, *optimistic locking*: no bloquea al leer y detecta choques al escribir).
-- **Migraciones**: `0001` esquema inicial · `0002` estado `failed` de orden · `0003` `reconcile_until` · `0004` `client_key` y versión de línea · `0005` versión de orden · `0006` `notification_sent`. `internal/migrate` las aplica de forma atómica y vigila su huella SHA-256.
+- **Migraciones**: `0001` esquema inicial · `0002` estado `failed` de orden · `0003` `reconcile_until` · `0004` `client_key` y versión de línea · `0005` versión de orden · `0006` `notification_sent` · `0007` `payment_intent` para el cobro con Mercado Pago (FK a la orden, un cobro por orden, `expires_at`, versión). `internal/migrate` las aplica de forma atómica y vigila su huella SHA-256.
 
 ## 9. Índice rápido: «¿dónde busco…?»
 
 | Si buscas | Ve a |
 | --- | --- |
 | Por qué no se vende un combo o venta bloqueada | `internal/preflight/checker.go:125` / `:157` + `internal/gate` |
-| Qué pasa al pagar | `internal/order/payment.go:12` |
+| Qué pasa al pagar | `internal/order/payment.go:12` (simulado) y `internal/order/charge.go:15` (Mercado Pago) |
+| Cómo se crea el QR | `internal/order/qr.go:21` (`RequestQR`) y `internal/payments/mercadopago/client.go` |
+| Por qué se rechazó un webhook de Mercado Pago | `internal/httpapi/mercadopago.go:77` y `internal/payments/mercadopago/signature.go` |
+| Por qué se canceló una orden sin pagar | `internal/order/reconcile_payments.go:40` (`reconcilePayment`) |
 | Por qué una línea no se reintenta | `internal/order/dispatch.go:133` (`classifyDispatch`) |
 | Cuándo se reintenta o queda en duda | `internal/order/dispatch.go:87`, `:133` |
 | Por qué una línea `pending` se recuperó | `internal/order/reconcile.go:20` (`ReconcileDue`, `resumeStalledLine` `:76`) y `StalledLines` en `internal/store` |

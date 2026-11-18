@@ -27,7 +27,7 @@ port: it never learns that a drink needs a code.
 ## Layout
 
 ```
-cmd/api          backend for the tablet: catalog, orders, live status, simulated pay
+cmd/api          backend for the tablet: catalog, orders, live status, Mercado Pago QR (or simulated pay)
 cmd/migrate      one-shot schema runner: applies the embedded `migrations/*.sql`
 cmd/fakeapi      runs the local stand-ins (Batidos, Snacks, Mercado Pago) plus their test-only admin surface
 internal/config  topology from JSON, secrets from env, validated at startup
@@ -35,8 +35,9 @@ internal/dispenser          the port: Check / Dispatch / Reconcile
 internal/dispenser/batidos       signature and UTC+8 campaign dates
 internal/dispenser/snacks  HMAC signature, nonce, clock window
 internal/fakeapi            local Batidos, Snacks and Mercado Pago, with their real rules enforced
-internal/httpapi            the four tablet endpoints, mapped onto catalog + engine + store
-internal/payments           Refunder port + mock that never moves money
+internal/httpapi            the four tablet endpoints and the provider callbacks, mapped onto catalog + engine + store
+internal/payments           payment Gateway port (QR charge) + Refunder port and its mock
+internal/payments/mercadopago  Orders API adapter and webhook signature check
 internal/notify             Notifier port + structured log transport
 internal/migrate            what is pending, in one transaction per file, under an advisory lock
 migrations                 PostgreSQL schema, embedded with `//go:embed`
@@ -71,8 +72,10 @@ go run ./cmd/api -config config.local.json -combos combos.local.json
 # GET  /healthz
 # GET  /combos
 # POST /orders               {"combo_id":"...","client_key":"...","kiosk_id":"..."}
-# GET  /orders/{id}
-# POST /orders/{id}/pay      simulated, sandbox only: 403 in production
+#                            with Mercado Pago: adds "payment": {"status","qr_data","expires_at"}
+# GET  /orders/{id}          same "payment" block; the tablet polls it every 2 s
+# POST /orders/{id}/pay      simulated, sandbox without Mercado Pago only: 403 otherwise
+# POST /callbacks/mercadopago/{secret}   Mercado Pago webhook (signed)
 ```
 
 Local stand-ins, so integration work can start without credentials:
@@ -113,6 +116,22 @@ fake forgets them.
 | `/admin/mercadopago/pay` | `{"order":"<ORD… or external_reference>","amount_cents":150050}` | the customer pays: the order goes to `processed`/`accredited` and a signed webhook goes to `-mp-webhook-url`; `amount_cents` is optional (defaults to the order total) and a different value simulates a wrong amount |
 | `/admin/mercadopago/expire` | `{"order":"…"}` | expires a `created` order now and sends the webhook |
 | `/admin/mercadopago/notify` | `{"order":"…"}` | sends the webhook again with the current state and a new `x-request-id` |
+
+To run the whole Mercado Pago flow locally, point the fake's webhook at the API
+and give the API the fake's credentials:
+
+```bash
+go run ./cmd/fakeapi -mp-webhook-url http://127.0.0.1:8080/callbacks/mercadopago/local-mp
+
+# in config.local.json (or the MP_* variables):
+#   "mercadopago": {"base_url": "http://127.0.0.1:9404", "access_token": "TEST-fake-token",
+#                   "webhook_secret": "fake-webhook-secret", "callback_secret": "local-mp"}
+#   and "mp_pos_id": "POS-1" on every kiosk
+
+curl -X POST localhost:8080/orders -d '{"combo_id":"...","client_key":"k1"}'
+curl -X POST localhost:9403/admin/mercadopago/pay -d '{"order":"<order id>"}'
+curl localhost:8080/orders/<order id>      # dispatching, payment approved
+```
 
 > Local tests only. There is no authentication, so the admin server must never be
 > reachable from another machine: `-admin-addr` defaults to `127.0.0.1:9403` and
@@ -161,7 +180,7 @@ on loopback only, so the fakes are never reachable from another machine.
 
 ## Secrets
 
-Credentials never live in a tracked file. They come from four environment
+Credentials never live in a tracked file. They come from environment
 variables, which override anything written in the JSON:
 
 | Variable | Provider |
@@ -175,6 +194,14 @@ variables, which override anything written in the JSON:
 | `PUBLIC_BASE_URL` | Public base URL of this backend (optional). Without it the Batidos campaign is created without `notifyUrl`, so the Batidos callback never arrives |
 | `STORE` | `memory` (default) or `postgres`; overrides `store` in the JSON |
 | `DATABASE_URL` | PostgreSQL DSN, required when the store is `postgres`; overrides `database_url` in the JSON |
+| `MP_ACCESS_TOKEN` | Mercado Pago access token. Set: payments go through the QR and the simulated pay is off. Empty: simulated pay (sandbox only; production refuses to start) |
+| `MP_WEBHOOK_SECRET` | Secret Mercado Pago signs the webhook with (`x-signature`); required with the token |
+| `MP_CALLBACK_SECRET` | Secret path segment of the Mercado Pago webhook; required with the token |
+| `MP_BASE_URL` | Mercado Pago API (default `https://api.mercadopago.com`; the local fake is `http://127.0.0.1:9404`) |
+
+Mercado Pago is all or nothing: a half configuration (secrets without token, token
+without secrets, or a kiosk without `mp_pos_id`, the `external_pos_id` of its
+Mercado Pago cash register) makes the API refuse to start.
 
 Both callback secrets are optional. When a secret is empty, that callback
 endpoint answers 404: an unauthenticated machine callback never reaches the

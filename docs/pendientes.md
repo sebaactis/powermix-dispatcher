@@ -1,6 +1,6 @@
 # Pendientes
 
-Estado al 2026-11-16; se actualiza al cerrar cada paso.
+Estado al 2026-11-18; se actualiza al cerrar cada paso.
 
 Para la visión de arquitectura y detalle técnico del sistema, consulta [arquitectura.md](arquitectura.md).
 
@@ -10,8 +10,8 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 | # | Qué falta | Qué hay hoy | Estado |
 | --- | --- | --- | --- |
-| 1 | **Cobro real con QR de Mercado Pago**: generar el QR, recibir el webhook de cobro y validarlo | `POST /orders/{id}/pay` simulado; responde 403 fuera del entorno `sandbox` (`internal/httpapi/orders.go:54-58`) | Diseño acordado: [diseno-mercadopago.md](diseno-mercadopago.md). Sin implementar |
-| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt` | `LogNotifier` sólo escribe un WARN en el log (`internal/notify/notify.go:26-42`); la deduplicación con la tabla `notification_sent` ya funciona | Canal: WhatsApp o similar; falta elegir proveedor y escribir el adaptador |
+| 1 | **Cobro real con QR de Mercado Pago** | Implementado el 2026-11-18 ([diseno-mercadopago.md](diseno-mercadopago.md)): QR en `POST /orders`, webhook firmado, barrido de pagos. Probado sólo contra el Mercado Pago falso | Falta validarlo contra el sandbox real (bloqueo externo: credenciales) |
+| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt`, o un pago queda con `payment_mismatch` / `payment_unknown` | `LogNotifier` sólo escribe un WARN en el log (`internal/notify/notify.go`); la deduplicación con la tabla `notification_sent` ya funciona | Canal: WhatsApp o similar; falta elegir proveedor y escribir el adaptador |
 | 3 | **Prueba de punta a punta automatizada** | Probado a mano contra el servidor local `cmd/fakeapi` | Técnico |
 
 ### Fuera del MVP
@@ -32,11 +32,14 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 | 5 | **`GET /orders/{id}` no devuelve el `Ref` de cada línea** | Ante un reclamo de cliente, soporte no ve en la respuesta el código de canje (batidos) ni el `subOrderId` (snacks) | Chica |
 | 6 | **Riesgo L8: líneas `pending` agotadas** | Con `maxAttempts` reducido por configuración, líneas `pending` agotadas vuelven en cada barrido ocupando cupo; ningún camino normal de uso lo provoca | Chica |
 | 7 | **`fakeapi` no puede volver una máquina de batidos a `online`** | Devuelve 501 Not Implemented; sólo afecta a pruebas locales con la superficie de administración del falso | Chica |
+| 8 | **Revisar la terminología de todo el proyecto** (archivos, tipos, funciones, opciones) | Hay nombres que no dicen qué hacen. Ejemplos: `Place` (crea la orden y chequea la disponibilidad), `WithPayments` (en `order` prende el cobro con QR; en `sweep` sólo suma el barrido de pagos; y sin él igual se cobra, con el pago simulado), `Confirmer` / `ConfirmFromCallback` / `ConfirmFromGateway` / `ConfirmPayment` (cuatro «confirmar» distintos). Cuesta leer el código sin el glosario de la cabeza | Media |
+| 9 | **Orden sin QR que queda en `pending_payment` para siempre** | Si `RequestQR` falla (502) y la tablet nunca reintenta, la orden no tiene cobro y ningún barrido la cancela. No despacha nada, pero ensucia los listados | Chica |
 
 ---
 
 ## C. Bloqueos externos
 
+- **Mercado Pago**: crear la aplicación propia y obtener el access token (prueba y producción), el secreto del webhook y el user id; dar de alta una sucursal y una caja por mueble (`mp_pos_id`); configurar el webhook de la aplicación (tópico «Order») apuntando a `PUBLIC_BASE_URL/callbacks/mercadopago/{MP_CALLBACK_SECRET}`.
 - **Hosting y `PUBLIC_BASE_URL`**: El destino es Render (donde ya corren `backend-powermix` y `powermix-pvs`), pero el servicio todavía no existe. Sin una URL pública con HTTPS, ni el proveedor de batidos (`cmd/api/main.go:85-88`) ni Mercado Pago pueden enviar sus webhooks.
 - **Credenciales y sandbox de los dos proveedores**: Actualmente no se dispone de credenciales reales ni acceso a entornos de prueba oficiales de Batidos ni Snacks. Al pedirlas a Batidos, confirmar si la Merchant Open API usa el mismo par `key`/`secret` que la integración de pago de `vps-powermix`.
 - **Dudas de la documentación de proveedores** (detalle en `odd/tasks/combos-remotos.md`, sección «Huecos abiertos»):
@@ -48,6 +51,8 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 ## D. No verificado
 
 - **Proveedores reales**: Ninguna llamada se ha ejecutado contra los servidores de producción de los proveedores (todo el desarrollo se validó contra los servidores falsos de `cmd/fakeapi`).
+- **Mercado Pago real**: el mapeo de `status` / `status_detail` a nuestros estados y la forma exacta del webhook están tomados de la documentación, no de un sandbox.
+- **Webhook perdido en el circuito completo**: el Mercado Pago falso siempre envía el aviso, así que «se pierde el webhook y lo recupera el barrido» sólo está cubierto por tests (`ReconcilePayments` y el `Runner`), no por una prueba de punta a punta.
 - **`go test -race`**: No corre en entornos Windows sin compilador de C configurado para cgo. La mayor parte de la concurrencia está cubierta de forma determinista mediante inyección de estados desactualizados, con la excepción del chequeo previo paralelo (`preflight/checker_parallel_test.go`).
 - **Flujo completo automatizado**: El circuito completo `POST /orders` → `pay` → callbacks → `delivered` se ha probado únicamente de forma manual contra las APIs simuladas.
 - **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 42 archivos (341 tests) residen en `archive/tests`.
@@ -59,9 +64,9 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 ## Orden recomendado
 
-1. **Cobro con QR de Mercado Pago**: implementar las cinco unidades de [diseno-mercadopago.md](diseno-mercadopago.md).
-2. **Alertas a soporte**: elegir el proveedor de WhatsApp (o alternativa) y escribir el adaptador del `Notifier`.
-3. **Despliegue en Render**: crear el servicio con Postgres y fijar `PUBLIC_BASE_URL`.
+1. **Alertas a soporte**: elegir el proveedor de WhatsApp (o alternativa) y escribir el adaptador del `Notifier`.
+2. **Despliegue en Render**: crear el servicio con Postgres y fijar `PUBLIC_BASE_URL`; con eso, validar Mercado Pago contra su sandbox.
+3. **Revisión de terminología** (deuda B8), antes de que el código crezca más.
 4. **Antes de producción**: Integrar los tests en `main` y configurar el pipeline de integración continua (CI).
 5. **Deudas técnicas menores**: Incluir `Ref` en la respuesta de `GET /orders/{id}`.
 6. **Implementación de lease**: Sustituir el plazo fijo de 2 minutos por un mecanismo de lease/latido cuando se opere con proveedores reales y se conozcan sus latencias efectivas.
