@@ -105,8 +105,19 @@ func main() {
 
 	availability := gate.New(preflight.New(batidosClient, snacksClient))
 
+	var notifier notify.Notifier = notify.NewLog(logger)
+	if cfg.TelegramEnabled() {
+		notifier = notify.NewTelegram(logger, cfg.TelegramBaseURL, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.Env)
+		logger.Info("avisos a soporte por Telegram activos", "base_url", cfg.TelegramBaseURL)
+	} else {
+		logger.Warn("Telegram no está configurado: los avisos a soporte quedan sólo en el log",
+			"token_env", "TELEGRAM_BOT_TOKEN",
+			"chat_env", "TELEGRAM_CHAT_ID",
+		)
+	}
+
 	engineOpts := []order.Option{
-		order.WithNotifier(notify.NewLog(logger)),
+		order.WithNotifier(notifier),
 		order.WithGate(availability),
 		order.WithBackgroundErrors(func(orderID string, err error) {
 			logger.Error("el despacho en segundo plano terminó con error", "order_id", orderID, "error", err)
