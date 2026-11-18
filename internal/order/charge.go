@@ -104,8 +104,8 @@ func (e *Engine) rejectPaidAmount(ctx context.Context, intent store.PaymentInten
 	if err := e.notifyOnce(ctx, notify.Event{
 		Kind:    notify.KindPaymentMismatch,
 		OrderID: intent.OrderID,
-		Detail: fmt.Sprintf("el cobro %s se pagó con %d centavos y la orden vale %d: no se despachó",
-			charge.ProviderID, charge.PaidAmountCents, intent.AmountCents),
+		Detail: fmt.Sprintf("el cobro %s se pagó con %s y la orden vale %s: no se despachó",
+			charge.ProviderID, notify.Pesos(charge.PaidAmountCents), notify.Pesos(intent.AmountCents)),
 	}); err != nil {
 		return err
 	}

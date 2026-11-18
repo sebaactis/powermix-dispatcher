@@ -54,7 +54,7 @@ func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 		return nil
 	}
 
-	event := notify.Event{OrderID: loaded.ID}
+	event := notify.Event{OrderID: loaded.ID, KioskID: loaded.KioskID}
 
 	switch loaded.Status {
 	case store.OrderInDoubt:
@@ -81,6 +81,12 @@ func (e *Engine) notifyOnce(ctx context.Context, event notify.Event) error {
 	}
 	if sent {
 		return nil
+	}
+
+	if event.KioskID == "" {
+		if loaded, err := e.store.LoadOrder(ctx, event.OrderID); err == nil {
+			event.KioskID = loaded.KioskID
+		}
 	}
 
 	if err := e.notifier.Notify(ctx, event); err != nil {
