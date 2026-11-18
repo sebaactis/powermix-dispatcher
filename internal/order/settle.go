@@ -67,7 +67,15 @@ func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 		return nil
 	}
 
-	sent, err := e.store.NotificationSent(ctx, loaded.ID, string(event.Kind))
+	return e.notifyOnce(ctx, event)
+}
+
+func (e *Engine) notifyOnce(ctx context.Context, event notify.Event) error {
+	if e.notifier == nil {
+		return nil
+	}
+
+	sent, err := e.store.NotificationSent(ctx, event.OrderID, string(event.Kind))
 	if err != nil {
 		return err
 	}
@@ -79,5 +87,5 @@ func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 		return err
 	}
 
-	return e.store.RecordNotification(ctx, loaded.ID, string(event.Kind), e.now())
+	return e.store.RecordNotification(ctx, event.OrderID, string(event.Kind), e.now())
 }

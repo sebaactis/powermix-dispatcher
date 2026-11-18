@@ -91,10 +91,10 @@ En `internal/fakeapi`, puerto 9404: crea, consulta y cancela órdenes, y envía 
 | Método | Qué hace |
 | --- | --- |
 | `RequestQR(orderID, posID)` | Idempotente: si hay un QR pendiente lo devuelve; si no, lo crea en Mercado Pago (clave de idempotencia = id de orden) y lo guarda |
-| `ConfirmFromGateway(providerID)` | `Lookup` → verifica `external_reference` → aprobada y monto correcto: marca pagada y despacha en segundo plano. Monto distinto: no despacha y avisa (`payment_mismatch`) |
+| `ConfirmFromGateway(providerID)` | `Lookup` → verifica `external_reference` y que sea el cobro guardado de esa orden → aprobada y monto correcto: marca pagada y despacha en segundo plano. Monto distinto: no despacha, la orden queda en `pending_payment`, el pago en `amount_mismatch` y se avisa `payment_mismatch`. Estado desconocido: avisa `payment_unknown` y no toca nada |
 | `ReconcilePayments(limit)` | En el barrido, sobre QR pendientes de más de 10 s: aprobada → mismo camino que el webhook; vencida o cancelada → cancela la orden; pendiente y pasado `expires_at` + 30 s → `Cancel` en Mercado Pago y se obedece la respuesta |
 
-Si el proceso muere después de marcar pagada y antes de despachar, el barrido existente (`resumeStalledLine`) retoma las líneas `pending`. Si muere antes de marcar pagada, `ReconcilePayments` encuentra el QR aprobado.
+Las escrituras van siempre en el orden **primero el efecto, después el pago**: si el proceso muere entre las dos, el pago sigue `pending` y el barrido completa lo que faltó. Si el proceso muere después de marcar pagada y antes de despachar, el barrido existente (`resumeStalledLine`) retoma las líneas `pending`. Si muere antes de marcar pagada, `ReconcilePayments` encuentra el QR aprobado.
 
 ### HTTP
 

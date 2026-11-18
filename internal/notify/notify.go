@@ -8,8 +8,10 @@ import (
 type Kind string
 
 const (
-	KindOrderInDoubt Kind = "order_in_doubt"
-	KindOrderFailed  Kind = "order_failed"
+	KindOrderInDoubt    Kind = "order_in_doubt"
+	KindOrderFailed     Kind = "order_failed"
+	KindPaymentMismatch Kind = "payment_mismatch"
+	KindPaymentUnknown  Kind = "payment_unknown"
 )
 
 type Event struct {

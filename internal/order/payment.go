@@ -10,13 +10,22 @@ import (
 )
 
 func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Time) error {
-	loaded, err := e.store.LoadOrder(ctx, orderID)
-	if err != nil {
+	loaded, started, err := e.markPaid(ctx, orderID, at)
+	if err != nil || !started {
 		return err
 	}
 
+	return e.dispatchLines(context.WithoutCancel(ctx), orderID, loaded.Lines)
+}
+
+func (e *Engine) markPaid(ctx context.Context, orderID string, at time.Time) (store.Order, bool, error) {
+	loaded, err := e.store.LoadOrder(ctx, orderID)
+	if err != nil {
+		return store.Order{}, false, err
+	}
+
 	if loaded.Status != store.OrderPendingPayment {
-		return nil
+		return loaded, false, nil
 	}
 
 	paid := loaded
@@ -26,25 +35,27 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 	paid, err = e.store.SaveOrder(ctx, paid)
 	if err != nil {
 		if errors.Is(err, store.ErrStale) {
-			return nil
+			return loaded, false, nil
 		}
 
-		return err
+		return store.Order{}, false, err
 	}
 
 	dispatching, err := AdvanceOrder(paid.Status, loaded.Lines)
 	if err != nil {
-		return err
+		return store.Order{}, false, err
 	}
 
 	paid.Status = dispatching
 
 	if _, err := e.store.SaveOrder(ctx, paid); err != nil {
-		return err
+		return store.Order{}, false, err
 	}
 
-	lines := loaded.Lines
-	detached := context.WithoutCancel(ctx)
+	return loaded, true, nil
+}
+
+func (e *Engine) dispatchLines(ctx context.Context, orderID string, lines []store.Line) error {
 	failures := make([]error, len(lines))
 
 	var wg sync.WaitGroup
@@ -54,7 +65,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 		go func(i int) {
 			defer wg.Done()
 
-			failures[i] = e.dispatchWithinDeadline(detached, orderID, lines[i])
+			failures[i] = e.dispatchWithinDeadline(ctx, orderID, lines[i])
 		}(i)
 	}
 
@@ -62,7 +73,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 
 	joined := errors.Join(failures...)
 
-	if _, err := e.refreshOrderStatus(detached, orderID); err != nil {
+	if _, err := e.refreshOrderStatus(ctx, orderID); err != nil {
 		return errors.Join(joined, err)
 	}
 

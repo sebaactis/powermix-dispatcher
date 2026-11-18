@@ -2431,3 +2431,51 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## internal/fakeapi/mercadopago_test.go (rama `tests/mercadopago`)
 
 > Los tests conectan el adaptador real de la unidad 2a con el falso y un receptor `httptest` que valida cada aviso con `mercadopago.VerifySignature`: es la prueba de que el cliente, el falso y la firma hablan el mismo idioma. Cubren la idempotencia del alta, el pago con y sin monto distinto, el vencimiento en el borde exacto de 180 s, la cancelación repetida, la cancelación de una orden pagada (`ErrNotCancelable`), el reenvío con un `x-request-id` nuevo, el token equivocado y que la URL devuelta no expone el secreto. Firmar con un secreto equivocado pone en rojo el test del aviso; eso se verificó mutando el código.
+
+## internal/order — el cobro con QR (unidad 3)
+
+### ConfirmPayment / markPaid / dispatchLines
+
+> `ConfirmPayment` se partió en dos sin cambiar lo que hace: `markPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
+
+### WithPayments / WithQRExpiry
+
+> Sin gateway el cobro con QR está apagado: `RequestQR` y `ConfirmFromGateway` devuelven `ErrPaymentsDisabled` y `ReconcilePayments` no hace nada. Así el sandbox sin credenciales sigue funcionando con el pago simulado. El nombre del proveedor (`"mercadopago"`) viaja con el gateway porque es lo que se guarda en `payment_intent.provider`.
+
+### WithBackground / WithBackgroundErrors / Wait / spawn
+
+> El despacho que dispara un webhook corre fuera del request, pero no suelto: `spawn` lo registra en un `WaitGroup` y `Wait` permite que el apagado espere los despachos en curso. Un error del despacho en segundo plano no tiene a quién volver, así que va a `WithBackgroundErrors` (en `cmd/api`, un log). `WithBackground` existe para que los tests corran el despacho en el mismo goroutine y no tengan que esperar.
+
+### RequestQR
+
+> Idempotente por orden: si la orden ya tiene un pago guardado, lo devuelve **tal como está** —pendiente, vencido o pagado— y no llama a Mercado Pago. Si no lo tiene, crea el QR en Mercado Pago **antes** de guardarlo: si el guardado falla, el reintento vuelve a llamar con la misma clave de idempotencia (el id de la orden) y recibe el mismo QR, así que nunca queda un QR cobrable sin registro. Dos pedidos simultáneos chocan en `ErrAlreadyExists` y el perdedor devuelve el del ganador. Sólo se pide QR para una orden `pending_payment` con importe positivo (`ErrNotPayable`).
+
+### ConfirmFromGateway
+
+> La entrada del webhook. Nunca usa el cuerpo del aviso: pregunta a Mercado Pago (`Lookup`) y obedece la respuesta. El cobro tiene que apuntar, por `external_reference`, a una orden nuestra **y** ser el mismo cobro que esa orden tiene guardado; si no, es `ErrUnknownCharge` y el webhook responde 200 igual, porque reintentar no lo va a arreglar.
+
+### applyCharge
+
+> El único lugar que traduce lo que dice Mercado Pago en efectos, compartido por el webhook y el barrido. Un pago que ya no está `pending` no se vuelve a tocar: lo que diga después el proveedor (por ejemplo un `refunded` manual de soporte) no genera avisos ni cambios.
+>
+> El orden de las escrituras es lo que hace seguro un corte del proceso a mitad de camino: **primero el efecto, después el pago**. Pagado: primero la orden (`markPaid`), después el pago `approved`. Monto distinto: primero el aviso, después el pago `amount_mismatch`. Vencido o cancelado: primero la orden `cancelled`, después el pago. Si el proceso muere entre las dos, el pago sigue `pending`, el barrido lo vuelve a encontrar y la segunda pasada completa lo que faltó sin repetir lo hecho (`markPaid` no repite, el aviso se deduplica, cancelar una orden ya cancelada no hace nada).
+
+### acceptPayment
+
+> Si `markPaid` movió la orden, el despacho se lanza en segundo plano. Si no la movió porque ya estaba pagada, no se despacha de nuevo: una orden pagada sin despachar es trabajo del barrido de líneas (`resumeStalledLine`), que ya existía. Si no la movió porque estaba **cancelada**, Mercado Pago está cobrando una orden que dimos por muerta: no se reabre (la transición `cancelled → paid` sigue cerrada) y se avisa `payment_unknown`.
+
+### rejectPaidAmount
+
+> Decidido con el dueño del producto: con un monto distinto al del catálogo —de más o de menos— no se despacha, la orden **se queda en `pending_payment`** y el pago pasa a `amount_mismatch`. No se cancela porque hubo cobro, y no hay transición a `failed` desde `pending_payment`. Se avisa `payment_mismatch` una sola vez.
+
+### ReconcilePayments
+
+> El barrido de los pagos `pending` con más de 10 s (antes, la tablet acaba de mostrar el QR y el webhook todavía puede llegar). Recupera el webhook que no llegó con el mismo `applyCharge`. Si el cobro sigue pendiente y pasaron 30 s del vencimiento, le pide a Mercado Pago que lo cancele y aplica **su** respuesta; si Mercado Pago no acepta cancelar (`ErrNotCancelable`), consulta de nuevo y obedece lo que diga: así un pago que entró justo al vencer se despacha en lugar de perderse. Un error en un pago no frena a los demás.
+
+### notifyOnce
+
+> Lo que antes vivía dentro de `notifyOrder` —consultar el registro, avisar, anotar— salió a una función propia para que los avisos de pago (`payment_mismatch`, `payment_unknown`) usen el mismo dedupe por `(orden, tipo)` que los de despacho.
+
+## internal/order/charge_test.go (rama `tests/mercadopago`)
+
+> Fixtures propios (gateway programable, dispenser que cuenta despachos, notificador que registra) porque los helpers del motor viven en `archive/tests`. Fijan la idempotencia de `RequestQR`, el pago correcto con un despacho por línea aunque el webhook se repita, el monto de más y de menos, el vencimiento y la cancelación, el estado desconocido, los cobros ajenos, la recuperación de un corte entre la orden y el pago, el cobro de una orden cancelada, que el webhook responde con la orden en `dispatching` **antes** de que termine el despacho, y los bordes del barrido (10 s de antigüedad, 30 s de margen). Cuatro mutaciones verificadas en rojo: sacar la comparación de montos, el margen de cancelación, la obediencia ante `ErrNotCancelable` y el chequeo de pago cerrado.
