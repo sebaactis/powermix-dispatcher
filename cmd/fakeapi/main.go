@@ -30,6 +30,10 @@ func main() {
 		batidosGoodsID  string
 		snacksAccessKey string
 		snacksSecret    string
+		mpAddr          string
+		mpAccessToken   string
+		mpWebhookSecret string
+		mpWebhookURL    string
 	)
 
 	flag.StringVar(&batidosAddr, "batidos-addr", "127.0.0.1:9401", "dirección para la API falsa de batidos")
@@ -41,6 +45,10 @@ func main() {
 	flag.StringVar(&batidosGoodsID, "batidos-goods", "goods-1", "goodsId listado y con stock que se siembra al arrancar; vacío desactiva la siembra")
 	flag.StringVar(&snacksAccessKey, "snacks-access-key", "ak_test", "accessKey que espera la API falsa de snacks")
 	flag.StringVar(&snacksSecret, "snacks-secret", "testsecret", "appSecret usado para verificar la firma HMAC")
+	flag.StringVar(&mpAddr, "mp-addr", "127.0.0.1:9404", "dirección para el Mercado Pago falso")
+	flag.StringVar(&mpAccessToken, "mp-access-token", "TEST-fake-token", "access token que espera el Mercado Pago falso")
+	flag.StringVar(&mpWebhookSecret, "mp-webhook-secret", "fake-webhook-secret", "secreto con el que el Mercado Pago falso firma los webhooks")
+	flag.StringVar(&mpWebhookURL, "mp-webhook-url", "", "URL completa del webhook, con el secreto de ruta (ej. http://127.0.0.1:8080/callbacks/mercadopago/<secreto>); vacía no envía avisos")
 	flag.Parse()
 
 	logger := logging.New(os.Stdout, slog.LevelInfo)
@@ -66,11 +74,19 @@ func main() {
 		)
 	}
 
-	admin := fakeapi.NewAdmin(batidosFake, snacksFake)
+	mpFake := fakeapi.NewMercadoPago(mpAccessToken, mpWebhookSecret, mpWebhookURL)
+	if mpWebhookURL == "" {
+		logger.Warn("el Mercado Pago falso no tiene URL de webhook: los pagos simulados no avisan a la API",
+			"flag", "-mp-webhook-url",
+		)
+	}
+
+	admin := fakeapi.NewAdmin(batidosFake, snacksFake, mpFake)
 
 	servers := []*http.Server{
 		{Addr: batidosAddr, Handler: batidosFake, ReadHeaderTimeout: 5 * time.Second},
 		{Addr: snacksAddr, Handler: snacksFake, ReadHeaderTimeout: 5 * time.Second},
+		{Addr: mpAddr, Handler: mpFake, ReadHeaderTimeout: 5 * time.Second},
 		{Addr: adminAddr, Handler: admin, ReadHeaderTimeout: 5 * time.Second},
 	}
 

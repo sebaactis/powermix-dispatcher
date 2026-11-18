@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE kiosk (
     id         text PRIMARY KEY,
     name       text NOT NULL,
@@ -135,5 +133,3 @@ CREATE TABLE catalog_snapshot (
     raw         jsonb,
     PRIMARY KEY (machine_key, sku)
 );
-
-COMMIT;

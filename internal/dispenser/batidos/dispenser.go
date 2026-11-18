@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
 
 const (
@@ -66,7 +68,7 @@ func NewDispenser(client *Client, opts ...DispenserOption) *Dispenser {
 	return d
 }
 
-func (d *Dispenser) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (d *Dispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	device, err := d.client.Device(ctx, machine.DeviceID)
 	if err != nil {
 		return dispenser.Availability{}, err
@@ -140,14 +142,14 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 
 	switch info.Status {
 	case OrderStatusFailed:
-		return dispenser.Status{State: dispenser.LineFailed, ProviderOrderNo: info.OrderNo}, nil
+		return dispenser.Status{State: linestate.Failed, ProviderOrderNo: info.OrderNo}, nil
 	case OrderStatusInProgress:
-		return dispenser.Status{State: dispenser.LineBrewing, ProviderOrderNo: info.OrderNo}, nil
+		return dispenser.Status{State: linestate.Brewing, ProviderOrderNo: info.OrderNo}, nil
 	case OrderStatusCompleted:
-		return dispenser.Status{State: dispenser.LineDelivered, ProviderOrderNo: info.OrderNo}, nil
+		return dispenser.Status{State: linestate.Delivered, ProviderOrderNo: info.OrderNo}, nil
 	default:
 		return dispenser.Status{
-			State:           dispenser.LineInDoubt,
+			State:           linestate.InDoubt,
 			ProviderOrderNo: info.OrderNo,
 			Reason:          fmt.Sprintf("el proveedor informó un estado desconocido: %d", int(info.Status)),
 		}, nil

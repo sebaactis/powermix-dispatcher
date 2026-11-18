@@ -3,7 +3,7 @@ package order
 import (
 	"errors"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/store"
 )
 
@@ -18,11 +18,11 @@ func DeriveOrderStatus(lines []store.Line) store.OrderStatus {
 
 	for _, line := range lines {
 		switch line.State {
-		case dispenser.LinePending, dispenser.LineSent, dispenser.LineBrewing:
+		case linestate.Pending, linestate.Sent, linestate.Brewing:
 			return store.OrderDispatching
-		case dispenser.LineDelivered:
+		case linestate.Delivered:
 			delivered++
-		case dispenser.LineFailed:
+		case linestate.Failed:
 			failed++
 		}
 	}
@@ -69,21 +69,21 @@ func CanOrderTransition(from, to store.OrderStatus) bool {
 	}
 }
 
-func CanLineTransition(from, to dispenser.LineState) bool {
+func CanLineTransition(from, to linestate.State) bool {
 	switch from {
-	case dispenser.LinePending:
-		return to == dispenser.LineSent
-	case dispenser.LineSent:
-		return to == dispenser.LineBrewing ||
-			to == dispenser.LineDelivered ||
-			to == dispenser.LineFailed ||
-			to == dispenser.LineInDoubt
-	case dispenser.LineBrewing:
-		return to == dispenser.LineDelivered ||
-			to == dispenser.LineFailed ||
-			to == dispenser.LineInDoubt
-	case dispenser.LineInDoubt:
-		return to == dispenser.LineDelivered || to == dispenser.LineFailed
+	case linestate.Pending:
+		return to == linestate.Sent
+	case linestate.Sent:
+		return to == linestate.Brewing ||
+			to == linestate.Delivered ||
+			to == linestate.Failed ||
+			to == linestate.InDoubt
+	case linestate.Brewing:
+		return to == linestate.Delivered ||
+			to == linestate.Failed ||
+			to == linestate.InDoubt
+	case linestate.InDoubt:
+		return to == linestate.Delivered || to == linestate.Failed
 	default:
 		return false
 	}
@@ -102,7 +102,7 @@ func AdvanceOrder(current store.OrderStatus, lines []store.Line) (store.OrderSta
 	return next, nil
 }
 
-func AdvanceLine(current, next dispenser.LineState) (dispenser.LineState, error) {
+func AdvanceLine(current, next linestate.State) (linestate.State, error) {
 	if next == current {
 		return current, nil
 	}

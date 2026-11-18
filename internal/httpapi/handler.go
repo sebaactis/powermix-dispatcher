@@ -32,6 +32,14 @@ type OrderReader interface {
 	LoadOrder(ctx context.Context, orderID string) (store.Order, error)
 }
 
+type Charger interface {
+	RequestQR(ctx context.Context, orderID, posID string) (store.PaymentIntent, error)
+}
+
+type PaymentReader interface {
+	PaymentIntentByOrder(ctx context.Context, orderID string) (store.PaymentIntent, error)
+}
+
 type Deps struct {
 	Catalog   Catalog
 	Placer    Placer
@@ -39,6 +47,9 @@ type Deps struct {
 	Orders    OrderReader
 	Kiosks    []config.Kiosk
 	Env       string
+
+	Charger  Charger
+	Payments PaymentReader
 }
 
 type Handler struct {
@@ -46,6 +57,8 @@ type Handler struct {
 	placer    Placer
 	confirmer Confirmer
 	orders    OrderReader
+	charger   Charger
+	payments  PaymentReader
 
 	kiosks    map[string]config.Kiosk
 	onlyKiosk string
@@ -78,6 +91,10 @@ func New(deps Deps, opts ...Option) (*Handler, error) {
 		return nil, errors.New("el handler HTTP necesita catálogo, motor y store")
 	}
 
+	if (deps.Charger == nil) != (deps.Payments == nil) {
+		return nil, errors.New("el handler HTTP necesita el cobro con QR y la lectura de pagos juntos, o ninguno de los dos")
+	}
+
 	if len(deps.Kiosks) == 0 {
 		return nil, errors.New("el handler HTTP necesita al menos un mueble configurado")
 	}
@@ -101,8 +118,10 @@ func New(deps Deps, opts ...Option) (*Handler, error) {
 		placer:    deps.Placer,
 		confirmer: deps.Confirmer,
 		orders:    deps.Orders,
+		charger:   deps.Charger,
+		payments:  deps.Payments,
 		kiosks:    byID,
-		simulated: deps.Env == config.EnvSandbox,
+		simulated: deps.Env == config.EnvSandbox && deps.Charger == nil,
 		now:       time.Now,
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}

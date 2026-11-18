@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
 
 const (
@@ -47,7 +49,7 @@ func NewDispenser(client *Client, opts ...DispenserOption) *Dispenser {
 	return d
 }
 
-func (d *Dispenser) Check(ctx context.Context, machine dispenser.MachineRef) (dispenser.Availability, error) {
+func (d *Dispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
 	page, err := d.client.Devices(ctx, PageQuery{Page: firstPage, Size: devicesPageSize, DeviceCode: machine.MID})
 	if err != nil {
 		return dispenser.Availability{}, err
@@ -115,7 +117,7 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 	order, found := findOrder(page.Items, ref)
 	if !found {
 		return dispenser.Status{
-			State:           dispenser.LineInDoubt,
+			State:           linestate.InDoubt,
 			ProviderOrderNo: ref,
 			Reason:          "el proveedor no informa el pedido",
 		}, nil
@@ -127,7 +129,7 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 	}
 
 	return dispenser.Status{
-		State:           dispenser.LineInDoubt,
+		State:           linestate.InDoubt,
 		ProviderOrderNo: order.OrderNo,
 		Reason: fmt.Sprintf(
 			"el proveedor informa el estado del pedido %d (%s), no el resultado del despacho",

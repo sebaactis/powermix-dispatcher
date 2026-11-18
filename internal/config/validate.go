@@ -64,6 +64,8 @@ func (c *Config) validate() error {
 		problems = append(problems, callbackSecretProblems("snacks.callback_secret", c.SnacksCallbackSecret)...)
 	}
 
+	problems = append(problems, c.mercadoPagoProblems()...)
+
 	seen := make(map[string]struct{}, len(c.Kiosks))
 	for _, kiosk := range c.Kiosks {
 		if kiosk.ID == "" {
@@ -82,6 +84,44 @@ func (c *Config) validate() error {
 		return fmt.Errorf("configuración: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+func (c *Config) mercadoPagoProblems() []string {
+	if !c.MercadoPagoEnabled() {
+		if c.Env == EnvProduction {
+			return []string{"en producción Mercado Pago es obligatorio: falta el access token (archivo o MP_ACCESS_TOKEN)"}
+		}
+
+		if c.MercadoPagoWebhookSecret != "" || c.MercadoPagoCallbackSecret != "" {
+			return []string{"Mercado Pago está configurado a medias: hay secretos pero falta el access token (archivo o MP_ACCESS_TOKEN)"}
+		}
+
+		return nil
+	}
+
+	var problems []string
+
+	if c.MercadoPagoWebhookSecret == "" {
+		problems = append(problems, "el secreto del webhook de Mercado Pago es obligatorio (archivo o MP_WEBHOOK_SECRET)")
+	}
+
+	if c.MercadoPagoCallbackSecret == "" {
+		problems = append(problems, "el secreto de ruta del webhook de Mercado Pago es obligatorio (archivo o MP_CALLBACK_SECRET)")
+	} else {
+		problems = append(problems, callbackSecretProblems("mercadopago.callback_secret", c.MercadoPagoCallbackSecret)...)
+	}
+
+	if parsed, err := url.Parse(c.MercadoPagoBaseURL); err != nil || parsed.Host == "" {
+		problems = append(problems, fmt.Sprintf("mercadopago.base_url %q no es una URL absoluta con host", c.MercadoPagoBaseURL))
+	}
+
+	for _, kiosk := range c.Kiosks {
+		if kiosk.ID != "" && kiosk.MPPosID == "" {
+			problems = append(problems, fmt.Sprintf("mueble %s: falta mp_pos_id, la caja de Mercado Pago donde se cobra", kiosk.ID))
+		}
+	}
+
+	return problems
 }
 
 func kioskProblems(kiosk Kiosk) []string {

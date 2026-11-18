@@ -5,6 +5,8 @@ El código fuente no lleva comentarios a propósito: acá se consulta, se busca 
 
 Formato: `Símbolo --> "texto del comentario"`.
 
+> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 42 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/arquitectura.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
+
 ## cmd/api/main.go
 
 ### (archivo)
@@ -101,7 +103,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### const
 
-> Documentado en "YS Vending Management Platform API Document V1.0.1".
+> Documentado en `docs/proveedores/snacks-api.pdf` ("YS Vending Management Platform API Document V1.0.1").
 > El host de producción es el que documenta el proveedor. No se renombra con
 > el nombre de la máquina: es un contrato ajeno.
 
@@ -480,45 +482,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 > mientras un snack se despacha de forma directa: desde acá los dos se ven
 > igual. Cada proveedor implementa esta interfaz en su propio subpaquete
 > (batidos, snacks).
-
-### LineState
-
-> LineState es el ciclo de vida de un producto dentro de una orden. Las dos
-> líneas de un combo evolucionan de forma independiente.
-
-### const
-
-> LineInDoubt significa que no sabemos si el producto salió. Nunca se
-> reintenta a ciegas: primero se reconcilia (ver Reconcile).
-
-### MachineRef
-
-> MachineRef identifica una máquina física y las direcciones con las que
-> responde en cada proveedor.
-
-### MachineRef
-
-> El tipo es `machine.Kind`; sus valores son «batidos» y «snacks».
-
-### MachineRef
-
-> La familia de la máquina se llama `Kind` y no `Type` porque ya tiene su propio tipo —`machine.Kind`—: un campo `Type` de tipo `Kind` se lee al revés, y `Type` sugería que ahí vivía el tipo de dispositivo, que es otra cosa y es `DeviceTypeID`.
-
-### MachineRef
-
-> Batidos
-
-### MachineRef
-
-> Batidos
-
-### MachineRef
-
-> Batidos
-
-### MachineRef
-
-> Snacks
+>
+> El vocabulario que el puerto nombra en su firma vive fuera de él: la familia y
+> la referencia de la máquina en `machine` (`machine.Kind`, `machine.Ref`), y el
+> estado de una línea en `linestate` (`linestate.State`). Acá queda sólo el contrato, y por
+> eso el store puede tipar una fila sin importar el puerto de las máquinas.
 
 ### Availability
 
@@ -588,7 +556,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### ShipmentRequest
 
-> MID identifica a la máquina de snacks (dispenser.MachineRef.MID).
+> MID identifica a la máquina de snacks (machine.Ref.MID).
 
 ### ShipmentRequest
 
@@ -705,7 +673,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### isRejected
 
-> Decide si una respuesta es un rechazo del proveedor: status HTTP fuera de 2xx, `code` distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`ys-vending.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir.
+> Decide si una respuesta es un rechazo del proveedor: status HTTP fuera de 2xx, `code` distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`docs/proveedores/snacks-api.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir.
 
 ## internal/dispenser/snacks/client_test.go
 
@@ -823,7 +791,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > VerifySignature revisa presencia de headers, ventana de reloj y firma. Sólo lo
 > usa el servidor falso local. Nuestro callback de snacks **no** lo usa: la
-> documentación del aviso de despacho (`ys-vending.txt:2023-2075`) describe
+> documentación del aviso de despacho (`docs/proveedores/snacks-api.txt:2023-2075`) describe
 > sólo el cuerpo y ningún header de firma, y exigir una firma que el proveedor
 > no manda rechazaría todos sus avisos. El callback se autentica sólo con el
 > secreto de la ruta.
@@ -961,6 +929,30 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El test que más importa del fake es el que firma la ruta **con** la query y exige un 40004. Si algún día el falso empezara a aceptarla, el cliente podría firmar mal sin que ningún test lo note.
 
+## internal/linestate/linestate.go
+
+### (archivo)
+
+> Package linestate declara el estado de una línea de la orden. No importa nada del
+> proyecto y no tiene funciones ni métodos: es vocabulario compartido, no
+> comportamiento.
+>
+> Vive en un paquete propio porque lo nombran todas las capas —el puerto del
+> despachador, el store, el motor y los adaptadores— y porque el estado de una
+> línea no es un detalle del puerto: es el mismo dato que guarda la columna
+> `order_line.state` y el que la API devuelve en `line.state`. Con el tipo dentro
+> del puerto, la persistencia dependía del puerto para escribir una fila.
+
+### State
+
+> State es el ciclo de vida de un producto dentro de una orden. Las dos
+> líneas de un combo evolucionan de forma independiente.
+
+### const
+
+> `InDoubt` significa que no sabemos si el producto salió. Nunca se
+> reintenta a ciegas: primero se reconcilia (ver `Reconcile`).
+
 ## internal/logging/logging.go
 
 ### (archivo)
@@ -1015,9 +1007,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### (archivo)
 
-> Package machine declara el único tipo de la familia de máquina del sistema.
-> No importa nada del proyecto y no tiene funciones ni métodos: es vocabulario
-> compartido, no comportamiento.
+> Package machine declara los tipos compartidos de la máquina: la familia
+> (`Kind`) y la referencia a una máquina concreta (`Ref`). No importa nada del
+> proyecto, sólo la biblioteca estándar, y su único comportamiento es la
+> validación de identidad de `Ref`: la regla es del tipo, no del borrador que lo
+> usa.
 
 ### Kind
 
@@ -1034,6 +1028,54 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Batidos y Snacks, con los valores que ya están escritos en el JSON del
 > catálogo y en las columnas SQL. Cambiarlos sería un cambio de datos, no de
 > código.
+
+### Ref
+
+> Ref identifica una máquina física y las direcciones con las que responde en
+> cada proveedor. Vive acá y no en el puerto del despachador porque el store
+> guarda la referencia de cada línea: con el tipo en el puerto, la
+> persistencia dependía del puerto para tipar una fila.
+
+### Ref
+
+> El tipo es `machine.Kind`; sus valores son «batidos» y «snacks».
+
+### Ref
+
+> La familia de la máquina se llama `Kind` y no `Type` porque ya tiene su propio tipo —`machine.Kind`—: un campo `Type` de tipo `Kind` se lee al revés, y `Type` sugería que ahí vivía el tipo de dispositivo, que es otra cosa y es `DeviceTypeID`.
+
+### Ref
+
+> Batidos
+
+### Ref
+
+> Batidos
+
+### Ref
+
+> Batidos
+
+### Ref
+
+> Snacks
+
+### Validate
+
+> Devuelve error cuando a la `Ref` le faltan los identificadores que su `Kind`
+> necesita: batidos exige `device_id`, `device_no` y `device_type_id`; snacks
+> exige `mid`; un `Kind` desconocido también es error, para que una familia
+> nueva no se cuele por omisión en el `default`.
+>
+> No rechaza los campos de la otra familia: la regla es «los propios, todos los
+> propios», no «sólo los propios». Es la misma que aplican `config.validate` y el
+> `CHECK` de la tabla `machine`, así que una `Ref` con la identidad completa de
+> las dos familias se acepta en los tres lados.
+>
+> La regla queda duplicada a propósito en `config`: allí se valida el archivo del
+> catálogo —otro tipo, `config.Machine`, con problemas acumulados y mensajes con
+> el mueble adentro— y unificarlas obligaría a cambiar esos mensajes, que nadie
+> pidió cambiar.
 
 ## internal/notify/notify.go
 
@@ -1096,7 +1138,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### kiosk
 > Esquema inicial del sistema de combos en muebles expendedores.
 > 
-> PostgreSQL. Se aplica con: psql "$DATABASE_URL" -f migrations/0001_init.sql
+> PostgreSQL. Se aplica con el runner del repositorio: DATABASE_URL=… go run ./cmd/migrate (antes era a mano, psql "$DATABASE_URL" -f migrations/0001_init.sql; y el archivo ya no lleva BEGIN/COMMIT porque la transacción la abre el runner).
 > Las claves primarias son text porque las genera la aplicación.
 > El dinero se guarda como centavos enteros, nunca como punto flotante.
 
@@ -1275,7 +1317,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Reconcile
 
-> Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `LineInDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `LineFailed` sería afirmar algo que el proveedor no dijo.
+> Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `linestate.InDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `linestate.Failed` sería afirmar algo que el proveedor no dijo.
 >
 > `Status.ProviderOrderNo` es siempre el orderNo del proveedor, también en el caso fallido: es lo que identifica el pedido en la conciliación y en el panel.
 >
@@ -1329,7 +1371,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Busca el pedido por `transactionOrderNo` igual al asa que tenemos (`req.KnownRef`, o el id de la orden cuando el ProviderRef quedó vacío). No se manda `OrderNo` como filtro a propósito: el filtro del proveedor es por `orderNo` y el asa que tenemos es el `transactionOrderNo` del pago; mandarlo excluiría justamente el pedido buscado. El match es local y exacto.
 >
-> Este método no puede dar un veredicto, y es deliberado. El único estado que trae la página de pedidos es el estado del PEDIDO —ciclo de pago—, no el resultado del despacho. Declarar entregado afirmaría algo que el proveedor no dijo; declarar fallido sería peor, porque dispararía un reintento y podría sacar dos snacks. Por eso siempre responde `LineInDoubt`: «el proveedor no informa el pedido» si no aparece, o el número y el nombre crudos del estado si aparece. La verdad por producto llega por callback (T10, R5).
+> Este método no puede dar un veredicto, y es deliberado. El único estado que trae la página de pedidos es el estado del PEDIDO —ciclo de pago—, no el resultado del despacho. Declarar entregado afirmaría algo que el proveedor no dijo; declarar fallido sería peor, porque dispararía un reintento y podría sacar dos snacks. Por eso siempre responde `linestate.InDoubt`: «el proveedor no informa el pedido» si no aparece, o el número y el nombre crudos del estado si aparece. La verdad por producto llega por callback (T10, R5).
 >
 > Si el proveedor rechaza la consulta se devuelve el error tal cual y con un Status vacío: el puerto no inventa un estado cuando no tuvo respuesta.
 
@@ -1349,7 +1391,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### (archivo)
 
-> Puerto de persistencia del motor, y el vocabulario que se guarda: orden, línea, intento y webhook.
+> Puerto de persistencia del motor, y el vocabulario que se guarda: orden, línea, intento, webhook y aviso enviado.
 >
 > Es un puerto y no un driver porque el motor tiene que poder escribirse y probarse sin base de datos. Las columnas, los CHECK y los índices únicos de `migrations/0001_init.sql` son el contrato que este paquete refleja.
 
@@ -1365,9 +1407,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Line
 
-> La unidad de ejecución. La familia de la máquina vive en un solo lugar: `Machine.Kind`. Antes la línea la guardaba dos veces —`MachineType` por un lado y la `MachineRef` por otro— y nada obligaba a que coincidieran: una línea podía decir «snacks» y llevar los identificadores del batido, y el motor elegía el driver de una máquina y le mandaba la identidad de la otra. Con un solo campo la incoherencia no se puede escribir: no compila.
+> La unidad de ejecución. La familia de la máquina vive en un solo lugar: `Machine.Kind`. Antes la línea la guardaba dos veces —`MachineType` por un lado y la `machine.Ref` por otro— y nada obligaba a que coincidieran: una línea podía decir «snacks» y llevar los identificadores del batido, y el motor elegía el driver de una máquina y le mandaba la identidad de la otra. Con un solo campo la incoherencia no se puede escribir: no compila.
 >
-> `State` reusa `dispenser.LineState` a propósito: el estado de una línea es el mismo que informa el puerto de las máquinas, y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde.
+> `State` es `linestate.State`, el mismo tipo que informa el puerto de las máquinas: el estado de una línea es uno solo y duplicarlo obligaría a traducir entre dos enums idénticos en cada borde. Vive en `internal/linestate` porque la persistencia y el borde lo necesitan tipado y no pueden depender del puerto para eso.
 >
 > `Ref` tiene dos significados según la máquina —código de canje en batidos, asa del proveedor en snacks— porque el SQL tiene dos columnas y el motor nunca necesita las dos a la vez.
 >
@@ -1387,6 +1429,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El conflicto de escritura, y el mismo error sirve para la línea y para la orden: alguien escribió después de que esta copia se leyera. Significa algo distinto según quién escribe —para el callback, alguien con más autoridad ya resolvió la línea; para el worker, la línea ya tiene dueño; para el segundo `/pay`, el cobro ya está registrado—, y por eso la reacción la decide el dominio y no el store. El mensaje dice el hecho —«el registro cambió desde que se leyó»— y no una acción, porque la reacción correcta no la puede decidir el store. Se compara con `errors.Is` desde el motor y nunca se muestra a un cliente.
 
+### ErrInvalid
+
+> Un solo error para cualquier registro que el esquema de SQL rechazaría por una restricción `CHECK` (`23514`): la cabecera (`orders.amount_cents`, `orders.status`), la línea (`order_line.machine_type`, `order_line.amount_cents`, `order_line.state`), el intento de despacho (`dispatch_attempt.outcome`) y el webhook (`webhook_event.source`). Se unificó en un único centinela porque ningún llamador fuera de `internal/store` distinguía qué tabla falló: el mensaje nombra el registro afectado («la orden X», «la línea Y», «el intento Z», «el webhook W») y el detalle es lo que se consulta para diagnosticar.
+>
+> Se devuelve envuelto con `%w` y el detalle de qué campo y qué valor rompió la regla, y se compara con `errors.Is`: a diferencia de `ErrNotFound`, `ErrAlreadyExists` y `ErrStale`, acá el detalle es lo único que dice cuál de las reglas saltó. No son errores de entrada para el usuario: el alta ya valida antes (`validateDraft`), así que uno de estos que llegue al borde HTTP termina en 500 porque significa que el motor armó un registro que no debería existir. La posición repetida de la línea y el intento repetido `(line_id, attempt_no)` **no** son `ErrInvalid` sino `ErrAlreadyExists`: en SQL no los frena un `CHECK` sino los índices únicos `(order_id, position)` y `(line_id, attempt_no)`, y el `23505` ya tenía traducción; la paridad se hizo con el error que existía en vez de inventar uno nuevo.
+
 ### Store
 
 > `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció. `StalledLines` responde la otra: qué quedó `pending` sin que nadie sepa si se llegó a llamar.
@@ -1396,6 +1444,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `SaveOrder` guarda sólo la cabecera y **lleva versión**, igual que `SaveLine`: recibe la orden con la versión que se leyó y devuelve la orden persistida con la versión siguiente, o `ErrStale` si alguien escribió antes. Las líneas quedan fuera a propósito, y siguen fuera con versión: escribirlas convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. Devolver la orden y no sólo un error es lo que permite encadenar el guardado siguiente —`ConfirmPayment` guarda dos veces— sin releer la cabecera. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
 >
 > `DueLines` y `StalledLines` son dos preguntas distintas sobre líneas `pending`, y confundirlas cuesta un producto. Una `pending` **con** plazo es una línea que alguien reclamó antes de llamar a la máquina y nunca dejó el resultado: puede haberse despachado, así que se reconcilia. Una `pending` **sin** plazo es una línea que nadie llegó a reclamar: no hubo llamada, así que se despacha. El plazo es el único dato que separa «no sé si salió» de «no salió», y por eso la condición de `StalledLines` incluye el `DeadlineAt` en cero y la de `DueLines` lo exige vencido.
+>
+> `NotificationSent` y `RecordNotification` son el registro de los avisos de excepción y el único dedupe que hay para ellos. Preguntar primero y grabar **después** de que `Notify` devolvió sin error es lo que conserva el reintento que antes daba la repetición: un aviso que no salió no queda registrado, así que la pasada siguiente lo reintenta. Grabar dos veces no es error —en SQL es `ON CONFLICT DO NOTHING`— y la orden inexistente es `ErrNotFound` en las dos implementaciones, igual que el resto del puerto. `kind` viaja como `string` y no como `notify.Kind` porque el store no puede depender del paquete de avisos: el borde que traduce es el dominio, que ya tiene el `Kind` en la mano.
 
 ## internal/store/memory.go
 
@@ -1409,6 +1459,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `RegisterWebhook` devuelve `first` y no un error de duplicado: un callback repetido es el caso normal de un proveedor que reintenta, no un fallo.
 >
+> `NotificationSent` y `RecordNotification` comparten un mapa `(orden, tipo)` protegido por el mismo mutex, con el instante del aviso como valor porque la tabla guarda cuándo salió y no sólo que salió. La pareja pregunta-graba **no** es atómica: dos procesos que preguntan a la vez pueden avisar los dos, igual que una caída entre el aviso y el registro. Se acepta por la misma razón en las dos implementaciones —B es at-least-once y un aviso de más es menos grave que uno perdido—; lo que el lock garantiza es que el mapa no se corrompa, no que el dedupe sea perfecto.
+>
 > `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Entran `pending`, `sent`, `brewing` e `in_doubt`: las cuatro tienen un plazo que venció y las cuatro se reconcilian, nunca se redespachan. `pending` es la novedad —una línea reclamada antes del intento y abandonada— y comparte la regla del resto: mientras el plazo no venza, no se toca.
 >
 > `StalledLines` es la otra cara: recorre las órdenes `paid` y `dispatching` cuya `PaidAt` ya pasó el corte, y devuelve sus líneas `pending` **sin** plazo. El filtro por estado de la orden no es un detalle de eficiencia: una orden `pending_payment` también tiene líneas `pending` sin plazo —es lo normal— y despacharlas sería entregar sin cobrar. El `PaidAt` en cero se descarta igual que el `NULL` de SQL: una orden sin pago no tiene antigüedad que medir. Ordena por `paid_at` y después por ID, por el mismo motivo que `DueLines`: el recorrido del mapa no es determinista.
@@ -1418,6 +1470,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `SaveOrder` aplica la misma comparación a la cabecera dentro del mismo lock: si la versión no coincide devuelve `ErrStale` sin tocar la copia guardada, así que un guardado viejo no puede revertir ni el estado ni las tres fechas; si coincide guarda con `Version+1` y devuelve la orden recibida con ese número, que es el que encadena el llamador.
 >
 > `CreateOrder` normaliza a cero la versión de cada línea antes de guardar, sobre una copia para no mutar lo que recibió. No es cosmético: sin eso un llamador podría crear una línea con versión inventada y quedar inmune a los conflictos durante toda su vida. La versión de la cabecera, en cambio, se guarda tal como llega: una orden nueva llega en cero y corregirla acá escondería un error de quien llama en vez de evitarlo.
+>
+> `validateOrder`, `validateLine`, `validateAttempt` y `validateWebhook` son la paridad con el esquema: rechazan exactamente lo que rechazan los `CHECK` de `orders`, `order_line`, `dispatch_attempt` y `webhook_event` —importe negativo, estado fuera de la lista, familia de máquina fuera de `batidos`/`snacks`, desenlaces fuera de los cuatro válidos y fuentes fuera de `payment`/`batidos`/`snacks`— más la posición repetida y el intento repetido `(line_id, attempt_no)`, que en SQL frenan los índices únicos. Ni una regla más: no se llama a `machine.Ref.Validate`, porque `order_line` no exige los identificadores (los exige la tabla `machine`, que el store no toca) y una memoria más estricta que la base rompería el contrato en el otro sentido. `refundedState` existe por lo mismo: `order_line.state` acepta `refunded` aunque `internal/linestate` no tenga la constante, y el store no puede rechazar lo que la base acepta.
+>
+> El orden de los chequeos replica el de SQL y no es casual. En `CreateOrder` la cabecera se valida **antes** de mirar si la orden ya existe porque Postgres evalúa los `CHECK` al formar la tupla y recién después inserta en el índice de la clave primaria: con un ID repetido y además un importe negativo, las dos implementaciones tienen que decir «importe negativo». En `AppendAttempt` se valida el desenlace antes de chequear la clave de idempotencia o el número de intento por línea, por la misma razón. En `SaveLine`, `SaveOrder` y `SaveAttempt` es al revés —primero la condición del `WHERE` (versión o existencia de la clave), después el contenido— porque el `UPDATE` no evalúa ninguna restricción si no encontró fila: una clave de intento que no existe devuelve `ErrNotFound` antes de evaluar el desenlace, y con una copia vieja y un estado inválido las dos dicen `ErrStale`. Dentro de una línea el contenido se valida antes de la posición, igual que en SQL.
+>
+> Nada se escribe antes de validar: `CreateOrder` valida la orden entera y todas sus líneas antes de tocar los mapas, y `SaveLine`/`SaveOrder`/`SaveAttempt` validan antes de asignar, así que una entrada rechazada deja el store exactamente como estaba.
 
 ## internal/store/memory_test.go
 
@@ -1429,7 +1487,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` fijan las dos preguntas nuevas y su diferencia: el plazo es lo que decide a cuál pertenece una línea `pending`. El segundo arma seis órdenes —`paid` vieja, `dispatching` vieja, `paid` reciente, `pending_payment`, `delivered` y una con la línea ya reclamada— y exige que sólo salgan las dos primeras, en orden de `paid_at` y de ID, con y sin tope. Las tres exclusiones son las que importan: sin el filtro de estado se despacharía una orden sin pagar, sin el corte de `paid_at` se despacharía un cobro recién registrado, y sin el plazo en cero se volvería a despachar una línea que quizá ya salió.
 >
+> Los tres del registro de avisos fijan el dedupe del puerto: la pregunta empieza en `false`, la grabación la deja en `true`, grabar dos veces no da error ni borra el aviso, los tipos y las órdenes son independientes entre sí y una orden inexistente devuelve `ErrNotFound` en las dos operaciones. El de los tipos es el que importa para el dominio: `order_in_doubt` y `order_failed` son dos avisos, no uno.
+>
 > Los cuatro de la versión de la línea fijan el contrato del guardado condicional y no el camino feliz: una versión vieja devuelve `ErrStale` **y la línea guardada queda intacta** —se compara la línea entera contra la que se había guardado, no sólo el estado—, la versión correcta devuelve `Version+1` y persiste lo mismo que devolvió, dos guardados partiendo de la misma copia terminan con el segundo rechazado, y `CreateOrder` deja toda línea en cero aunque se le pase una versión inventada.
+>
+> Los de validación son la mitad en memoria del contrato de validación: la misma tabla de líneas inválidas —familia desconocida, familia vacía, importe negativo, estado que el esquema no conoce— da `ErrInvalid`, y la posición repetida da `ErrAlreadyExists` tanto por `CreateOrder` como por `SaveLine`; en los dos caminos se comprueba después que no quedó nada escrito, que es la mitad que un test de validación suele olvidar. `TestMemoryAcceptsTheValuesSQLAccepts` evita que la paridad se vaya al otro extremo: importe cero, estado `refunded` y una línea de batidos sin identificadores son legales en el esquema y el store los acepta. `TestMemoryRejectsADuplicateClientKeyAndFindsByKey` necesitó una orden con estado: creaba órdenes con el estado vacío, que es justo lo que el `CHECK` de `orders.status` rechaza. `TestMemoryChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema` fija el orden de los chequeos con las dos combinaciones que lo revelan: una orden repetida y además inválida tiene que dar `ErrInvalid`, y una copia vieja con un estado inválido tiene que dar `ErrStale`.
 
 ## internal/order/status.go
 
@@ -1485,23 +1547,23 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### El tipo de máquina como fuente única
 
-> Antes el tipo estaba dos veces —`Item.MachineType` y la familia de la `MachineRef`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `MachineRef{Kind: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
+> Antes el tipo estaba dos veces —`Item.MachineType` y la familia de la `machine.Ref`— y `validateDraft` sólo miraba el primero: un ítem con `MachineType: "snacks"` y `machine.Ref{Kind: "batidos", DeviceID: ...}` pasaba la validación, el motor elegía el driver de snacks y le mandaba la identidad de la máquina de batidos. El resultado era un rechazo del proveedor con un error que no explicaba nada.
 >
 > Se arregló por la vía limpia y no con una validación de coincidencia: dos campos que deben coincidir es una regla que se puede olvidar, un campo solo no. Ahora la incoherencia no se puede escribir —no compila—, que es más fuerte que cualquier chequeo en ejecución.
 >
-> Lo mismo pasaba un escalón más abajo, en la línea: `store.Line` guardaba `MachineType` y además la `MachineRef` completa. Se borró el campo de la línea, no se lo validó: la línea lleva sólo `Machine` y todo el motor lee `line.Machine.Kind` —el mapa de drivers del despacho, la reconciliación y las dos reglas de correlación del callback—. `catalog.Item.MachineType` y `order.Callback.MachineType` se quedan, porque no son la identidad de una máquina: el primero dice qué familia pide un combo en el menú y el segundo qué máquina habla en el aviso.
+> Lo mismo pasaba un escalón más abajo, en la línea: `store.Line` guardaba `MachineType` y además la `machine.Ref` completa. Se borró el campo de la línea, no se lo validó: la línea lleva sólo `Machine` y todo el motor lee `line.Machine.Kind` —el mapa de drivers del despacho, la reconciliación y las dos reglas de correlación del callback—. `catalog.Item.MachineType` y `order.Callback.MachineType` se quedan, porque no son la identidad de una máquina: el primero dice qué familia pide un combo en el menú y el segundo qué máquina habla en el aviso.
 >
 > `validateDraft` exige que `item.Machine.Kind` no esté vacío y que ese tipo exista en el mapa de drivers, que es el mismo mapa con el que `dispatchLine` busca la máquina después: lo que se valida en el alta y lo que se usa en el despacho es la misma fuente, así que un borrador aceptado no puede terminar en «no hay una máquina configurada para el tipo».
 >
-> Riesgo residual anotado: `machineIdentified` sigue aceptando **algún** identificador, así que `Machine.Kind: snacks` con un `DeviceID` de batidos es expresable. Ya no hay dos fuentes de tipo, pero la identidad no se valida contra el tipo.
+> La identidad se valida contra el tipo: `validateDraft` delega en `machine.Ref.Validate`, que exige los identificadores propios de la familia —`device_id`, `device_no` y `device_type_id` en batidos; `mid` en snacks— y no rechaza los de la otra. Antes alcanzaba con que hubiera **algún** identificador, así que un ítem de snacks con sólo el `device_id` de batidos pasaba el alta y el motor le mandaba al proveedor de snacks una identidad que no era la suya. El error del ítem conserva el prefijo «ítem N:» y suma el motivo: cuál máquina y qué le falta.
 >
-> No se agregó ninguna validación nueva en el store. `validateDraft` ya rechaza un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` es la última red; sumar un chequeo en memoria duplicaría esa regla en un tercer lugar. El store en memoria queda más permisivo que Postgres —acepta una línea sin familia— y es una asimetría conocida y aceptada, no un olvido.
+> En este paso no se agregó ninguna validación en el store: `validateDraft` ya rechazaba un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` era la última red, así que el store en memoria quedó más permisivo que la base y anotado como deuda. S10 la cerró con `validateLine` en `internal/store/memory.go`, que rechaza la familia desconocida igual que el `CHECK`; desde entonces la regla vive en tres lugares con propósitos distintos —el borde para devolver el número de ítem, la memoria para no aceptar lo que la base rechaza, y el `CHECK` como última red— y no por duplicación, sino porque cada uno responde a un llamador distinto.
 
 ### Place
 
 > Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
 >
-> La línea se arma copiando la `MachineRef` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
+> La línea se arma copiando la `machine.Ref` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
 
 ## internal/order/payment.go
 
@@ -1581,7 +1643,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > La referencia de la máquina es un dato de la línea, no del proceso. Antes vivía en un mapa en RAM del motor y eso rompía dos cosas reales: después de un reinicio una línea `pending` no se podía despachar, y un `Place` en una instancia con un `ConfirmPayment` en otra no funcionaba.
 >
-> Se guarda como un único campo con la `MachineRef` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
+> Se guarda como un único campo con la `machine.Ref` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
 
 ## internal/order/place.go — cambios
 
@@ -1692,6 +1754,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `settleOrder` es `refreshOrderStatus` más el aviso; la cola de `ConfirmPayment` usa `refreshOrderStatus` a secas porque no avisa. Mismo cálculo, dos políticas.
 >
 > Un aviso por orden afectada, y sólo cuando el estado final es duda o fallo: es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
+>
+> Desde S9 ese aviso sale **una sola vez por `(orden, tipo)`**: `notifyOrder` pregunta a `NotificationSent`, avisa y recién después registra, que es la invariante 7 aplicada al aviso. Si `Notify` falla no se registra nada y la pasada siguiente reintenta —exactamente el reintento que antes daba la repetición—; una caída entre el aviso y el registro puede mandar el mismo aviso dos veces y se acepta. Descartada la alternativa de avisar sólo en la transición de estado: un `Notify` fallido habría perdido el aviso para siempre. `in_doubt` y `failed` son tipos distintos, así que una orden que pasa de duda a fallo avisa las dos cosas, en ese orden.
 
 ## migrations/0003_line_reconcile_until.sql
 
@@ -1731,7 +1795,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un combo cuyos ítems piden una máquina que el mueble no tiene es 409: la petición es válida, el estado del mueble no permite venderla. No se inventa la máquina que falta.
 >
-> De la configuración del mueble se arma el `dispenser.MachineRef` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
+> De la configuración del mueble se arma el `machine.Ref` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
 >
 > El importe de cada línea queda en cero: el catálogo define un precio por combo, no por ítem, y repartirlo sería inventar un dato que nadie definió. El importe de la orden es el del combo.
 
@@ -1791,7 +1855,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### markBrewing
 
-> Devuelve si aplicó, y el llamador sólo toca el estado en memoria cuando aplicó. La primera versión forzaba `LineBrewing` aunque la transición fuera ilegal, y eso permitía que un callback «en curso» que llegaba tarde degradara una línea ya entregada: el reconcile posterior le escribía encima `in_doubt` o `failed`. Una transición ilegal ahora es silencio, no error: si el callback dice «en curso» cuando la línea todavía no salió, se deja como está y sigue mandando el worker.
+> Devuelve si aplicó, y el llamador sólo toca el estado en memoria cuando aplicó. La primera versión forzaba `linestate.Brewing` aunque la transición fuera ilegal, y eso permitía que un callback «en curso» que llegaba tarde degradara una línea ya entregada: el reconcile posterior le escribía encima `in_doubt` o `failed`. Una transición ilegal ahora es silencio, no error: si el callback dice «en curso» cuando la línea todavía no salió, se deja como está y sigue mandando el worker.
 >
 > `ErrStale` también termina en `(false, nil)`: significa que otro escritor tocó la línea entre la lectura y el guardado, y en esa carrera «en curso» es siempre la información más débil —un cierre entregado o fallido la supera, y si el otro escritor sólo movió un plazo no hay nada que corregir—. Devolver error obligaría al handler a responder 500 y el proveedor reintentaría un aviso que ya no puede aplicar; devolver `false` deja que el flujo siga y que el que ganó mande.
 
@@ -1977,14 +2041,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un tiempo en cero se escribe como `NULL` y vuelve como `time.Time` en cero, que es la convención del puerto —`DeadlineAt` en cero significa «sin plazo armado», no un plazo vencido en el año 1—. Los `text` vacíos también viajan como `NULL`; los campos con `CHECK` (`state`, `outcome`) nunca, porque la base los rechazaría.
 >
-> Un conflicto de unicidad (`23505`) se traduce a `store.ErrAlreadyExists` en vez de propagarse como error de driver: para el motor es el mismo hecho que en memoria —se pidió crear algo que ya existe— y no tiene por qué enterarse de que abajo hay una base. Cualquier otro error de escritura se envuelve con el contexto de qué se estaba guardando.
+> Un conflicto de unicidad (`23505`) se traduce a `store.ErrAlreadyExists` en vez de propagarse como error de driver: para el motor es el mismo hecho que en memoria —se pidió crear algo que ya existe— y no tiene por qué enterarse de que abajo hay una base. Una violación de `CHECK` (`23514`) se traduce directamente a `store.ErrInvalid` sin importar la tabla (`orders`, `order_line`, `dispatch_attempt`, `webhook_event`), simplificando el mapeo y haciendo que las dos implementaciones del puerto rechacen con el mismo error. El detalle del driver se conserva envolviéndolo junto al centinela —`fmt.Errorf` admite dos `%w`—, porque el nombre de la restricción que saltó es la única explicación útil cuando aparece. Cualquier otro error de escritura se envuelve con el contexto de qué se estaba guardando.
 >
-> Los tres errores de dominio (`ErrNotFound`, `ErrAlreadyExists`, `ErrStale`) se devuelven como el valor centinela, sin envolver: así el llamador puede compararlos con `errors.Is` o con `==` y obtiene el mismo resultado, igual que con `store.Memory`.
+> `ErrNotFound`, `ErrAlreadyExists` y `ErrStale` se devuelven como el valor centinela, sin envolver: así el llamador puede compararlos con `errors.Is` o con `==` y obtiene el mismo resultado, igual que con `store.Memory`. `ErrInvalid` sí va envuelto con el detalle: son errores de programación del motor, no de carrera, y ahí lo que se necesita es saber qué campo rompió qué regla.
 
 ### Mapeo de columnas
 
 > - `Line.Ref` → `order_line.external_ref`. La columna `exchange_code` del esquema inicial quedó sin uso: era el nombre del proveedor de batidos y el asa de snacks no es un código de canje. Un campo con dos significados (R5) es menos código que dos campos de los cuales siempre se usa uno.
-> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Kind` no tiene columna propia: se escribe y se lee de `order_line.machine_type`. La columna sobrevive al campo Go que se borró, y la razón es que no eran lo mismo: la columna es el dato persistido —existe desde `0001_init.sql`, la escriben las migraciones y el seed, y tiene un `CHECK` con las dos familias— y `Line.MachineType` era la duplicación en memoria de algo que ya viajaba dentro de la `MachineRef`. Por eso no hay migración: `SaveLine` escribe `line.Machine.Kind` en `machine_type` y `scanLine` construye `dispenser.MachineRef{Kind: machine.Kind(<columna>)}` directamente. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
+> - `Line.Machine` → las seis columnas `machine_*` (`machine_kiosk_id`, `machine_name`, `machine_device_id`, `machine_device_no`, `machine_device_type_id`, `machine_mid`). `Machine.Kind` no tiene columna propia: se escribe y se lee de `order_line.machine_type`. La columna sobrevive al campo Go que se borró, y la razón es que no eran lo mismo: la columna es el dato persistido —existe desde `0001_init.sql`, la escriben las migraciones y el seed, y tiene un `CHECK` con las dos familias— y `Line.MachineType` era la duplicación en memoria de algo que ya viajaba dentro de la `machine.Ref`. Por eso no hay migración: `SaveLine` escribe `line.Machine.Kind` en `machine_type` y `scanLine` construye `machine.Ref{Kind: machine.Kind(<columna>)}` directamente. Seis columnas y no un `jsonb` porque cada identificador se audita por separado y así se puede buscar por `device_id` o por `mid`.
 > - `Line.Version` → `order_line.version`, `bigint NOT NULL DEFAULT 0`.
 > - `Order.ClientKey` → `orders.client_key`, con índice único parcial (`WHERE client_key IS NOT NULL`) para que dos órdenes sin clave no choquen entre sí.
 > - `Order.Version` → `orders.version`, `bigint NOT NULL DEFAULT 0`. Misma columna y mismo significado que `order_line.version`, con el `DEFAULT` que deja las órdenes viejas en cero sin backfill.
@@ -2011,7 +2075,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `AppendAttempt` inserta y traduce el `23505` a `ErrAlreadyExists`: sirve tanto para la `idempotency_key` como para el par `(line_id, attempt_no)`, que son las dos unicidades que impiden registrar dos veces el mismo intento.
 >
-> `SaveAttempt` actualiza por `idempotency_key` sólo `outcome`, `error_detail` y `finished_at`, y cero filas es `ErrNotFound`. Nunca crea y nunca toca la línea: si el cierre pudiera insertar, un error de orden de llamadas inventaría intentos que nunca ocurrieron, y si tocara la línea estaría escribiendo sin condición sobre las mismas filas que protege la versión.
+> `SaveAttempt` actualiza por `idempotency_key` sólo `outcome`, `error_detail` y `finished_at`: una violación del `CHECK` de `outcome` devuelve `store.ErrInvalid` y cero filas es `ErrNotFound`. Nunca crea y nunca toca la línea: si el cierre pudiera insertar, un error de orden de llamadas inventaría intentos que nunca ocurrieron, y si tocara la línea estaría escribiendo sin condición sobre las mismas filas que protege la versión.
 
 ### RegisterWebhook / DueLines
 
@@ -2027,6 +2091,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > No hay migración para esto. El índice `order_line (state, deadline_at)` de `0001_init.sql` ya sirve: `state = 'pending'` es su primera columna y `deadline_at IS NULL` se resuelve dentro del mismo índice. Ordenar por `orders.paid_at` cuesta un sort sobre el puñado de líneas que devuelve ese filtro, no un recorrido de la tabla de órdenes.
 
+### NotificationSent / RecordNotification
+
+> `NotificationSent` resuelve en **una** consulta las dos cosas que el dominio necesita: si ese aviso ya salió y si la orden existe. Los dos `EXISTS` en el mismo `SELECT` evitan el viaje extra del camino normal —«todavía no salió», que es el que termina en `INSERT`— y devuelven `ErrNotFound` cuando la orden no está, igual que `orderBy`. Preguntar por la orden primero y por el aviso después costaría dos viajes siempre para ahorrar uno en el caso raro.
+>
+> `RecordNotification` es `INSERT … ON CONFLICT (order_id, kind) DO NOTHING`: grabar dos veces no es error y no mueve el `sent_at` de la primera vez, que es lo que hace que el reintento del aviso sea inofensivo. La violación de clave foránea (`23503`) se traduce a `ErrNotFound` en vez de propagarse como error de driver: la orden desapareció entre la lectura y el registro, y para el motor es el mismo hecho que en memoria. `sent_at` se escribe con `COALESCE($3, now())`, la misma convención que las otras fechas.
+
 ### Open / Close — la dependencia
 
 > La versión de `pgx` se eligió entre las que no obligan a subir el lenguaje declarado en `go.mod`: agregar la primera dependencia externa no debe cambiar la versión mínima de Go del proyecto. Actualizarla es una decisión aparte, con su propio diff.
@@ -2037,7 +2107,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` son el espejo en SQL de los de la memoria, y por eso cubren las mismas exclusiones: estado de la orden, corte de `paid_at` y plazo en cero. En SQL además prueban que el `JOIN` y las columnas prefijadas devuelven una línea completa —`scanLine` recibe las 19 columnas en orden—, que es lo que un test de memoria no puede ver.
 >
-> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete: la migración `0005` y este contrato quedan escritos y sin ejecutar contra una base real.
+> Los tres del registro de avisos son el espejo de los de la memoria y agregan lo que sólo se ve en SQL: el `ON CONFLICT DO NOTHING` de la segunda grabación, la independencia por tipo y por orden, y el `23503` de una orden inexistente traducido a `ErrNotFound` en las dos consultas. `notification_sent` entra en el `TRUNCATE` del arranque para que un test no vea el aviso del anterior.
+>
+> Se saltean sin `TEST_DATABASE_URL`, como todo el paquete; con la variable apuntada a un Postgres descartable corren contra una base real.
+>
+> Los de validación son el espejo en Postgres de los de la memoria, y prueban lo que la memoria no puede: que el `CHECK` exista de verdad y que el `23514` se traduzca. La misma tabla —familia desconocida, familia vacía, importe negativo, estado inválido— exige `ErrInvalid` y la posición repetida `ErrAlreadyExists`; la cabecera tiene sus dos casos (`orders_amount_cents_check`, `orders_status_check`) y `ErrInvalid`. Cada caso verifica además que no quede nada guardado: en `CreateOrder` se revierte la transacción entera y la orden no existe; en `SaveLine`/`SaveOrder` la fila queda igual, versión incluida. `TestAcceptsTheValuesSQLAccepts` fija el otro extremo sobre la base real: importe cero, `refunded` y una línea de batidos sin identificadores pasan los `CHECK`. `TestChecksTheSchemaBeforeTheConflictAndTheVersionBeforeTheSchema` confirma contra la base el orden que la memoria copia: Postgres evalúa el `CHECK` al formar la tupla y antes de la clave, y no evalúa ninguna restricción si el `WHERE` de la versión no encontró fila.
 
 ## migrations/0004_store_postgres.sql
 
@@ -2045,12 +2119,140 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > - `orders.client_key` y su índice único **parcial**: la idempotencia de la creación de la orden queda en la base, no en un `SELECT` previo, que sería un TOCTOU entre dos tablets tocando en el mismo instante. El `WHERE client_key IS NOT NULL` es lo que permite que muchas órdenes no tengan clave sin chocar entre sí.
 > - `order_line.version` (`bigint NOT NULL DEFAULT 0`): el `DEFAULT` es lo que hace que las filas viejas queden en la versión correcta sin backfill, y el `NOT NULL` es lo que impide que una línea quede fuera del guardado condicional.
-> - Las seis columnas `machine_*`: la `MachineRef` que antes sólo vivía en un mapa de RAM. Son nullable porque el esquema no puede exigir «las de batidos o la de snacks» sin repetir en SQL una regla que ya vive en el motor, y un `CHECK` duplicado sería una segunda fuente que se desincroniza.
+> - Las seis columnas `machine_*`: la `machine.Ref` que antes sólo vivía en un mapa de RAM. Son nullable porque el esquema no puede exigir «las de batidos o la de snacks» sin repetir en SQL una regla que ya vive en el motor, y un `CHECK` duplicado sería una segunda fuente que se desincroniza.
 > - `dispatch_attempt_key_idx` y `webhook_event_source_dedupe_idx` son índices únicos que ya existían con otro nombre en `0001_init.sql` (`dispatch_attempt_idempotency_idx` y `webhook_event_dedupe_idx`). El `IF NOT EXISTS` compara el nombre y no la definición, así que la base queda con dos índices únicos equivalentes por tabla. Es inocuo —la unicidad ya se cumplía y el costo es un índice de más al escribir— y se deja tal cual porque quitarlo es una migración aparte; conviene saberlo antes de mirar el esquema y creer que falta un índice o que sobra una regla.
 
 ## migrations/0005_order_version.sql
 
 > Agrega `orders.version` (`bigint NOT NULL DEFAULT 0`). Aditiva y sin backfill por el mismo motivo que `order_line.version` en `0004`: el `DEFAULT` deja las órdenes existentes en la versión correcta y el `NOT NULL` impide que una orden quede fuera del guardado condicional. No lleva índice porque la versión viaja en el `WHERE` junto con la clave primaria, que ya está indexada.
+
+## migrations/0006_notification_sent.sql
+
+> `notification_sent (order_id, kind)` con la clave primaria en la pareja: es el registro de avisos de excepción, no una tabla de eventos, así que cada aviso existe una vez y lo garantiza la base y no un `SELECT` previo. `ON DELETE CASCADE` cuelga la fila de su orden igual que `order_line`: sin orden no hay a quién avisar. `sent_at` es `NOT NULL` sin `DEFAULT` porque el dominio manda el instante del aviso —el mismo `now` con el que decidió— y una fecha puesta por la base diría «cuándo llegó el `INSERT`», que no es el dato. No lleva índice aparte porque la clave primaria ya resuelve la única búsqueda que se hace, la de la pareja. No lleva `BEGIN`/`COMMIT` porque la transacción la pone el runner, como en las anteriores.
+
+## migrations/0007_payment_intent.sql
+
+> Completa `payment_intent`, que existe desde `0001` y nunca se usó, para el cobro con QR de Mercado Pago (`docs/diseno-mercadopago.md`). No se crea una tabla nueva: la que había ya tenía proveedor, id del proveedor, importe, estado y el texto del QR.
+>
+> - **FK de `order_id` a `orders`** con `ON DELETE CASCADE`: en `0001` la columna no tenía FK y se podía guardar un pago de una orden inexistente.
+> - **Índice único por `order_id`**: un QR por orden. Si el QR vence, la orden se cancela y el cliente arranca una orden nueva; nunca hay dos QR vivos para la misma orden.
+> - **`expires_at`**: cuándo vence el QR según lo que le pedimos a Mercado Pago. El barrido lo usa para decidir cuándo pedir la cancelación; nunca para cancelar por su cuenta.
+> - **`paid_amount_cents`**: lo que Mercado Pago dice que se pagó. Sin ese dato, un monto distinto no se puede investigar. Es nullable porque un pago pendiente no pagó nada todavía.
+> - **`version`**: guardado condicional igual que `orders` y `order_line`; el webhook y el barrido pueden tocar el mismo pago a la vez.
+> - **Estados nuevos `cancelled` y `amount_mismatch`**. `amount_mismatch` es terminal y separado de `approved` a propósito: si fuera `approved`, el barrido no distinguiría «pagado y en curso» de «pagado mal, no despachar». `rejected` queda en el `CHECK` sólo para no romper el esquema original; el código no lo usa.
+> - **Índice parcial sobre `created_at` de los pendientes**: es la única búsqueda del barrido, y la gran mayoría de las filas no va a estar pendiente.
+>
+> El nombre `payment_intent_status_check` del `DROP CONSTRAINT` es el que Postgres le puso al `CHECK` en línea de `0001` (`<tabla>_<columna>_check`).
+
+## internal/store — PaymentIntent
+
+### PaymentStatus
+
+> Estado del cobro de una orden: `pending` (QR emitido, sin pagar), `approved` (pagado con el monto correcto), `expired` y `cancelled` (Mercado Pago confirmó que ya no se puede pagar), `amount_mismatch` (pagado con un monto distinto al del catálogo: no se despacha y se avisa). El `rejected` del esquema no tiene constante: ningún camino del código lo produce, y el store en memoria lo rechaza aunque SQL lo acepte.
+
+### PaymentIntent
+
+> El QR de una orden. `ProviderID` es el id de la orden en Mercado Pago (`ORD…`), el `data.id` del webhook. `AmountCents` es lo que se cobró según el catálogo y `PaidAmountCents` lo que Mercado Pago informa como pagado; la comparación entre los dos es la que decide `amount_mismatch`.
+
+### CreatePaymentIntent
+
+> Crea el pago con versión 0, venga la que venga. `ErrNotFound` si la orden no existe (la FK en Postgres) y `ErrAlreadyExists` si se repite el id, la orden o el id del proveedor. El motor crea el QR en Mercado Pago **antes** de guardarlo: si el guardado falla, el reintento vuelve a llamar a Mercado Pago con la misma clave de idempotencia y recibe el mismo QR.
+
+### PaymentIntentByOrder
+
+> La única búsqueda puntual que hace falta: el webhook trae el id de Mercado Pago, pero el `Lookup` devuelve el `external_reference`, que es nuestro id de orden. Por eso no hay búsqueda por id del proveedor.
+
+### SavePaymentIntent
+
+> Guardado condicional por versión, igual que `SaveLine`: `ErrStale` si la copia es vieja, sin escribir nada. `order_id` no se puede cambiar: el pago pertenece a su orden para siempre, y en memoria se ignora el valor que venga.
+
+### PendingPaymentIntents
+
+> Los pagos `pending` creados hasta `createdBefore`, del más viejo al más nuevo y con desempate por id, para que el barrido sea determinista. El corte por antigüedad evita consultar a Mercado Pago un QR que la tablet acaba de mostrar.
+
+## migrations/0001–0005 — sin `BEGIN;` / `COMMIT;`
+
+> Los cinco archivos perdieron su `BEGIN;` y su `COMMIT;` y nada más cambió. La transacción pasó a ser del runner (`internal/migrate/applyOne`), que abre una por archivo y confirma el cuerpo **junto con** el `INSERT` de la versión en `schema_migrations`.
+>
+> Si el archivo conservara sus `BEGIN`/`COMMIT`, el cuerpo se confirmaría dentro de la transacción del runner y un fallo posterior —el registro de la versión, por ejemplo— dejaría el esquema aplicado y sin constancia de que se aplicó, que es el estado del que después nadie sabe cómo salir. Con el `COMMIT` en el runner, un error en cualquier sentencia revierte el archivo entero y no queda ni una tabla a medio crear ni una versión registrada.
+
+## migrations/embed.go
+
+### (archivo)
+
+> Los `.sql` viajan **dentro del binario**. Antes los leía `psql` desde un volumen montado, así que el esquema que se aplicaba dependía de qué archivos hubiera en el disco del host y de qué versión de la imagen corriera el loop; ahora el binario `migrate` aplica exactamente los archivos con los que se compiló, y no puede aplicar otros.
+>
+> El paquete vive en la raíz del módulo (`compras-remotas/migrations`) y no bajo `internal/`: no tiene lógica, es el `embed` de la carpeta que el operador ya conoce, y `internal/migrate` lo importa como una dependencia más.
+
+### Files
+
+> `//go:embed *.sql` es la única línea del código que parece un comentario y no lo es: el compilador la exige, y sin ella el paquete compila igual con `Files` vacío, con lo cual el runner informaría «el esquema ya está al día» contra una base sin tablas. La regla del proyecto —cero comentarios en el código— sigue intacta; la explicación está acá.
+>
+> El tipo es `embed.FS`, pero lo que se pasa a `migrate.Apply` es la interfaz `fs.FS`: por eso los tests pueden entregar un `fstest.MapFS` en lugar del árbol real y probar orden, pendientes y rollback sin tocar los archivos de producción.
+
+## internal/migrate
+
+### (archivo)
+
+> El runner de migraciones, sin dependencias nuevas: `database/sql`, `io/fs` y el `stdlib` de `pgx` que ya usaba el store. El contrato es `Apply(ctx, db, files) ([]string, error)` y devuelve las versiones aplicadas **en orden**; vacío significa «no había nada pendiente», que es el caso normal del compose después del primer arranque. Ante un error se corta en el archivo que falló: las anteriores quedan aplicadas y registradas, y esa se revierte completa.
+
+### Apply
+
+> Toma **una** conexión del pool (`db.Conn`) y trabaja sobre ella de principio a fin. No es un detalle de estilo: el advisory lock de Postgres es de **sesión**, así que tiene que tomarse y soltarse en la misma conexión, y `database/sql` reparte las consultas de un `*sql.DB` entre conexiones distintas cuando le conviene.
+>
+> El orden es: listar versiones, tomar el lock, crear `schema_migrations` si falta, leer las aplicadas, aplicar las pendientes y soltar el lock. El lock va **antes** del `CREATE TABLE` aunque la spec lo pedía al revés: dos runners que arrancan juntos con la tabla ausente pueden chocar en un `CREATE TABLE IF NOT EXISTS` concurrente —Postgres puede responder con una clave duplicada del catálogo— y con el lock tomado primero esa creación es de uno solo. Sin la tabla, el lock no necesita nada: es un número.
+>
+> El unlock se manda con un contexto propio —`context.Background()` y 10 s de plazo (`releaseLock`), no el del llamador—. Si el contexto del llamador ya venció, una migración más lenta que el plazo del runner, el unlock tiene que salir igual: con el contexto muerto no saldría y la conexión volvería al pool con el lock puesto. Si aun así falla, el error se devuelve: el lock dura lo que dure la sesión, y esa sesión sigue viva en el pool, así que el próximo runner se quedaría esperando sin explicación visible.
+
+### versions / missing
+
+> La parte pura, la única que se prueba sin base. `versions` hace `fs.Glob(files, "*.sql")`, ordena alfabéticamente y devuelve el nombre sin la extensión. El nombre del archivo **es** la versión, y por eso el orden alfabético es el orden de aplicación: los prefijos `0001`…`0005` no son decorativos, son el contrato. Los archivos que no terminan en `.sql` no existen para el runner.
+>
+> `missing` es la resta contra las ya aplicadas y conserva el orden recibido. Está separada de la consulta SQL para poder probar el caso «se agregó un archivo nuevo» sin una base: la lista completa contra un mapa de aplicadas.
+
+### ensureTable / appliedVersions
+
+> `schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`. La clave primaria es lo que impide registrar dos veces la misma versión incluso si alguien saltea el lock; `applied_at` es para el operador, no lo lee el código. La tabla no es una migración más: es la que lleva la cuenta, así que se crea antes de leer y no depende de ningún archivo.
+>
+> `appliedVersions` trae sólo la columna `version` a un mapa: alcanza para decidir qué falta y no hay ninguna razón para leer la tabla completa.
+
+### applyOne
+
+> Una transacción por archivo: el cuerpo del `.sql`, el `INSERT` de su versión y el `COMMIT`, todo junto; `defer tx.Rollback()` cubre los dos caminos de error. Es el motivo por el que los archivos ya no llevan `BEGIN`/`COMMIT`.
+>
+> El cuerpo se manda en un solo `ExecContext` **sin parámetros**. Ahí está la diferencia que hace que esto funcione: `pgx` ejecuta sin parámetros por el protocolo simple, que acepta varias sentencias en una cadena, así que un archivo con dos `ALTER TABLE` corre bien. Con parámetros iría por el protocolo extendido, que no admite varias sentencias por consulta. Si algún día un archivo necesita parámetros, hay que partirlo sentencia por sentencia.
+>
+> Los errores se envuelven con `%w` y nombran el **archivo** (`0002_order_failed_status.sql`), no la versión: es lo que el operador tiene que abrir. El prefijo dice qué se estaba haciendo (`aplicar`, `registrar`, `confirmar`), porque un fallo al confirmar y un fallo al ejecutar se depuran distinto.
+
+## internal/migrate/migrate_test.go
+
+> Este archivo **no está en `main`**: vive en la rama `archive/tests` como el resto de los tests, y vuelve con el `git checkout` de `docs/arquitectura.md`. Se documenta acá porque es el porqué del test, y viaja con él.
+>
+> Seis tests, dos sin base y cuatro contra Postgres. Los dos que corren siempre prueban la parte pura: el orden y el nombre de la versión a partir de un `fstest.MapFS` con un `.txt` colado, y la resta de `missing`.
+>
+> Los cuatro que necesitan base usan la misma idea de aislamiento: cada test crea un esquema propio (`mig_test_<base36 del reloj>`), abre su `*sql.DB` con `search_path` en el DSN —`search_path` viaja como parámetro de sesión de `pgx`, así que vale para todas las conexiones del pool, no sólo para la primera— y lo borra con `DROP SCHEMA … CASCADE` en la limpieza. `TEST_DATABASE_URL` es la misma variable que usa el paquete del store, y sin ella se saltean.
+>
+> - El esquema vacío aplica los seis archivos reales (`migrations.Files`) en orden y deja seis filas en `schema_migrations`: es la prueba de que los `.sql` sin `BEGIN`/`COMMIT` entran en la transacción del runner.
+> - La segunda corrida devuelve vacío y no toca nada.
+> - Un archivo agregado después es el único que se aplica: dos `MapFS` que difieren en un archivo, que es el caso real del próximo cambio de esquema.
+> - Un archivo roto (`CREATE TABLE` y después basura) revierte las dos cosas: ni la tabla ni la fila de versión quedan, el error nombra el archivo y las versiones anteriores siguen aplicadas.
+> - Dos `Apply` a la vez sobre el mismo esquema terminan con cada versión aplicada **una** vez: es el test del advisory lock, y el que se cae si alguien lo saca o lo toma sobre `*sql.DB` en vez de sobre una conexión.
+
+## cmd/migrate/main.go
+
+### (archivo)
+
+> El paso de esquema del compose, como programa propio: lee `DATABASE_URL`, aplica lo pendiente e informa qué aplicó. La API **no** migra al arrancar (S6/L18): arrancar el servidor y cambiar el esquema son dos cosas distintas, y una API que migra al arrancar migra tantas veces como réplicas haya.
+
+### main
+
+> Sin `DATABASE_URL` no hay nada que hacer y el error es explícito —el nombre de la variable, no un «no se pudo conectar»— y la salida es 1: en el compose eso corta el arranque de `api`, que espera `service_completed_successfully`. Los mensajes son los de siempre, español y capitalizados por `internal/logging`.
+
+### run
+
+> `applyTimeout` (60 s) es el plazo de todo el proceso: conectar y aplicar. Es un número elegido para que un Postgres que no responde falle rápido en vez de dejar el `up` colgado; una migración de más de un minuto es un cambio de esquema que hay que mirar, no un caso normal. El `Ping` antes de migrar es el mismo criterio que `postgres.Open`: un DSN equivocado tiene que fallar acá y no en la primera sentencia.
+>
+> Se informa una versión por línea (`migración aplicada`, `version=0003_line_reconcile_until`) o una sola (`el esquema ya está al día`) cuando no había nada pendiente. No hay una tercera rama: o aplicó algo o no.
 
 ## internal/config — Store / DatabaseURL: config.go y validate.go
 
@@ -2086,15 +2288,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Dos etapas para no llevar compilador a producción: `golang:1.23` compila con `CGO_ENABLED=0` y la imagen final es `gcr.io/distroless/static:nonroot`, sin shell, sin gestor de paquetes y con usuario no root. `-trimpath` y `-ldflags "-s -w"` sacan rutas locales y símbolos de depuración del binario.
 >
-> Hay dos etapas finales, `runtime` y `fakeapi`, porque el compose necesita el binario de los proveedores falsos con la misma receta de compilación. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`) y no `COPY . .`: así el contexto no arrastra `.git`, `design/` ni los documentos de terceros, y con BuildKit ni siquiera se envían.
+> Hay tres etapas finales, `runtime`, `migrate` y `fakeapi`, porque el compose necesita tres binarios con la misma receta de compilación: la API, el runner de esquema y los proveedores falsos. `migrate` es el más chico de los tres: un proceso que corre una vez, aplica lo pendiente y termina, así que la etapa final no expone puerto ni necesita shell. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`, `migrations`) y no `COPY . .`: así el contexto no arrastra `.git`, `design/` ni los documentos de terceros, y con BuildKit ni siquiera se envían. `migrations` tiene que estar en esa lista porque los `.sql` se compilan adentro (`//go:embed`), no se montan en tiempo de ejecución.
 >
 > La imagen no lleva secretos: todo entra por variables de entorno en tiempo de ejecución.
 
 ## docker-compose.yml
 
-> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` usa la misma imagen, monta `./migrations` y aplica los `.sql` en orden alfabético con `psql`; corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien, y `fakeapi` levanta los dos proveedores falsos.
+> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` construye el *target* `migrate` del `Dockerfile`, apunta `DATABASE_URL` a `db`, corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien (`service_completed_successfully`), y `fakeapi` levanta los dos proveedores falsos.
 >
-> `migrate` no lleva tabla de versiones: es un `psql` sobre los archivos, como se pedía. La consecuencia es que el primer `up` sobre un volumen nuevo funciona y el segundo falla en el DDL ya aplicado; para repetir el esquema hay que bajar el volumen (`docker compose down -v`). Una tabla de control sería otra decisión y otro diff.
+> `migrate` ya no usa la imagen de Postgres ni monta `./migrations`: los `.sql` viajan dentro del binario y la versión aplicada queda en `schema_migrations`, así que el segundo `up` es un no-op y no un fallo de DDL repetido. Un volumen anterior a este cambio tiene las tablas y no tiene la tabla de control: el runner intentaría aplicarlos de nuevo y fallaría en la primera sentencia, así que ese caso se resuelve una sola vez con `docker compose down -v` (S6/L18: no hay compatibilidad con volúmenes viejos). `restart: "no"` es lo que hace que el `up` siga y que un fallo se vea en el estado del servicio en vez de reintentarse para siempre.
 >
 > `fakeapi` recibe `-batidos-addr 0.0.0.0:9401` y `-snacks-addr 0.0.0.0:9402` porque un proceso atado a `127.0.0.1` dentro del contenedor no es alcanzable ni por el servicio `api` ni por un puerto publicado. El puerto de administración (9403) **no** se publica: el falso se niega a escuchar su administración fuera de loopback, y esa defensa es correcta; publicarlo daría un puerto muerto. Los dos puertos de proveedor se publican sólo en `127.0.0.1` del host, igual que el arranque local.
 >
@@ -2121,3 +2323,223 @@ Formato: `Símbolo --> "texto del comentario"`.
 > La otra mitad de S5b: el despacho no puede sobrevivir a su propio reclamo. `blockedMachine` espera a que su contexto termine y devuelve lo que ve; el plazo se baja a 100 ms con `order.WithLineDeadline`, la opción que ya existía para el plazo de reclamo, y por eso el test fija de paso que el tope del proceso y el número que se escribe en `DeadlineAt` son el mismo. Se espera `context.DeadlineExceeded` adentro de `Dispatch` —no `context.Canceled`, que sería el request—, la línea en `in_doubt` y `ConfirmPayment` de vuelta: una máquina que no contesta no puede colgar el `/pay`. La cota de 10 s con `time.After` es del test, no del motor: si el despacho se queda esperando, el test falla en vez de colgarse.
 >
 > La máquina tiene además una salida propia a los 5 s para que la versión sin arreglo termine y el rojo se lea como «terminó con `<nil>`» en vez de como un cuelgue del binario de pruebas.
+
+## internal/order/settle_test.go — el dedupe de los avisos (S9)
+
+### notifyFixture
+
+> Arma el caso que reproduce el problema con la API pública del motor: un combo de dos líneas pagado y despachado, más el notificador de grabación. `failLine` y `progressLine` mandan un callback con clave nueva cada vez, así que el dedupe de `webhook_event` no tapa el bug: lo que se repite es el asiento de la orden, no el evento del proveedor.
+
+### TestEngineNotifiesAnOrderExceptionOnlyOnce
+
+> Cierra las dos líneas por callback hasta `failed` —un aviso— y después manda dos callbacks sobre la línea ya cerrada. Antes del cambio el notificador recibía tres eventos, uno por cada pasada de `settleOrder`; ahora recibe uno y los dos callbacks repetidos no devuelven error. El rojo de este test, con tres eventos, es la mitad de la evidencia que no se puede inventar después.
+
+### TestEngineRetriesTheNoticeThatTheNotifierCouldNotDeliver
+
+> Fija lo que la repetición daba gratis y el cambio no puede perder. Con el notificador fallando, el callback que cierra la orden devuelve el error, la orden queda `failed` igual —el estado se guarda antes del aviso— y `NotificationSent` sigue en `false`: la prueba de que no se registró un aviso que nunca salió. Cuando el notificador vuelve a responder, la pasada siguiente lo entrega y lo registra; una tercera pasada no repite nada. Es la invariante 7 del lado del aviso: el dedupe se anota después del efecto.
+
+### TestEngineNotifiesTheDoubtAndLaterTheFailureOfTheSameOrder
+
+> La duda y el fallo son dos avisos distintos y se esperan los dos, en ese orden. El barrido cierra la línea en duda al agotarse la ventana y avisa `order_in_doubt`; un callback de progreso sobre esa misma línea no cambia nada y **no** repite el aviso —es el otro rojo original, porque `settleOrder` avisaba en cada pasada—; el callback de fallo mueve la orden a `failed` y avisa `order_failed`; un callback repetido sobre la línea cerrada no agrega un tercero.
+
+### TestEngineDoesNotNotifyWhenItCannotTellWhetherTheNoticeWentOut
+
+> `failingNoticeStore` envuelve la memoria y hace fallar `NotificationSent`. El caso fija la decisión ante la duda: sin respuesta del registro, `settleOrder` devuelve el error y **no** avisa, porque avisar sin saber si ya se avisó es exactamente el problema que S9 vino a resolver. La orden queda `failed` y el webhook no se registra, así que el reintento del proveedor encuentra el trabajo pendiente.
+
+## internal/payments/gateway.go — el puerto del cobro
+
+### Gateway
+
+> Las tres cosas que el motor le pide a un cobrador de QR: crear el cobro, preguntar en qué estado está y pedir que se cancele. No hay «confirmar»: la confirmación la da el proveedor, y el motor sólo la lee con `Lookup`. El puerto no importa `store` ni conoce `PaymentIntent`; traducir un `Charge` al registro guardado es trabajo del motor.
+
+### ChargeStatus
+
+> El vocabulario del proveedor, reducido a lo que el motor decide: `pending`, `approved`, `expired`, `cancelled` y `unknown`. `unknown` no estaba en el diseño y se agregó a propósito: Mercado Pago tiene estados (`refunded`, `failed`, `action_required`) que no deben caer en silencio en ninguno de los otros cuatro. Ante `unknown` el motor no despacha ni cancela: avisa. `amount_mismatch` no está acá porque no lo dice el proveedor; lo decide el motor comparando montos.
+
+### QRRequest
+
+> `OrderID` es a la vez el `external_reference` y la clave de idempotencia: reintentar con la misma orden devuelve el mismo QR. `ExpiresIn` es una duración y no un instante, porque así lo pide Mercado Pago (`expiration_time`, ISO 8601).
+
+### Charge
+
+> `ProviderStatus` y `ProviderStatusDetail` llevan el texto crudo del proveedor para los logs y los avisos: si el mapeo está mal, el dato original permite verlo. `PaidAmountCents` es lo que el proveedor dice que se pagó, que el motor compara con `AmountCents` del catálogo.
+
+### ErrNotFound / ErrNotCancelable
+
+> Los dos errores que el motor necesita distinguir. `ErrNotCancelable` significa «el proveedor no quiso cancelar en el estado en que está»: la respuesta correcta es un `Lookup` y obedecer lo que diga, nunca cancelar la orden por cuenta propia.
+
+## internal/payments/mercadopago — el adaptador de la Orders API
+
+### Client
+
+> `net/http` sin el SDK, con el mismo esqueleto que el cliente de snacks: timeout de 10 s, respuesta acotada a 1 MB y errores en castellano. El access token sólo viaja en el `Authorization` y nunca entra en un mensaje de error. Con `baseURL` vacía usa `https://api.mercadopago.com`; el falso de la unidad 2b se conecta cambiando esa URL.
+
+### CreateQR
+
+> Valida el pedido **antes** de llamar: un `external_reference` fuera de `[A-Za-z0-9_-]{1,64}`, una caja vacía o un monto no positivo no llegan a Mercado Pago. Manda `type: "qr"`, `config.qr.mode: "dynamic"`, el monto en `total_amount`, en el único pago y en el único ítem (la documentación de la migración desde Instore marca `items` como obligatorio). Rechaza dos respuestas que serían un 200 inútil: una orden sin `type_response.qr_data` —no hay nada que dibujar— y una con otro `external_reference`, que sólo puede ser una colisión de la clave de idempotencia.
+
+### Cancel
+
+> `POST /v1/orders/{id}/cancel` con la clave de idempotencia `cancel-<id>`, fija, para que un reintento no pida dos cancelaciones. **Provisorio hasta el sandbox:** un `409` se traduce a `ErrNotCancelable`; la documentación dice que sólo se cancela una orden en `created` pero no qué código devuelve en otro estado.
+
+### toCharge / paidAmount
+
+> El monto pagado sale de `total_paid_amount` si viene; si no, de la suma de los pagos en `processed`, con `paid_amount` cuando existe y `amount` si no. Un monto ilegible es un error y no un cero: un cero silencioso sería un `amount_mismatch` falso.
+
+### amount.go
+
+> Los montos de Mercado Pago son texto decimal (`"1500.50"`). Se parsean a centavos sin pasar por `float64` y se rechaza cualquier cosa que no sea `dígitos[.d[d]]`: signo, coma, exponente, tres decimales. `formatExpiration` usa minutos cuando la duración es exacta (`PT3M`, la forma de los ejemplos) y segundos si no.
+
+### mapStatus
+
+> `created` → pending, `processed` → approved, `expired` → expired, `canceled` → cancelled; cualquier otro → unknown. Los cinco estados de una orden QR salen de la tabla «Status da order» de la documentación; **queda por confirmar en el sandbox** que una orden pagada llegue a `processed` y no se quede en un estado intermedio.
+
+### signature.go
+
+> `VerifySignature` reproduce el validador oficial: arma `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`, omite un par vacío, calcula HMAC-SHA256 con el secreto del webhook y compara en tiempo constante (`hmac.Equal` sobre los bytes, no sobre el texto hex). Dos detalles que el diseño no tenía y salen del SDK oficial de Go: **`data.id` va en minúsculas** dentro del manifiesto, y el encabezado puede traer espacios y los pares en cualquier orden. La ventana de `ts` es de 5 minutos para los dos lados: un aviso del futuro también es sospechoso. Un `data.id` vacío se rechaza aunque el SDK lo admita, porque sin él no hay qué consultar. `SignatureHeader` es la operación inversa y existe para el Mercado Pago falso.
+
+## internal/payments/mercadopago — tests (rama `tests/mercadopago`)
+
+> El vector de la firma se calculó fuera de Go, con Python (`hmac`) y `openssl dgst -hmac`, que coincidieron; así el test no se valida contra la misma implementación que prueba. El `data.id` del vector está en mayúsculas a propósito: sacar el `ToLower` pone en rojo cinco tests, y eso se verificó mutando el código. Los tests del cliente usan `httptest` y fijan el cuerpo enviado campo por campo, la clave de idempotencia, que un pedido inválido no sale de la máquina, que el token no aparece en los errores y que un id con `../` no escapa de `/v1/orders`.
+
+## internal/fakeapi/mercadopago.go — el Mercado Pago falso
+
+### MercadoPago
+
+> Sustituto local de la Orders API para probar el circuito completo sin credenciales. Responde las tres rutas que usa el adaptador (`POST /v1/orders`, `GET /v1/orders/{id}`, `POST /v1/orders/{id}/cancel`) con la misma forma de JSON que la real, y exige `Authorization: Bearer` y `X-Idempotency-Key` como la real. Sólo acepta QR dinámico con un pago por el total: el falso refleja lo que nuestro sistema pide, no todo lo que Mercado Pago admite.
+
+### createOrder
+
+> Idempotente por `X-Idempotency-Key`: la misma clave devuelve la misma orden, que es lo que permite que la tablet reintente un `POST /orders` sin duplicar el QR. `expiration_time` se interpreta (`PT3M`, `PT90S`, `PT1H2M3S`); sin él vence a los 15 minutos, como la real.
+
+### expireLocked
+
+> El vencimiento es perezoso: una orden `created` pasa a `expired` cuando alguien la mira después de `expiresAt`. No hay goroutines ni relojes de fondo, y con `SetClock` los tests mueven el tiempo sin dormir.
+
+### cancelOrder
+
+> Cancela sólo una orden `created`; cancelar una ya cancelada devuelve la misma orden (la clave de idempotencia fija del adaptador hace que un reintento sea inocuo); en cualquier otro estado responde `409`, que es lo que el adaptador traduce a `ErrNotCancelable`. Que la real use `409` está por confirmar en el sandbox.
+
+### Pay / Expire / Notify
+
+> Las tres acciones de la administración (`/admin/mercadopago/pay`, `/expire`, `/notify`). La orden se identifica por el id `ORD…` o por el `external_reference`, que es nuestro id de orden y el que se tiene a mano en una prueba manual. `Pay` con `amount_cents` distinto del total simula el pago con monto equivocado (`payment_mismatch`). `Pay` y `Expire` cambian el estado y la administración después llama a `Notify`; `Notify` solo sirve para repetir un aviso y probar que el webhook es idempotente.
+
+### Notify
+
+> Arma el aviso como el real: `POST <-mp-webhook-url>?data.id=<ORD…>&type=order`, con `X-Request-Id` aleatorio por envío y `X-Signature` firmado con `mercadopago.SignatureHeader`, la misma función que valida del otro lado. Cuerpo mínimo, porque nuestra API no lo lee: la firma no lo cubre. El estado se copia bajo el candado y el envío sale sin el candado, así un webhook lento no bloquea la API falsa. La respuesta de la administración informa el código HTTP que devolvió nuestra API y la URL **con el secreto de ruta tapado**. Sin `-mp-webhook-url` no envía nada y lo dice (`"sent": false`).
+
+## internal/fakeapi/mercadopago_test.go (rama `tests/mercadopago`)
+
+> Los tests conectan el adaptador real de la unidad 2a con el falso y un receptor `httptest` que valida cada aviso con `mercadopago.VerifySignature`: es la prueba de que el cliente, el falso y la firma hablan el mismo idioma. Cubren la idempotencia del alta, el pago con y sin monto distinto, el vencimiento en el borde exacto de 180 s, la cancelación repetida, la cancelación de una orden pagada (`ErrNotCancelable`), el reenvío con un `x-request-id` nuevo, el token equivocado y que la URL devuelta no expone el secreto. Firmar con un secreto equivocado pone en rojo el test del aviso; eso se verificó mutando el código.
+
+## internal/order — el cobro con QR (unidad 3)
+
+### ConfirmPayment / markPaid / dispatchLines
+
+> `ConfirmPayment` se partió en dos sin cambiar lo que hace: `markPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
+
+### WithPayments / WithQRExpiry
+
+> Sin gateway el cobro con QR está apagado: `RequestQR` y `ConfirmFromGateway` devuelven `ErrPaymentsDisabled` y `ReconcilePayments` no hace nada. Así el sandbox sin credenciales sigue funcionando con el pago simulado. El nombre del proveedor (`"mercadopago"`) viaja con el gateway porque es lo que se guarda en `payment_intent.provider`.
+
+### WithBackground / WithBackgroundErrors / Wait / spawn
+
+> El despacho que dispara un webhook corre fuera del request, pero no suelto: `spawn` lo registra en un `WaitGroup` y `Wait` permite que el apagado espere los despachos en curso. Un error del despacho en segundo plano no tiene a quién volver, así que va a `WithBackgroundErrors` (en `cmd/api`, un log). `WithBackground` existe para que los tests corran el despacho en el mismo goroutine y no tengan que esperar.
+
+### RequestQR
+
+> Idempotente por orden: si la orden ya tiene un pago guardado, lo devuelve **tal como está** —pendiente, vencido o pagado— y no llama a Mercado Pago. Si no lo tiene, crea el QR en Mercado Pago **antes** de guardarlo: si el guardado falla, el reintento vuelve a llamar con la misma clave de idempotencia (el id de la orden) y recibe el mismo QR, así que nunca queda un QR cobrable sin registro. Dos pedidos simultáneos chocan en `ErrAlreadyExists` y el perdedor devuelve el del ganador. Sólo se pide QR para una orden `pending_payment` con importe positivo (`ErrNotPayable`).
+
+### ConfirmFromGateway
+
+> La entrada del webhook. Nunca usa el cuerpo del aviso: pregunta a Mercado Pago (`Lookup`) y obedece la respuesta. El cobro tiene que apuntar, por `external_reference`, a una orden nuestra **y** ser el mismo cobro que esa orden tiene guardado; si no, es `ErrUnknownCharge` y el webhook responde 200 igual, porque reintentar no lo va a arreglar.
+
+### applyCharge
+
+> El único lugar que traduce lo que dice Mercado Pago en efectos, compartido por el webhook y el barrido. Un pago que ya no está `pending` no se vuelve a tocar: lo que diga después el proveedor (por ejemplo un `refunded` manual de soporte) no genera avisos ni cambios.
+>
+> El orden de las escrituras es lo que hace seguro un corte del proceso a mitad de camino: **primero el efecto, después el pago**. Pagado: primero la orden (`markPaid`), después el pago `approved`. Monto distinto: primero el aviso, después el pago `amount_mismatch`. Vencido o cancelado: primero la orden `cancelled`, después el pago. Si el proceso muere entre las dos, el pago sigue `pending`, el barrido lo vuelve a encontrar y la segunda pasada completa lo que faltó sin repetir lo hecho (`markPaid` no repite, el aviso se deduplica, cancelar una orden ya cancelada no hace nada).
+
+### acceptPayment
+
+> Si `markPaid` movió la orden, el despacho se lanza en segundo plano. Si no la movió porque ya estaba pagada, no se despacha de nuevo: una orden pagada sin despachar es trabajo del barrido de líneas (`resumeStalledLine`), que ya existía. Si no la movió porque estaba **cancelada**, Mercado Pago está cobrando una orden que dimos por muerta: no se reabre (la transición `cancelled → paid` sigue cerrada) y se avisa `payment_unknown`.
+
+### rejectPaidAmount
+
+> Decidido con el dueño del producto: con un monto distinto al del catálogo —de más o de menos— no se despacha, la orden **se queda en `pending_payment`** y el pago pasa a `amount_mismatch`. No se cancela porque hubo cobro, y no hay transición a `failed` desde `pending_payment`. Se avisa `payment_mismatch` una sola vez.
+
+### ReconcilePayments
+
+> El barrido de los pagos `pending` con más de 10 s (antes, la tablet acaba de mostrar el QR y el webhook todavía puede llegar). Recupera el webhook que no llegó con el mismo `applyCharge`. Si el cobro sigue pendiente y pasaron 30 s del vencimiento, le pide a Mercado Pago que lo cancele y aplica **su** respuesta; si Mercado Pago no acepta cancelar (`ErrNotCancelable`), consulta de nuevo y obedece lo que diga: así un pago que entró justo al vencer se despacha en lugar de perderse. Un error en un pago no frena a los demás.
+
+### notifyOnce
+
+> Lo que antes vivía dentro de `notifyOrder` —consultar el registro, avisar, anotar— salió a una función propia para que los avisos de pago (`payment_mismatch`, `payment_unknown`) usen el mismo dedupe por `(orden, tipo)` que los de despacho.
+
+## internal/order/charge_test.go (rama `tests/mercadopago`)
+
+> Fixtures propios (gateway programable, dispenser que cuenta despachos, notificador que registra) porque los helpers del motor viven en `archive/tests`. Fijan la idempotencia de `RequestQR`, el pago correcto con un despacho por línea aunque el webhook se repita, el monto de más y de menos, el vencimiento y la cancelación, el estado desconocido, los cobros ajenos, la recuperación de un corte entre la orden y el pago, el cobro de una orden cancelada, que el webhook responde con la orden en `dispatching` **antes** de que termine el despacho, y los bordes del barrido (10 s de antigüedad, 30 s de margen). Cuatro mutaciones verificadas en rojo: sacar la comparación de montos, el margen de cancelación, la obediencia ante `ErrNotCancelable` y el chequeo de pago cerrado.
+
+## internal/config — Mercado Pago (unidad 4)
+
+### MercadoPagoEnabled
+
+> Mercado Pago está prendido si y sólo si hay access token. Todo lo demás (secretos, cajas) se valida a partir de eso.
+
+### mercadoPagoProblems
+
+> Regla del dueño del producto: **o se cobra simulado o con Mercado Pago completo**. En producción el token es obligatorio. En sandbox, sin token y sin secretos queda el pago simulado; con secretos y sin token, o con token y sin secretos o sin `mp_pos_id` en algún mueble, el arranque falla. Un servicio que arranca con Mercado Pago a medias no cobra ni avisa por qué; fallar al arrancar lo deja a la vista en el deploy.
+
+### Kiosk.MPPosID
+
+> El `external_pos_id` de la caja de Mercado Pago del mueble. La Orders API lo exige también en modo dinámico: sin caja no hay QR.
+
+## internal/config/mercadopago_test.go (rama `tests/mercadopago`)
+
+> Escribe un JSON mínimo por caso y limpia las variables `MP_*` para que el entorno de quien corre los tests no se cuele. Cubre el modo simulado, la configuración completa con la URL por defecto, que las variables pisan al archivo y los ocho caminos de error.
+
+## internal/httpapi — cobro con QR (unidad 4)
+
+### Deps.Charger / Deps.Payments
+
+> Van juntos o no va ninguno: con los dos se cobra con QR, sin ninguno se cobra con el pago simulado. Uno solo es un error de armado y `New` lo rechaza. `simulated` queda prendido sólo en sandbox **y** sin `Charger`.
+
+### createOrder
+
+> Con Mercado Pago, después de `Place` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo.
+
+### readOrder
+
+> Suma el bloque `payment` si la orden tiene cobro guardado. Que no lo tenga no es un error (una orden simulada o una cuyo QR falló); un error del store sí lo es.
+
+### newPaymentResponse
+
+> `qr_data` sólo viaja con el cobro `pending`: un QR vencido, cancelado o pagado no se vuelve a dibujar.
+
+### fail — ErrNotPayable / ErrQRUnavailable
+
+> `ErrNotPayable` es 409: la orden ya no espera el pago. `ErrQRUnavailable` es 502: falló Mercado Pago, no nosotros; se loguea y la tablet reintenta.
+
+### MercadoPagoWebhook.receive
+
+> El orden de los chequeos es de más barato a más caro: secreto de ruta (404, igual que una ruta inexistente), `data.id` (400), firma con su ventana de 5 minutos (401), tópico (200 sin hacer nada si no es `order`), y recién ahí `ConfirmFromGateway`, que consulta a Mercado Pago. El cuerpo no se lee: la firma no lo cubre. Un cobro ajeno responde 200 porque reintentar no lo arregla; cualquier otro error responde 500 para que Mercado Pago reintente, y como `ConfirmFromGateway` es idempotente el reintento es seguro.
+
+## internal/httpapi/mercadopago_test.go (rama `tests/mercadopago`)
+
+> Fixtures propios porque los del paquete viven en `archive/tests`. Firma los avisos con `mercadopago.SignatureHeader`, así el test usa la misma firma que el adaptador real. Cubre los ocho casos del webhook, que el id llega sin tocar al motor, la ruta ausente sin confirmador, `POST /orders` con y sin Mercado Pago y sus tres errores, el bloque `payment` de `GET` (pendiente, vencido, ausente, error), el pago simulado apagado con Mercado Pago y las `Deps` a medias. Mutaciones verificadas en rojo: prender el simulado con Mercado Pago, exponer el QR vencido e ignorar el tópico.
+
+## internal/order/qr.go — ErrQRUnavailable
+
+> Envuelve sólo la falla de `CreateQR`, para que el borde HTTP distinga «Mercado Pago no respondió» (502) de una falla propia (500).
+
+## internal/sweep — WithPayments
+
+> Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro.
+
+## internal/sweep/payments_test.go (rama `tests/mercadopago`)
+
+> Un sweeper que cuenta llamadas y límites. Cubre que los dos barridos corren con el mismo límite, que sin `WithPayments` el de pagos no corre y que un error en las líneas no frena a los pagos. Mutación verificada en rojo: pasar otro límite al barrido de pagos.
+
+## cmd/api/main.go — Mercado Pago (unidad 4)
+
+> Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithPayments`), al handler (`Charger` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.

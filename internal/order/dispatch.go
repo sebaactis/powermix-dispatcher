@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/store"
 )
 
 const defaultMaxAttempts = 2
 
 type dispatchVerdict struct {
-	state   dispenser.LineState
+	state   linestate.State
 	outcome store.AttemptOutcome
 	detail  string
 }
@@ -133,25 +134,25 @@ func classifyDispatch(result dispenser.DispatchResult, dispatchErr error) dispat
 	switch {
 	case dispatchErr != nil && isProviderRejection(dispatchErr):
 		return dispatchVerdict{
-			state:   dispenser.LineFailed,
+			state:   linestate.Failed,
 			outcome: store.OutcomeRejected,
 			detail:  dispatchErr.Error(),
 		}
 	case dispatchErr != nil:
 		return dispatchVerdict{
-			state:   dispenser.LineInDoubt,
+			state:   linestate.InDoubt,
 			outcome: store.OutcomeError,
 			detail:  dispatchErr.Error(),
 		}
 	case result.Accepted:
 		return dispatchVerdict{
-			state:   dispenser.LineSent,
+			state:   linestate.Sent,
 			outcome: store.OutcomeAccepted,
 			detail:  result.Detail,
 		}
 	default:
 		return dispatchVerdict{
-			state:   dispenser.LineInDoubt,
+			state:   linestate.InDoubt,
 			outcome: store.OutcomeError,
 			detail:  "la máquina no confirmó la aceptación del despacho",
 		}

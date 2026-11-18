@@ -27,17 +27,20 @@ port: it never learns that a drink needs a code.
 ## Layout
 
 ```
-cmd/api          backend for the tablet: catalog, orders, live status, simulated pay
-cmd/fakeapi      runs both local stand-ins plus their test-only admin surface
+cmd/api          backend for the tablet: catalog, orders, live status, Mercado Pago QR (or simulated pay)
+cmd/migrate      one-shot schema runner: applies the embedded `migrations/*.sql`
+cmd/fakeapi      runs the local stand-ins (Batidos, Snacks, Mercado Pago) plus their test-only admin surface
 internal/config  topology from JSON, secrets from env, validated at startup
 internal/dispenser          the port: Check / Dispatch / Reconcile
 internal/dispenser/batidos       signature and UTC+8 campaign dates
 internal/dispenser/snacks  HMAC signature, nonce, clock window
-internal/fakeapi            local Batidos and Snacks, with their real rules enforced
-internal/httpapi            the four tablet endpoints, mapped onto catalog + engine + store
-internal/payments           Refunder port + mock that never moves money
+internal/fakeapi            local Batidos, Snacks and Mercado Pago, with their real rules enforced
+internal/httpapi            the four tablet endpoints and the provider callbacks, mapped onto catalog + engine + store
+internal/payments           payment Gateway port (QR charge) + Refunder port and its mock
+internal/payments/mercadopago  Orders API adapter and webhook signature check
 internal/notify             Notifier port + structured log transport
-migrations                 PostgreSQL schema
+internal/migrate            what is pending, in one transaction per file, under an advisory lock
+migrations                 PostgreSQL schema, embedded with `//go:embed`
 docs                       comments and rationale, kept out of the code
 ```
 
@@ -46,10 +49,18 @@ decision lives in `docs/comentarios-codigo.md`, indexed by symbol
 (`Símbolo --> "texto"`). Keep it updated when behaviour changes; a stale note is
 worse than none.
 
+## Documentation
+
+- `docs/arquitectura.md`: Architecture overview and detailed step-by-step flow with `file:line` references.
+- `docs/flujo-del-sistema.svg`: Visual diagram of architecture layers, HTTP routes, and purchase flow.
+- `docs/pendientes.md`: Current backlog, technical debts, external blockers, unverified areas, and recommended work order.
+- `docs/comentarios-codigo.md`: Detailed rationale and code explanation indexed by file and symbol.
+- `docs/proveedores/`: Original vendor specifications and plain-text extractions (local only, git-ignored, copy manually).
+
 ## Run
 
 ```bash
-go test ./...            # includes the signature vectors taken from the docs
+go test ./...            # no tests in main: the 341 live in branch archive/tests
 go vet ./...
 go build ./...
 
@@ -61,8 +72,10 @@ go run ./cmd/api -config config.local.json -combos combos.local.json
 # GET  /healthz
 # GET  /combos
 # POST /orders               {"combo_id":"...","client_key":"...","kiosk_id":"..."}
-# GET  /orders/{id}
-# POST /orders/{id}/pay      simulated, sandbox only: 403 in production
+#                            with Mercado Pago: adds "payment": {"status","qr_data","expires_at"}
+# GET  /orders/{id}          same "payment" block; the tablet polls it every 2 s
+# POST /orders/{id}/pay      simulated, sandbox without Mercado Pago only: 403 otherwise
+# POST /callbacks/mercadopago/{secret}   Mercado Pago webhook (signed)
 ```
 
 Local stand-ins, so integration work can start without credentials:
@@ -71,6 +84,7 @@ Local stand-ins, so integration work can start without credentials:
 go run ./cmd/fakeapi
 # fake batidos API  -> http://127.0.0.1:9401
 # fake snacks API   -> http://127.0.0.1:9402
+# fake Mercado Pago -> http://127.0.0.1:9404   (Orders API: create, get, cancel)
 # admin surface     -> http://127.0.0.1:9403   (POST only, loopback only)
 ```
 
@@ -99,6 +113,25 @@ fake forgets them.
 | `/admin/snacks/device` | `{"online":true,"sell_status":1,"fault_state":0,"lock_type":0,"stockout_state":0}` | applies only the fields present |
 | `/admin/snacks/slot` | `{"slot_no":"1","stock":5,"slot_status":1}` | sets the stock and/or the status of one slot |
 | `/admin/snacks/order` | `{"status":1,"name":"…"}` or `{"empty":true}` | changes what the orders page reports, or empties it |
+| `/admin/mercadopago/pay` | `{"order":"<ORD… or external_reference>","amount_cents":150050}` | the customer pays: the order goes to `processed`/`accredited` and a signed webhook goes to `-mp-webhook-url`; `amount_cents` is optional (defaults to the order total) and a different value simulates a wrong amount |
+| `/admin/mercadopago/expire` | `{"order":"…"}` | expires a `created` order now and sends the webhook |
+| `/admin/mercadopago/notify` | `{"order":"…"}` | sends the webhook again with the current state and a new `x-request-id` |
+
+To run the whole Mercado Pago flow locally, point the fake's webhook at the API
+and give the API the fake's credentials:
+
+```bash
+go run ./cmd/fakeapi -mp-webhook-url http://127.0.0.1:8080/callbacks/mercadopago/local-mp
+
+# in config.local.json (or the MP_* variables):
+#   "mercadopago": {"base_url": "http://127.0.0.1:9404", "access_token": "TEST-fake-token",
+#                   "webhook_secret": "fake-webhook-secret", "callback_secret": "local-mp"}
+#   and "mp_pos_id": "POS-1" on every kiosk
+
+curl -X POST localhost:8080/orders -d '{"combo_id":"...","client_key":"k1"}'
+curl -X POST localhost:9403/admin/mercadopago/pay -d '{"order":"<order id>"}'
+curl localhost:8080/orders/<order id>      # dispatching, payment approved
+```
 
 > Local tests only. There is no authentication, so the admin server must never be
 > reachable from another machine: `-admin-addr` defaults to `127.0.0.1:9403` and
@@ -119,7 +152,7 @@ callback secrets and the fake providers. No real credential is involved.
 | Service | What it does |
 | --- | --- |
 | `db` | PostgreSQL 16, named volume `pgdata`, `pg_isready` healthcheck |
-| `migrate` | one-shot `psql` run over every `migrations/*.sql` in alphabetical order; exits when done |
+| `migrate` | builds the `migrate` target; applies the pending `migrations/*.sql` from inside the binary, one transaction per file, tracked in `schema_migrations` with SHA-256 checksums; exits when done |
 | `api` | builds the `runtime` target of the `Dockerfile` and serves the tablet backend, store on PostgreSQL |
 | `fakeapi` | builds the `fakeapi` target; both stand-in provider APIs, with `DEMO-BATIDO-VAINILLA` seeded so the drink half of a combo exists |
 
@@ -128,9 +161,17 @@ The `api` container seeds the kiosks, machines and combos it read from
 row references both a kiosk and a combo. That write is an upsert, so restarting
 is safe.
 
-`migrate` runs the files without a version table: the first `up` against a fresh
-volume succeeds, and a second `up` fails on the already applied DDL. Use
-`docker compose down -v` when you need to replay the schema.
+`migrate` is a Go program (`cmd/migrate`), not `psql` over a mounted directory: the
+`.sql` files are embedded in the binary, so the container applies exactly the
+files it was built with. It keeps `schema_migrations`, takes an advisory lock so
+two runners never migrate at once, and runs each pending file in one transaction
+together with its version row and its content checksum (normalizing CRLF to LF).
+Applied migrations are immutable: if a previously applied migration file differs
+from its stored checksum, the runner aborts before running any pending migrations.
+A second `up` is a no-op (`el esquema ya está al día`) instead of failing on DDL
+that is already applied, and a broken file rolls back and exits non-zero, which
+keeps `api` from starting. A volume created before the runner existed has the tables
+but no `schema_migrations`: run `docker compose down -v` once.
 
 The fake's admin port (9403) is not published. The fake refuses to bind its admin
 surface outside loopback, and a process bound to `127.0.0.1` inside a container
@@ -139,7 +180,7 @@ on loopback only, so the fakes are never reachable from another machine.
 
 ## Secrets
 
-Credentials never live in a tracked file. They come from four environment
+Credentials never live in a tracked file. They come from environment
 variables, which override anything written in the JSON:
 
 | Variable | Provider |
@@ -153,6 +194,14 @@ variables, which override anything written in the JSON:
 | `PUBLIC_BASE_URL` | Public base URL of this backend (optional). Without it the Batidos campaign is created without `notifyUrl`, so the Batidos callback never arrives |
 | `STORE` | `memory` (default) or `postgres`; overrides `store` in the JSON |
 | `DATABASE_URL` | PostgreSQL DSN, required when the store is `postgres`; overrides `database_url` in the JSON |
+| `MP_ACCESS_TOKEN` | Mercado Pago access token. Set: payments go through the QR and the simulated pay is off. Empty: simulated pay (sandbox only; production refuses to start) |
+| `MP_WEBHOOK_SECRET` | Secret Mercado Pago signs the webhook with (`x-signature`); required with the token |
+| `MP_CALLBACK_SECRET` | Secret path segment of the Mercado Pago webhook; required with the token |
+| `MP_BASE_URL` | Mercado Pago API (default `https://api.mercadopago.com`; the local fake is `http://127.0.0.1:9404`) |
+
+Mercado Pago is all or nothing: a half configuration (secrets without token, token
+without secrets, or a kiosk without `mp_pos_id`, the `external_pos_id` of its
+Mercado Pago cash register) makes the API refuse to start.
 
 Both callback secrets are optional. When a secret is empty, that callback
 endpoint answers 404: an unauthenticated machine callback never reaches the
@@ -184,15 +233,18 @@ of why the code looks the way it does.
 
 | Kept out | Why |
 | --- | --- |
-| `Batidos-Remoto-API.md`, the Snacks PDF, `ys-vending.txt` | Third-party material with the vendor's copyright notice |
+| `docs/proveedores/` (`batidos-api.md`, `snacks-api.pdf`, `snacks-api.txt`) | Third-party vendor documents with copyright notices |
 | `design/` | Internal design boards and their screenshots |
 | `.env`, `*.local.json` | Real credentials and real topology |
 
-Consequence: a fresh clone cannot read the source contracts. The wire rules those
+Consequence: a fresh clone cannot read the vendor contracts directly without copying them manually into `docs/proveedores/`. See `docs/pendientes.md` for instructions on acquiring them and the open questions. The wire rules those
 documents define live in code and in tests (`internal/dispenser/*/sign*.go`, the
 `openssl` vectors), which is what actually prevents a regression.
 
 ## Tests that exist because the docs were ambiguous
+
+All of them live in branch `archive/tests`, not in `main` (see
+`docs/arquitectura.md`).
 
 - Two Base64 HMAC vectors and two MD5 vectors computed with `openssl`, not with Go,
   so the test cannot agree with the implementation by accident.
@@ -203,7 +255,4 @@ documents define live in code and in tests (`internal/dispenser/*/sign*.go`, the
 
 ## Known open questions
 
-These still block real integration: the real Batidos API domain, whether a
-redemption code is single use, whether `deviceNo` is really required, the exact
-JSON of the Snacks remote shipment call, and whether `PaymentOrderId` is an
-idempotency key. They are tracked in `odd/tasks/combos-remotos.md`.
+Open questions regarding real provider integration (domains, signatures, parameters, and idempotency) and remaining technical debts are tracked in `docs/pendientes.md` and `odd/tasks/combos-remotos.md`.

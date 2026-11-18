@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/store"
 )
 
@@ -53,7 +53,7 @@ func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
 			Machine:     item.Machine,
 			SKU:         item.SKU,
 			AmountCents: item.AmountCents,
-			State:       dispenser.LinePending,
+			State:       linestate.Pending,
 		})
 	}
 
@@ -95,8 +95,8 @@ func (e *Engine) validateDraft(draft Draft) error {
 			return fmt.Errorf("ítem %d: falta el SKU", position)
 		}
 
-		if !machineIdentified(item.Machine) {
-			return fmt.Errorf("ítem %d: falta el identificador de la máquina", position)
+		if err := item.Machine.Validate(); err != nil {
+			return fmt.Errorf("ítem %d: %w", position, err)
 		}
 
 		if item.AmountCents < 0 {
@@ -105,8 +105,4 @@ func (e *Engine) validateDraft(draft Draft) error {
 	}
 
 	return nil
-}
-
-func machineIdentified(machine dispenser.MachineRef) bool {
-	return machine.DeviceID != "" || machine.DeviceNo != "" || machine.MID != ""
 }

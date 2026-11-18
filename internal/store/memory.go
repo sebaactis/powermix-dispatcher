@@ -2,43 +2,71 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
 	"sync"
 	"time"
 
-	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/machine"
 )
+
+const refundedState linestate.State = "refunded"
 
 type webhookKey struct {
 	source    string
 	dedupeKey string
 }
 
+type notificationKey struct {
+	orderID string
+	kind    string
+}
+
+type lineAttemptKey struct {
+	lineID string
+	number int
+}
+
 type Memory struct {
-	mu         sync.Mutex
-	orders     map[string]Order
-	lineOrder  map[string]string
-	clientKeys map[string]string
-	attempts   map[string]struct{}
-	webhooks   map[webhookKey]struct{}
+	mu            sync.Mutex
+	orders        map[string]Order
+	lineOrder     map[string]string
+	clientKeys    map[string]string
+	attempts      map[string]struct{}
+	lineAttempts  map[lineAttemptKey]struct{}
+	webhooks      map[webhookKey]struct{}
+	notifications map[notificationKey]time.Time
+	intents       map[string]PaymentIntent
+	orderIntents  map[string]string
+	providerIDs   map[providerKey]string
 }
 
 var _ Store = (*Memory)(nil)
 
 func NewMemory() *Memory {
 	return &Memory{
-		orders:     make(map[string]Order),
-		lineOrder:  make(map[string]string),
-		clientKeys: make(map[string]string),
-		attempts:   make(map[string]struct{}),
-		webhooks:   make(map[webhookKey]struct{}),
+		orders:        make(map[string]Order),
+		lineOrder:     make(map[string]string),
+		clientKeys:    make(map[string]string),
+		attempts:      make(map[string]struct{}),
+		lineAttempts:  make(map[lineAttemptKey]struct{}),
+		webhooks:      make(map[webhookKey]struct{}),
+		notifications: make(map[notificationKey]time.Time),
+		intents:       make(map[string]PaymentIntent),
+		orderIntents:  make(map[string]string),
+		providerIDs:   make(map[providerKey]string),
 	}
 }
 
 func (m *Memory) CreateOrder(ctx context.Context, order Order) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := validateOrder(order); err != nil {
+		return err
+	}
 
 	if _, exists := m.orders[order.ID]; exists {
 		return ErrAlreadyExists
@@ -48,6 +76,20 @@ func (m *Memory) CreateOrder(ctx context.Context, order Order) error {
 		if _, exists := m.clientKeys[order.ClientKey]; exists {
 			return ErrAlreadyExists
 		}
+	}
+
+	positions := make(map[int]struct{}, len(order.Lines))
+
+	for _, line := range order.Lines {
+		if err := validateLine(line); err != nil {
+			return err
+		}
+
+		if _, taken := positions[line.Position]; taken {
+			return ErrAlreadyExists
+		}
+
+		positions[line.Position] = struct{}{}
 	}
 
 	order = cloneOrder(order)
@@ -107,6 +149,10 @@ func (m *Memory) SaveOrder(ctx context.Context, order Order) (Order, error) {
 		return Order{}, ErrStale
 	}
 
+	if err := validateOrder(order); err != nil {
+		return Order{}, err
+	}
+
 	stored.KioskID = order.KioskID
 	stored.ComboID = order.ComboID
 	stored.ClientKey = order.ClientKey
@@ -148,6 +194,16 @@ func (m *Memory) SaveLine(ctx context.Context, line Line) (Line, error) {
 			return Line{}, ErrStale
 		}
 
+		if err := validateLine(line); err != nil {
+			return Line{}, err
+		}
+
+		for _, other := range order.Lines {
+			if other.ID != line.ID && other.Position == line.Position {
+				return Line{}, ErrAlreadyExists
+			}
+		}
+
 		line.Version = order.Lines[i].Version + 1
 		order.Lines[i] = line
 
@@ -161,11 +217,21 @@ func (m *Memory) AppendAttempt(ctx context.Context, attempt Attempt) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := validateAttempt(attempt); err != nil {
+		return err
+	}
+
 	if _, exists := m.attempts[attempt.IdempotencyKey]; exists {
 		return ErrAlreadyExists
 	}
 
+	lineKey := lineAttemptKey{lineID: attempt.LineID, number: attempt.Number}
+	if _, exists := m.lineAttempts[lineKey]; exists {
+		return ErrAlreadyExists
+	}
+
 	m.attempts[attempt.IdempotencyKey] = struct{}{}
+	m.lineAttempts[lineKey] = struct{}{}
 
 	return nil
 }
@@ -178,12 +244,20 @@ func (m *Memory) SaveAttempt(ctx context.Context, attempt Attempt) error {
 		return ErrNotFound
 	}
 
+	if err := validateAttempt(attempt); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func (m *Memory) RegisterWebhook(ctx context.Context, wh Webhook) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := validateWebhook(wh); err != nil {
+		return false, err
+	}
 
 	key := webhookKey{source: wh.Source, dedupeKey: wh.DedupeKey}
 	if _, exists := m.webhooks[key]; exists {
@@ -193,6 +267,32 @@ func (m *Memory) RegisterWebhook(ctx context.Context, wh Webhook) (bool, error) 
 	m.webhooks[key] = struct{}{}
 
 	return false, nil
+}
+
+func (m *Memory) NotificationSent(ctx context.Context, orderID, kind string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.orders[orderID]; !exists {
+		return false, ErrNotFound
+	}
+
+	_, sent := m.notifications[notificationKey{orderID: orderID, kind: kind}]
+
+	return sent, nil
+}
+
+func (m *Memory) RecordNotification(ctx context.Context, orderID, kind string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.orders[orderID]; !exists {
+		return ErrNotFound
+	}
+
+	m.notifications[notificationKey{orderID: orderID, kind: kind}] = at
+
+	return nil
 }
 
 func (m *Memory) DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error) {
@@ -234,6 +334,90 @@ func (m *Memory) putOrderLocked(order Order) {
 	}
 }
 
+func validateOrder(order Order) error {
+	if order.AmountCents < 0 {
+		return fmt.Errorf("%w: la orden %s tiene el importe %d", ErrInvalid, order.ID, order.AmountCents)
+	}
+
+	if !knownOrderStatus(order.Status) {
+		return fmt.Errorf("%w: la orden %s tiene el estado %q", ErrInvalid, order.ID, order.Status)
+	}
+
+	return nil
+}
+
+func validateLine(line Line) error {
+	if !knownMachineKind(line.Machine.Kind) {
+		return fmt.Errorf("%w: la línea %s tiene la familia de máquina %q", ErrInvalid, line.ID, line.Machine.Kind)
+	}
+
+	if line.AmountCents < 0 {
+		return fmt.Errorf("%w: la línea %s tiene el importe %d", ErrInvalid, line.ID, line.AmountCents)
+	}
+
+	if !knownLineState(line.State) {
+		return fmt.Errorf("%w: la línea %s tiene el estado %q", ErrInvalid, line.ID, line.State)
+	}
+
+	return nil
+}
+
+func validateAttempt(attempt Attempt) error {
+	if !knownAttemptOutcome(attempt.Outcome) {
+		return fmt.Errorf("%w: el intento %s tiene el desenlace %q", ErrInvalid, attempt.ID, attempt.Outcome)
+	}
+
+	return nil
+}
+
+func validateWebhook(wh Webhook) error {
+	if !knownWebhookSource(wh.Source) {
+		return fmt.Errorf("%w: el webhook %s tiene la fuente %q", ErrInvalid, wh.ID, wh.Source)
+	}
+
+	return nil
+}
+
+func knownOrderStatus(status OrderStatus) bool {
+	switch status {
+	case OrderPendingPayment, OrderPaid, OrderDispatching, OrderDelivered, OrderPartial, OrderFailed, OrderInDoubt, OrderRefunded, OrderCancelled:
+		return true
+	}
+
+	return false
+}
+
+func knownMachineKind(kind machine.Kind) bool {
+	return kind == machine.Batidos || kind == machine.Snacks
+}
+
+func knownLineState(state linestate.State) bool {
+	switch state {
+	case linestate.Pending, linestate.Sent, linestate.Brewing, linestate.Delivered, linestate.Failed, linestate.InDoubt, refundedState:
+		return true
+	}
+
+	return false
+}
+
+func knownAttemptOutcome(outcome AttemptOutcome) bool {
+	switch outcome {
+	case OutcomeAmbiguous, OutcomeAccepted, OutcomeRejected, OutcomeError:
+		return true
+	}
+
+	return false
+}
+
+func knownWebhookSource(source string) bool {
+	switch source {
+	case "payment", "batidos", "snacks":
+		return true
+	}
+
+	return false
+}
+
 func cloneOrder(order Order) Order {
 	order.Lines = slices.Clone(order.Lines)
 
@@ -242,7 +426,7 @@ func cloneOrder(order Order) Order {
 
 func lineDue(line Line, now time.Time) bool {
 	switch line.State {
-	case dispenser.LinePending, dispenser.LineSent, dispenser.LineBrewing, dispenser.LineInDoubt:
+	case linestate.Pending, linestate.Sent, linestate.Brewing, linestate.InDoubt:
 	default:
 		return false
 	}
@@ -271,7 +455,7 @@ func (m *Memory) StalledLines(ctx context.Context, paidBefore time.Time, limit i
 		}
 
 		for _, line := range order.Lines {
-			if line.State != dispenser.LinePending || !line.DeadlineAt.IsZero() {
+			if line.State != linestate.Pending || !line.DeadlineAt.IsZero() {
 				continue
 			}
 

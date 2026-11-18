@@ -38,7 +38,19 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newOrderResponse(placed))
+	response := newOrderResponse(placed)
+
+	if h.charger != nil {
+		intent, err := h.charger.RequestQR(r.Context(), placed.ID, kiosk.MPPosID)
+		if err != nil {
+			fail(w, r, h.logger, err)
+			return
+		}
+
+		response.Payment = newPaymentResponse(intent)
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) readOrder(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +60,20 @@ func (h *Handler) readOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newOrderResponse(loaded))
+	response := newOrderResponse(loaded)
+
+	if h.payments != nil {
+		intent, err := h.payments.PaymentIntentByOrder(r.Context(), loaded.ID)
+		switch {
+		case err == nil:
+			response.Payment = newPaymentResponse(intent)
+		case !errors.Is(err, store.ErrNotFound):
+			fail(w, r, h.logger, err)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) payOrder(w http.ResponseWriter, r *http.Request) {
