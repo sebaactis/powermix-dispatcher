@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -334,6 +335,13 @@ func TestConfirmFromGatewayWrongAmountDoesNotDispatchAndNotifiesOnce(t *testing.
 			}
 			if k := rig.notifier.kinds(); len(k) != 1 || k[0] != notify.KindPaymentMismatch {
 				t.Fatalf("avisos = %v", k)
+			}
+			ev := rig.notifier.events[0]
+			if ev.KioskID != "k1" {
+				t.Fatalf("el aviso de pago tiene que decir en qué mueble pasó: KioskID=%q", ev.KioskID)
+			}
+			if !strings.Contains(ev.Detail, notify.Pesos(paid)) || !strings.Contains(ev.Detail, "$1.500,50") {
+				t.Fatalf("el detalle tiene que dar los montos en pesos: %q", ev.Detail)
 			}
 		})
 	}

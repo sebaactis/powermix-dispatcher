@@ -89,6 +89,9 @@ func TestEngineNotifiesAnOrderExceptionOnlyOnce(t *testing.T) {
 	if event.OrderID != fx.orderID {
 		t.Fatalf("el evento apunta a la orden %q, se esperaba %q", event.OrderID, fx.orderID)
 	}
+	if event.KioskID == "" {
+		t.Fatal("el aviso de orden fallida tiene que decir en qué mueble pasó")
+	}
 
 	for _, key := range []string{"batidos-2", "batidos-3"} {
 		if err := fx.failLine(t, "batidos", key, "code-batidos"); err != nil {

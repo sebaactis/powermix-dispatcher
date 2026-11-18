@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const testToken = "123456:secret-token"
@@ -68,14 +69,19 @@ func telegramServer(t *testing.T, statuses ...int) (*httptest.Server, *fakeTeleg
 
 func newTestTelegram(baseURL string, logs *bytes.Buffer) *TelegramNotifier {
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	return NewTelegram(logger, baseURL, testToken, "-100777", "production", WithTelegramBackoff(0))
+	return NewTelegram(logger, baseURL, testToken, "-100777", "production",
+		WithTelegramBackoff(0),
+		WithTelegramKiosks(map[string]string{"kiosk-1": "Mueble Centro"}),
+		WithTelegramClock(func() time.Time { return time.Date(2026, 11, 18, 22, 31, 0, 0, time.UTC) }),
+	)
 }
 
 func testEvent() Event {
 	return Event{
 		Kind:    KindPaymentMismatch,
 		OrderID: "ord-1",
-		Detail:  "el cobro 456 se pagó con 900 centavos y la orden vale 1000: no se despachó",
+		KioskID: "kiosk-1",
+		Detail:  "el cobro 456 se pagó con $9,00 y la orden vale $10,00: no se despachó",
 	}
 }
 
@@ -99,7 +105,18 @@ func TestTelegramSendsTheAlertAndLogsIt(t *testing.T) {
 	if msg.body.ChatID != "-100777" {
 		t.Fatalf("chat_id = %q", msg.body.ChatID)
 	}
-	for _, want := range []string{"[production]", "Pago con monto distinto", "Orden: ord-1", "900 centavos"} {
+	if msg.body.ParseMode != "HTML" {
+		t.Fatalf("parse_mode = %q, quería HTML", msg.body.ParseMode)
+	}
+	for _, want := range []string{
+		"🟠 <b>Pago con monto distinto</b>",
+		"<i>🚨 PRODUCCIÓN · compras-remotas</i>",
+		"📍 Mueble Centro (kiosk-1)",
+		"🧾 Orden: <code>ord-1</code>",
+		"🕒 18/11/2026 19:31 (hora Argentina)",
+		"<blockquote>El cobro 456 se pagó con $9,00 y la orden vale $10,00: no se despachó.</blockquote>",
+		"👉 Revisar el cobro en Mercado Pago",
+	} {
 		if !strings.Contains(msg.body.Text, want) {
 			t.Fatalf("el texto %q no menciona %q", msg.body.Text, want)
 		}
@@ -117,7 +134,7 @@ func TestTelegramIncludesTheLineWhenThereIsOne(t *testing.T) {
 
 	_ = newTestTelegram(server.URL, &bytes.Buffer{}).Notify(context.Background(), ev)
 
-	if text := fake.messages()[0].body.Text; !strings.Contains(text, "Línea: line-9") {
+	if text := fake.messages()[0].body.Text; !strings.Contains(text, "🔹 Línea: <code>line-9</code>") {
 		t.Fatalf("el texto no menciona la línea: %q", text)
 	}
 }
@@ -206,7 +223,7 @@ func TestTelegramSendsEvenIfTheCallerContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestTelegramTruncatesLongMessages(t *testing.T) {
+func TestTelegramTruncatesLongDetails(t *testing.T) {
 	server, fake := telegramServer(t)
 	ev := testEvent()
 	ev.Detail = strings.Repeat("ñ", 5000)
@@ -214,10 +231,85 @@ func TestTelegramTruncatesLongMessages(t *testing.T) {
 	_ = newTestTelegram(server.URL, &bytes.Buffer{}).Notify(context.Background(), ev)
 
 	text := fake.messages()[0].body.Text
-	if len(text) > telegramMaxText+len("…") {
-		t.Fatalf("el texto mide %d bytes, el tope es %d", len(text), telegramMaxText)
+	if len(text) > 4096 {
+		t.Fatalf("el texto mide %d bytes, Telegram acepta hasta 4096", len(text))
 	}
-	if !strings.HasSuffix(text, "…") {
-		t.Fatal("el texto recortado tiene que terminar en …")
+	if !strings.Contains(text, "…</blockquote>") {
+		t.Fatal("el detalle recortado tiene que terminar en … dentro de la cita")
+	}
+}
+
+func TestTelegramEscapesHTML(t *testing.T) {
+	server, fake := telegramServer(t)
+	ev := testEvent()
+	ev.OrderID = "ord<1>"
+	ev.Detail = "falló <b>todo</b> & más"
+
+	_ = newTestTelegram(server.URL, &bytes.Buffer{}).Notify(context.Background(), ev)
+
+	text := fake.messages()[0].body.Text
+	if strings.Contains(text, "<b>todo</b>") || strings.Contains(text, "ord<1>") {
+		t.Fatalf("el contenido del evento no se escapó: %q", text)
+	}
+	for _, want := range []string{"ord&lt;1&gt;", "&lt;b&gt;todo&lt;/b&gt; &amp; más"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("el texto %q no tiene %q", text, want)
+		}
+	}
+}
+
+func TestTelegramMarksSandboxAndUnknownKiosks(t *testing.T) {
+	server, fake := telegramServer(t)
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	notifier := NewTelegram(logger, server.URL, testToken, "-1", "sandbox", WithTelegramBackoff(0))
+	ev := testEvent()
+	ev.Kind = KindOrderInDoubt
+	ev.KioskID = "kiosk-x"
+
+	_ = notifier.Notify(context.Background(), ev)
+
+	text := fake.messages()[0].body.Text
+	for _, want := range []string{"🟡 <b>Orden en duda</b>", "<i>🧪 sandbox · compras-remotas</i>", "📍 kiosk-x\n", "👉 No se pudo confirmar la entrega"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("el texto %q no tiene %q", text, want)
+		}
+	}
+}
+
+func TestTelegramOmitsTheKioskWhenTheEventHasNone(t *testing.T) {
+	server, fake := telegramServer(t)
+	ev := testEvent()
+	ev.KioskID = ""
+
+	_ = newTestTelegram(server.URL, &bytes.Buffer{}).Notify(context.Background(), ev)
+
+	if text := fake.messages()[0].body.Text; strings.Contains(text, "📍") {
+		t.Fatalf("sin mueble no tiene que aparecer la línea del mueble: %q", text)
+	}
+}
+
+func TestEveryKindHasAStyle(t *testing.T) {
+	for _, kind := range []Kind{KindOrderFailed, KindOrderInDoubt, KindPaymentMismatch, KindPaymentUnknown} {
+		style, ok := kindStyles[kind]
+		if !ok || style.icon == "" || style.title == "" || style.action == "" {
+			t.Fatalf("%s no tiene icono, título y qué hacer: %+v", kind, style)
+		}
+	}
+}
+
+func TestPesos(t *testing.T) {
+	cases := map[int64]string{
+		0:         "$0,00",
+		50:        "$0,50",
+		100:       "$1,00",
+		150050:    "$1.500,50",
+		123456789: "$1.234.567,89",
+		-150050:   "-$1.500,50",
+		100000000: "$1.000.000,00",
+	}
+	for cents, want := range cases {
+		if got := Pesos(cents); got != want {
+			t.Fatalf("Pesos(%d) = %q, quería %q", cents, got, want)
+		}
 	}
 }
