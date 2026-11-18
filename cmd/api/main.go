@@ -23,6 +23,7 @@ import (
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/notify"
 	"compras-remotas/internal/order"
+	"compras-remotas/internal/payments/mercadopago"
 	"compras-remotas/internal/preflight"
 	"compras-remotas/internal/store"
 	"compras-remotas/internal/store/postgres"
@@ -33,6 +34,8 @@ const (
 	sweepInterval = 30 * time.Second
 	sweepLimit    = 10
 	seedTimeout   = 30 * time.Second
+
+	paymentProvider = "mercadopago"
 )
 
 func main() {
@@ -101,19 +104,50 @@ func main() {
 	defer closeStore()
 
 	availability := gate.New(preflight.New(batidosClient, snacksClient))
-	engine := order.New(orders, machines, order.WithNotifier(notify.NewLog(logger)), order.WithGate(availability))
-	runner := sweep.New(engine, logger, sweep.WithInterval(sweepInterval), sweep.WithLimit(sweepLimit))
 
-	tabletAPI, err := httpapi.New(httpapi.Deps{
+	engineOpts := []order.Option{
+		order.WithNotifier(notify.NewLog(logger)),
+		order.WithGate(availability),
+		order.WithBackgroundErrors(func(orderID string, err error) {
+			logger.Error("el despacho en segundo plano terminó con error", "order_id", orderID, "error", err)
+		}),
+	}
+
+	if cfg.MercadoPagoEnabled() {
+		mpClient := mercadopago.NewClient(cfg.MercadoPagoBaseURL, cfg.MercadoPagoAccessToken)
+		engineOpts = append(engineOpts, order.WithPayments(paymentProvider, mpClient))
+	}
+
+	engine := order.New(orders, machines, engineOpts...)
+
+	runnerOpts := []sweep.Option{sweep.WithInterval(sweepInterval), sweep.WithLimit(sweepLimit)}
+	apiDeps := httpapi.Deps{
 		Catalog:   comboCatalog,
 		Placer:    engine,
 		Confirmer: engine,
 		Orders:    orders,
 		Kiosks:    cfg.Kiosks,
 		Env:       cfg.Env,
-	},
-		httpapi.WithLogger(logger),
-	)
+	}
+
+	if cfg.MercadoPagoEnabled() {
+		runnerOpts = append(runnerOpts, sweep.WithPayments(engine))
+		apiDeps.Charger = engine
+		apiDeps.Payments = orders
+
+		logger.Info("cobro con QR de Mercado Pago activo: el pago simulado está apagado",
+			"base_url", cfg.MercadoPagoBaseURL,
+			"webhook_path", "/callbacks/mercadopago/***",
+		)
+	} else {
+		logger.Warn("Mercado Pago no está configurado: se cobra con el pago simulado (POST /orders/{id}/pay)",
+			"token_env", "MP_ACCESS_TOKEN",
+		)
+	}
+
+	runner := sweep.New(engine, logger, runnerOpts...)
+
+	tabletAPI, err := httpapi.New(apiDeps, httpapi.WithLogger(logger))
 	if err != nil {
 		logger.Error("no se pudo construir la API de la tablet", "error", err)
 		os.Exit(1)
@@ -158,6 +192,13 @@ func main() {
 		Snacks:  cfg.SnacksCallbackSecret,
 	}, httpapi.WithCallbacksLogger(logger)).Register(mux)
 
+	if cfg.MercadoPagoEnabled() {
+		httpapi.NewMercadoPagoWebhook(engine, httpapi.MercadoPagoSecrets{
+			Callback: cfg.MercadoPagoCallbackSecret,
+			Webhook:  cfg.MercadoPagoWebhookSecret,
+		}, httpapi.WithMercadoPagoLogger(logger)).Register(mux)
+	}
+
 	server := newServer(envOr("HTTP_ADDR", "127.0.0.1:8080"), mux)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -195,6 +236,20 @@ func main() {
 		logger.Info("barrido de reconciliación detenido")
 	case <-shutdownCtx.Done():
 		logger.Error("el barrido de reconciliación no se detuvo a tiempo")
+	}
+
+	dispatchDone := make(chan struct{})
+
+	go func() {
+		engine.Wait()
+		close(dispatchDone)
+	}()
+
+	select {
+	case <-dispatchDone:
+		logger.Info("despachos en segundo plano terminados")
+	case <-shutdownCtx.Done():
+		logger.Error("quedaron despachos en curso al apagar: el barrido los retoma al volver a arrancar")
 	}
 }
 

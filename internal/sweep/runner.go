@@ -16,10 +16,15 @@ type Sweeper interface {
 	ReconcileDue(ctx context.Context, limit int) error
 }
 
+type PaymentSweeper interface {
+	ReconcilePayments(ctx context.Context, limit int) error
+}
+
 type Option func(*Runner)
 
 type Runner struct {
 	sweeper  Sweeper
+	payments PaymentSweeper
 	logger   *slog.Logger
 	interval time.Duration
 	limit    int
@@ -37,6 +42,14 @@ func WithLimit(n int) Option {
 	return func(runner *Runner) {
 		if n > 0 {
 			runner.limit = n
+		}
+	}
+}
+
+func WithPayments(p PaymentSweeper) Option {
+	return func(runner *Runner) {
+		if p != nil {
+			runner.payments = p
 		}
 	}
 }
@@ -79,5 +92,13 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) tick(ctx context.Context) {
 	if err := r.sweeper.ReconcileDue(ctx, r.limit); err != nil {
 		r.logger.Error("falló el barrido de reconciliación", "error", err, "limit", r.limit)
+	}
+
+	if r.payments == nil {
+		return
+	}
+
+	if err := r.payments.ReconcilePayments(ctx, r.limit); err != nil {
+		r.logger.Error("falló el barrido de pagos", "error", err, "limit", r.limit)
 	}
 }
