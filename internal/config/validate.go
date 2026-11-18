@@ -65,6 +65,7 @@ func (c *Config) validate() error {
 	}
 
 	problems = append(problems, c.mercadoPagoProblems()...)
+	problems = append(problems, c.telegramProblems()...)
 
 	seen := make(map[string]struct{}, len(c.Kiosks))
 	for _, kiosk := range c.Kiosks {
@@ -119,6 +120,32 @@ func (c *Config) mercadoPagoProblems() []string {
 		if kiosk.ID != "" && kiosk.MPPosID == "" {
 			problems = append(problems, fmt.Sprintf("mueble %s: falta mp_pos_id, la caja de Mercado Pago donde se cobra", kiosk.ID))
 		}
+	}
+
+	return problems
+}
+
+func (c *Config) telegramProblems() []string {
+	if !c.TelegramEnabled() {
+		if c.Env == EnvProduction {
+			return []string{"en producción los avisos por Telegram son obligatorios: falta el token del bot (archivo o TELEGRAM_BOT_TOKEN)"}
+		}
+
+		if c.TelegramChatID != "" {
+			return []string{"Telegram está configurado a medias: hay chat_id pero falta el token del bot (archivo o TELEGRAM_BOT_TOKEN)"}
+		}
+
+		return nil
+	}
+
+	var problems []string
+
+	if c.TelegramChatID == "" {
+		problems = append(problems, "el chat de Telegram es obligatorio con el token (archivo o TELEGRAM_CHAT_ID)")
+	}
+
+	if parsed, err := url.Parse(c.TelegramBaseURL); err != nil || parsed.Host == "" {
+		problems = append(problems, fmt.Sprintf("telegram.base_url %q no es una URL absoluta con host", c.TelegramBaseURL))
 	}
 
 	return problems

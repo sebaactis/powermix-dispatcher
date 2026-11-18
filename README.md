@@ -38,7 +38,7 @@ internal/fakeapi            local Batidos, Snacks and Mercado Pago, with their r
 internal/httpapi            the four tablet endpoints and the provider callbacks, mapped onto catalog + engine + store
 internal/payments           payment Gateway port (QR charge) + Refunder port and its mock
 internal/payments/mercadopago  Orders API adapter and webhook signature check
-internal/notify             Notifier port + structured log transport
+internal/notify             Notifier port + log and Telegram transports
 internal/migrate            what is pending, in one transaction per file, under an advisory lock
 migrations                 PostgreSQL schema, embedded with `//go:embed`
 docs                       comments and rationale, kept out of the code
@@ -60,7 +60,7 @@ worse than none.
 ## Run
 
 ```bash
-go test ./...            # no tests in main: the 341 live in branch archive/tests
+go test ./...            # no tests in main: the 461 live in branch archive/tests
 go vet ./...
 go build ./...
 
@@ -199,9 +199,22 @@ variables, which override anything written in the JSON:
 | `MP_CALLBACK_SECRET` | Secret path segment of the Mercado Pago webhook; required with the token |
 | `MP_BASE_URL` | Mercado Pago API (default `https://api.mercadopago.com`; the local fake is `http://127.0.0.1:9404`) |
 
+| `TELEGRAM_BOT_TOKEN` | Token of the Telegram bot that sends the support alerts. Empty: alerts only go to the log (sandbox only; production refuses to start) |
+| `TELEGRAM_CHAT_ID` | Chat (or group) the alerts go to; required with the token |
+| `TELEGRAM_BASE_URL` | Telegram Bot API (default `https://api.telegram.org`) |
+
 Mercado Pago is all or nothing: a half configuration (secrets without token, token
 without secrets, or a kiosk without `mp_pos_id`, the `external_pos_id` of its
 Mercado Pago cash register) makes the API refuse to start.
+
+Telegram alerts (orders `in_doubt`/`failed`, payments with a wrong amount or an
+unknown state) are always written to the log first. If Telegram does not answer
+after 3 attempts the alert stays only in the log (an ERROR line) and the order or
+payment goes on: an alert channel outage never blocks a sale.
+
+To get the values: create the bot with @BotFather (`/newbot` gives the token), add
+it to the support group, send any message there and read the group's `chat.id`
+(a negative number) from `https://api.telegram.org/bot<token>/getUpdates`.
 
 Both callback secrets are optional. When a secret is empty, that callback
 endpoint answers 404: an unauthenticated machine callback never reaches the

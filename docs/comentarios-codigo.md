@@ -5,7 +5,7 @@ El código fuente no lleva comentarios a propósito: acá se consulta, se busca 
 
 Formato: `Símbolo --> "texto del comentario"`.
 
-> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 42 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/arquitectura.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
+> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 55 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/arquitectura.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
 
 ## cmd/api/main.go
 
@@ -1083,9 +1083,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Package notify aísla cómo llega una excepción hasta una persona.
 > 
-> El transporte sigue abierto (S18): hoy escribe una línea de log estructurada,
-> y más adelante se puede enchufar un emisor de Telegram o WhatsApp sin tocar el
-> motor de órdenes.
+> Hay dos transportes: `LogNotifier` escribe una línea de log estructurada y
+> `TelegramNotifier` (en `telegram.go`) además manda el mensaje a un chat de
+> soporte. El motor de órdenes sólo conoce la interfaz `Notifier`.
 
 ### Event
 
@@ -1098,6 +1098,47 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### LogNotifier
 
 > LogNotifier escribe el evento como una línea de log estructurada.
+
+## internal/notify/telegram.go
+
+### TelegramNotifier
+
+> TelegramNotifier avisa a soporte por un chat de Telegram. Siempre deja el
+> aviso en el log primero; si Telegram no responde después de varios intentos,
+> registra un ERROR y devuelve nil: un problema del canal de alertas no frena
+> órdenes ni pagos (el aviso queda sólo en el log). Decisión del 2026-11-18,
+> anotada como deuda B10 en `docs/pendientes.md`.
+>
+> Devolver nil importa por quién llama: `notifyOnce` corre dentro del callback
+> del proveedor y del procesamiento de un pago (`rejectPaidAmount` avisa antes
+> de guardar el `payment_intent`). Un error ahí bloquearía el pago hasta que
+> Telegram volviera, y en una orden ya cerrada ningún barrido reintentaría el
+> aviso.
+
+### Notify
+
+> El aviso no depende de quien lo disparó: se usa `context.WithoutCancel`
+> porque si el request del proveedor o de la tablet se corta, el mensaje igual
+> tiene que salir. Cada intento tiene su propio timeout (`telegramAttemptTimeout`,
+> 4 s) y entre intentos hay un backoff lineal corto, así el peor caso queda
+> acotado a unos 13 s.
+
+### message
+
+> Texto plano a propósito: con `parse_mode` Markdown un `_` o un `*` en un id
+> o en el detalle hace que Telegram rechace el mensaje entero. Se recorta a
+> 4000 bytes (el tope de Telegram es 4096) cuidando no partir un carácter UTF-8.
+
+### send
+
+> Devuelve si vale la pena reintentar: sí ante errores de red, 429 y 5xx; no
+> ante un token o chat inválidos (401, 400, 403), que no se arreglan solos.
+> Un 200 con `"ok": false` cuenta como falla.
+
+### redact
+
+> Saca el token de los errores: va en la URL (`/bot<token>/sendMessage`) y
+> `net/http` incluye la URL completa en los mensajes de `*url.Error`.
 
 ## internal/payments/refund.go
 

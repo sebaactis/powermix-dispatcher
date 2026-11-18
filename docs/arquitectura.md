@@ -19,7 +19,7 @@ Para consultar el estado de las tareas pendientes, deudas técnicas y bloqueos e
 ## Comandos
 
 ```bash
-go test ./...                          # en main no hay tests: los 341 (42 archivos) viven en la rama archive/tests
+go test ./...                          # en main no hay tests: los 474 (55 archivos) viven en la rama archive/tests
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -41,7 +41,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 
 ## Tests: dónde viven y cómo se usan
 
-`main` no tiene ni un archivo de test. Los 42 `*_test.go` —341 funciones— viven en la rama `archive/tests` (commit `8fc5761`), que se sube a `origin` junto con `main`. El flujo de trabajo es el siguiente:
+`main` no tiene ni un archivo de test. Los 55 `*_test.go` —474 tests— viven en la rama `archive/tests`, que se sube a `origin` junto con `main`. El flujo de trabajo es el siguiente:
 
 - **Antes de tocar comportamiento**, traer los tests con el comando `git checkout` indicado arriba. Sin ellos `go test ./...` responde `[no test files]` en todos los paquetes: la suite no existe hasta que se traen.
 - **El test nuevo va primero**, en el paquete que le corresponde y usando los ayudantes que ya usan los demás archivos de ese paquete (paquete externo `_test` cuando el test mira el borde). Se corre la suite completa, no sólo el test nuevo.
@@ -76,7 +76,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/httpapi` | El borde: **tres contratos separados** (tablet, callbacks de máquinas y webhook de Mercado Pago) | `Handler`, `Callbacks`, `MercadoPagoWebhook`, `Deps`, `BatidosCallbackURL` |
 | `internal/payments` | **El puerto** de cobro (`Gateway`: crear QR, consultar, cancelar). También el puerto de devoluciones con su mock, que sigue sin conectar (fuera del MVP) | `Gateway`, `Charge`, `ChargeStatus`, `QRRequest`, `Refunder`, `MockRefunder` |
 | `internal/payments/mercadopago` | Adaptador de la Orders API de Mercado Pago (`net/http`, sin SDK) + validación de la firma del webhook | `Client`, `VerifySignature`, `SignatureHeader` |
-| `internal/notify` | Puerto de avisos + transporte por log | `Notifier`, `Kind`, `Event` |
+| `internal/notify` | Puerto de avisos + transportes por log y por Telegram | `Notifier`, `Kind`, `Event`, `LogNotifier`, `TelegramNotifier` |
 | `internal/sweep` | Barrido periódico que dispara `ReconcileDue` y, con Mercado Pago, `ReconcilePayments` | `Runner`, `New`, `WithPayments` |
 | `internal/logging` | `slog` con mensajes capitalizados en el borde | `New`, `Capitalize` |
 | `internal/fakeapi` | Implementación de los proveedores falsos (batidos, snacks, Mercado Pago) + administración | `NewBatidos`, `NewSnacks`, `NewMercadoPago`, `NewAdmin` |
@@ -365,6 +365,8 @@ settleOrder :14
        └ NotificationSent? (:70) ── ya salió → nada
                                 └─ no → Notify (notify/notify.go:34) → RecordNotification
                                         (primero el aviso, después el registro)
+                                        Con Telegram (notify/telegram.go): log + hasta 3
+                                        envíos; si fallan, ERROR en el log y devuelve nil
 ```
 
 ## 7. Máquinas de estado (`internal/order/status.go`)

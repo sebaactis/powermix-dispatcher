@@ -19,6 +19,11 @@
     "webhook_secret": "",
     "callback_secret": ""
   },
+  "telegram": {
+    "base_url": "",
+    "bot_token": "",
+    "chat_id": ""
+  },
   "kiosks": [
     {
       "id": "kiosk-demo",

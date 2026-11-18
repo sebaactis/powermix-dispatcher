@@ -11,7 +11,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 | # | Qué falta | Qué hay hoy | Estado |
 | --- | --- | --- | --- |
 | 1 | **Cobro real con QR de Mercado Pago** | Implementado el 2026-11-18 ([diseno-mercadopago.md](diseno-mercadopago.md)): QR en `POST /orders`, webhook firmado, barrido de pagos. Probado sólo contra el Mercado Pago falso | Falta validarlo contra el sandbox real (bloqueo externo: credenciales) |
-| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt`, o un pago queda con `payment_mismatch` / `payment_unknown` | `LogNotifier` sólo escribe un WARN en el log (`internal/notify/notify.go`); la deduplicación con la tabla `notification_sent` ya funciona | Canal: WhatsApp o similar; falta elegir proveedor y escribir el adaptador |
+| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt`, o un pago queda con `payment_mismatch` / `payment_unknown` | Implementado el 2026-11-18 por Telegram (`internal/notify/telegram.go`): siempre deja el WARN en el log y después manda el mensaje al chat de soporte; obligatorio en producción. Probado sólo contra un servidor de prueba | Falta crear el bot y el grupo de soporte y probarlo contra Telegram real |
 | 3 | **Prueba de punta a punta automatizada** | Probado a mano contra el servidor local `cmd/fakeapi` | Técnico |
 
 ### Fuera del MVP
@@ -34,6 +34,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 | 7 | **`fakeapi` no puede volver una máquina de batidos a `online`** | Devuelve 501 Not Implemented; sólo afecta a pruebas locales con la superficie de administración del falso | Chica |
 | 8 | **Revisar la terminología de todo el proyecto** (archivos, tipos, funciones, opciones) | Hay nombres que no dicen qué hacen. Ejemplos: `Place` (crea la orden y chequea la disponibilidad), `WithPayments` (en `order` prende el cobro con QR; en `sweep` sólo suma el barrido de pagos; y sin él igual se cobra, con el pago simulado), `Confirmer` / `ConfirmFromCallback` / `ConfirmFromGateway` / `ConfirmPayment` (cuatro «confirmar» distintos). Cuesta leer el código sin el glosario de la cabeza | Media |
 | 9 | **Orden sin QR que queda en `pending_payment` para siempre** | Si `RequestQR` falla (502) y la tablet nunca reintenta, la orden no tiene cobro y ningún barrido la cancela. No despacha nada, pero ensucia los listados | Chica |
+| 10 | **Un aviso que Telegram rechaza 3 veces se pierde** (decisión del 2026-11-18) | Queda sólo como ERROR en el log y se registra como enviado en `notification_sent`: no hay reintento posterior. La alternativa robusta es una tabla de avisos pendientes que reintente el barrido | Media |
 
 ---
 
@@ -55,7 +56,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 - **Webhook perdido en el circuito completo**: el Mercado Pago falso siempre envía el aviso, así que «se pierde el webhook y lo recupera el barrido» sólo está cubierto por tests (`ReconcilePayments` y el `Runner`), no por una prueba de punta a punta.
 - **`go test -race`**: No corre en entornos Windows sin compilador de C configurado para cgo. La mayor parte de la concurrencia está cubierta de forma determinista mediante inyección de estados desactualizados, con la excepción del chequeo previo paralelo (`preflight/checker_parallel_test.go`).
 - **Flujo completo automatizado**: El circuito completo `POST /orders` → `pay` → callbacks → `delivered` se ha probado únicamente de forma manual contra las APIs simuladas.
-- **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 42 archivos (341 tests) residen en `archive/tests`.
+- **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 55 archivos (474 tests, contados con `go test -list` el 2026-11-18) residen en `archive/tests`. Para traer `main` a esa rama se mergea y se restauran los `*_test.go` antes de commitear: `main` los borra y un merge directo los eliminaría.
 - **Estado de Postgres y migraciones (lo que SÍ está verificado)**:
   - El store de Postgres (`internal/store/postgres`) cuenta con 27 tests que pasan exitosamente contra una instancia real de PostgreSQL cuando se define `TEST_DATABASE_URL`.
   - El ejecutor de migraciones (`internal/migrate`) ha sido probado contra Postgres real aplicando las 6 versiones sobre un esquema vacío y validando el checksum SHA-256 en `schema_migrations`.
@@ -64,7 +65,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 ## Orden recomendado
 
-1. **Alertas a soporte**: elegir el proveedor de WhatsApp (o alternativa) y escribir el adaptador del `Notifier`.
+1. **Alertas a soporte**: crear el bot de Telegram y el grupo de soporte, y probar un aviso real.
 2. **Despliegue en Render**: crear el servicio con Postgres y fijar `PUBLIC_BASE_URL`; con eso, validar Mercado Pago contra su sandbox.
 3. **Revisión de terminología** (deuda B8), antes de que el código crezca más.
 4. **Antes de producción**: Integrar los tests en `main` y configurar el pipeline de integración continua (CI).

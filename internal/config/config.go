@@ -21,6 +21,8 @@ const (
 	SnacksProductionURL = "https://ysopenapi.ourvend.com"
 
 	MercadoPagoURL = "https://api.mercadopago.com"
+
+	TelegramURL = "https://api.telegram.org"
 )
 
 type Machine struct {
@@ -73,7 +75,15 @@ type Config struct {
 	MercadoPagoWebhookSecret  string
 	MercadoPagoCallbackSecret string
 
+	TelegramBaseURL  string
+	TelegramBotToken string
+	TelegramChatID   string
+
 	Kiosks []Kiosk
+}
+
+func (c *Config) TelegramEnabled() bool {
+	return c.TelegramBotToken != ""
 }
 
 func (c *Config) MercadoPagoEnabled() bool {
@@ -101,6 +111,12 @@ type mercadoPagoFile struct {
 	CallbackSecret string `json:"callback_secret"`
 }
 
+type telegramFile struct {
+	BaseURL  string `json:"base_url"`
+	BotToken string `json:"bot_token"`
+	ChatID   string `json:"chat_id"`
+}
+
 type fileConfig struct {
 	Env           string          `json:"env"`
 	Store         string          `json:"store"`
@@ -109,6 +125,7 @@ type fileConfig struct {
 	Batidos       batidosFile     `json:"batidos"`
 	Snacks        snacksFile      `json:"snacks"`
 	MercadoPago   mercadoPagoFile `json:"mercadopago"`
+	Telegram      telegramFile    `json:"telegram"`
 	Kiosks        []Kiosk         `json:"kiosks"`
 }
 
@@ -144,6 +161,10 @@ func Load(path string) (*Config, error) {
 		MercadoPagoWebhookSecret:  file.MercadoPago.WebhookSecret,
 		MercadoPagoCallbackSecret: file.MercadoPago.CallbackSecret,
 
+		TelegramBaseURL:  strings.TrimSpace(file.Telegram.BaseURL),
+		TelegramBotToken: strings.TrimSpace(file.Telegram.BotToken),
+		TelegramChatID:   strings.TrimSpace(file.Telegram.ChatID),
+
 		Kiosks: file.Kiosks,
 	}
 
@@ -175,6 +196,9 @@ func (c *Config) applyEnvOverrides() {
 	override(&c.MercadoPagoAccessToken, "MP_ACCESS_TOKEN")
 	override(&c.MercadoPagoWebhookSecret, "MP_WEBHOOK_SECRET")
 	override(&c.MercadoPagoCallbackSecret, "MP_CALLBACK_SECRET")
+	override(&c.TelegramBaseURL, "TELEGRAM_BASE_URL")
+	override(&c.TelegramBotToken, "TELEGRAM_BOT_TOKEN")
+	override(&c.TelegramChatID, "TELEGRAM_CHAT_ID")
 }
 
 func override(target *string, envName string) {
@@ -191,6 +215,11 @@ func (c *Config) applyDefaults() {
 	c.MercadoPagoBaseURL = strings.TrimSuffix(c.MercadoPagoBaseURL, "/")
 	if c.MercadoPagoBaseURL == "" {
 		c.MercadoPagoBaseURL = MercadoPagoURL
+	}
+
+	c.TelegramBaseURL = strings.TrimSuffix(c.TelegramBaseURL, "/")
+	if c.TelegramBaseURL == "" {
+		c.TelegramBaseURL = TelegramURL
 	}
 
 	if c.SnacksBaseURL != "" {
