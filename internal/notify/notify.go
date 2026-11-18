@@ -17,6 +17,7 @@ const (
 type Event struct {
 	Kind    Kind
 	OrderID string
+	KioskID string
 	LineID  string
 	Detail  string
 }
@@ -37,6 +38,7 @@ func (l *LogNotifier) Notify(ctx context.Context, ev Event) error {
 	l.logger.WarnContext(ctx, "excepción en una orden",
 		"kind", ev.Kind,
 		"order_id", ev.OrderID,
+		"kiosk_id", ev.KioskID,
 		"line_id", ev.LineID,
 		"detail", ev.Detail,
 	)

@@ -1125,9 +1125,33 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### message
 
-> Texto plano a propósito: con `parse_mode` Markdown un `_` o un `*` en un id
-> o en el detalle hace que Telegram rechace el mensaje entero. Se recorta a
-> 4000 bytes (el tope de Telegram es 4096) cuidando no partir un carácter UTF-8.
+> Se manda con `parse_mode: "HTML"` y no con Markdown: con Markdown un `_` o
+> un `*` en un id o en el detalle hace que Telegram rechace el mensaje entero;
+> con HTML alcanza con escapar `<`, `>` y `&` (`esc`), y todo lo que viene del
+> evento pasa por ahí.
+>
+> Formato acordado el 2026-11-18: icono y título según el tipo (`kindStyles`),
+> entorno en cursiva (🚨 PRODUCCIÓN se distingue a simple vista de 🧪 sandbox),
+> mueble con su nombre de la configuración, id de orden en `<code>` para
+> copiarlo con un toque, hora, detalle en `<blockquote>` y una línea de qué
+> hacer para soporte.
+>
+> La hora usa UTC−3 fijo y no la zona del servidor: en Render el proceso corre
+> en UTC, y Argentina no tiene horario de verano. Con `time.FixedZone` además no
+> hace falta la base de zonas horarias en la imagen.
+
+### sentence
+
+> Recorta el detalle **antes** de escapar y de armar el HTML, para no partir una
+> etiqueta. El tope de 700 bytes deja margen: en el peor caso el escape
+> quintuplica (`"` → `&#34;`) y el mensaje entero sigue debajo de los 4096 de
+> Telegram. También pone la mayúscula inicial y el punto final, porque los
+> detalles del motor se escriben en minúscula y sin punto para el log.
+
+### kioskLabel
+
+> Nombre y id del mueble; si la configuración no tiene el nombre, sólo el id.
+> El evento puede venir sin mueble y entonces la línea no aparece.
 
 ### send
 
@@ -1139,6 +1163,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Saca el token de los errores: va en la URL (`/bot<token>/sendMessage`) y
 > `net/http` incluye la URL completa en los mensajes de `*url.Error`.
+
+## internal/notify/pesos.go
+
+### Pesos
+
+> Formato argentino: `$1.500,50`. Vive en `notify` porque es para textos que lee
+> una persona (el detalle de los avisos); los montos de la API y de la base
+> siguen en centavos enteros.
 
 ## internal/payments/refund.go
 
@@ -2516,6 +2548,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### notifyOnce
 
 > Lo que antes vivía dentro de `notifyOrder` —consultar el registro, avisar, anotar— salió a una función propia para que los avisos de pago (`payment_mismatch`, `payment_unknown`) usen el mismo dedupe por `(orden, tipo)` que los de despacho.
+>
+> Si el evento llega sin mueble (los avisos de pago sólo tienen el `payment_intent`), lo completa cargando la orden. Esa carga es la única que se hace sólo cuando el aviso de verdad sale (después del dedupe), y si falla el aviso sale igual sin mueble: el dato es para soporte, no puede frenar el aviso.
 
 ## internal/order/charge_test.go (rama `tests/mercadopago`)
 

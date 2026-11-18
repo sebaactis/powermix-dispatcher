@@ -11,7 +11,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 | # | Qué falta | Qué hay hoy | Estado |
 | --- | --- | --- | --- |
 | 1 | **Cobro real con QR de Mercado Pago** | Implementado el 2026-11-18 ([diseno-mercadopago.md](diseno-mercadopago.md)): QR en `POST /orders`, webhook firmado, barrido de pagos. Probado sólo contra el Mercado Pago falso | Falta validarlo contra el sandbox real (bloqueo externo: credenciales) |
-| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt`, o un pago queda con `payment_mismatch` / `payment_unknown` | Implementado el 2026-11-18 por Telegram (`internal/notify/telegram.go`): siempre deja el WARN en el log y después manda el mensaje al chat de soporte; obligatorio en producción. Probado sólo contra un servidor de prueba | Falta crear el bot y el grupo de soporte y probarlo contra Telegram real |
+| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt`, o un pago queda con `payment_mismatch` / `payment_unknown` | Implementado el 2026-11-18 por Telegram (`internal/notify/telegram.go`): siempre deja el WARN en el log y después manda el mensaje al chat de soporte, con formato HTML (tipo, entorno, mueble, orden, hora, detalle y qué hacer); obligatorio en producción. Probado contra Telegram real el 2026-11-18 con el Mercado Pago falso | Hecho; falta configurar el bot en Render al desplegar |
 | 3 | **Prueba de punta a punta automatizada** | Probado a mano contra el servidor local `cmd/fakeapi` | Técnico |
 
 ### Fuera del MVP
@@ -56,7 +56,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 - **Webhook perdido en el circuito completo**: el Mercado Pago falso siempre envía el aviso, así que «se pierde el webhook y lo recupera el barrido» sólo está cubierto por tests (`ReconcilePayments` y el `Runner`), no por una prueba de punta a punta.
 - **`go test -race`**: No corre en entornos Windows sin compilador de C configurado para cgo. La mayor parte de la concurrencia está cubierta de forma determinista mediante inyección de estados desactualizados, con la excepción del chequeo previo paralelo (`preflight/checker_parallel_test.go`).
 - **Flujo completo automatizado**: El circuito completo `POST /orders` → `pay` → callbacks → `delivered` se ha probado únicamente de forma manual contra las APIs simuladas.
-- **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 55 archivos (474 tests, contados con `go test -list` el 2026-11-18) residen en `archive/tests`. Para traer `main` a esa rama se mergea y se restauran los `*_test.go` antes de commitear: `main` los borra y un merge directo los eliminaría.
+- **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 55 archivos (479 tests, contados con `go test -list` el 2026-11-18) residen en `archive/tests`. Para traer `main` a esa rama se mergea y se restauran los `*_test.go` antes de commitear: `main` los borra y un merge directo los eliminaría.
 - **Estado de Postgres y migraciones (lo que SÍ está verificado)**:
   - El store de Postgres (`internal/store/postgres`) cuenta con 27 tests que pasan exitosamente contra una instancia real de PostgreSQL cuando se define `TEST_DATABASE_URL`.
   - El ejecutor de migraciones (`internal/migrate`) ha sido probado contra Postgres real aplicando las 6 versiones sobre un esquema vacío y validando el checksum SHA-256 en `schema_migrations`.
@@ -65,7 +65,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 ## Orden recomendado
 
-1. **Alertas a soporte**: crear el bot de Telegram y el grupo de soporte, y probar un aviso real.
+1. ~~**Alertas a soporte**~~: hecho el 2026-11-18 (Telegram).
 2. **Despliegue en Render**: crear el servicio con Postgres y fijar `PUBLIC_BASE_URL`; con eso, validar Mercado Pago contra su sandbox.
 3. **Revisión de terminología** (deuda B8), antes de que el código crezca más.
 4. **Antes de producción**: Integrar los tests en `main` y configurar el pipeline de integración continua (CI).
