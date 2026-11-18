@@ -107,7 +107,14 @@ func main() {
 
 	var notifier notify.Notifier = notify.NewLog(logger)
 	if cfg.TelegramEnabled() {
-		notifier = notify.NewTelegram(logger, cfg.TelegramBaseURL, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.Env)
+		kioskNames := make(map[string]string, len(cfg.Kiosks))
+		for _, kiosk := range cfg.Kiosks {
+			kioskNames[kiosk.ID] = kiosk.Name
+		}
+
+		notifier = notify.NewTelegram(logger, cfg.TelegramBaseURL, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.Env,
+			notify.WithTelegramKiosks(kioskNames),
+		)
 		logger.Info("avisos a soporte por Telegram activos", "base_url", cfg.TelegramBaseURL)
 	} else {
 		logger.Warn("Telegram no está configurado: los avisos a soporte quedan sólo en el log",

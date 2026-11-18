@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const TelegramURL = "https://api.telegram.org"
@@ -20,16 +23,24 @@ const (
 	telegramAttemptTimeout = 4 * time.Second
 	telegramBackoff        = 500 * time.Millisecond
 
-	telegramMaxText          = 4000
+	telegramMaxDetail        = 700
 	telegramMaxResponseBytes = 64 << 10
 	telegramMaxErrorMessage  = 200
 )
 
-var kindTitles = map[Kind]string{
-	KindOrderInDoubt:    "Orden en duda",
-	KindOrderFailed:     "Orden fallida",
-	KindPaymentMismatch: "Pago con monto distinto",
-	KindPaymentUnknown:  "Pago en estado desconocido",
+var argentina = time.FixedZone("ART", -3*60*60)
+
+type kindStyle struct {
+	icon   string
+	title  string
+	action string
+}
+
+var kindStyles = map[Kind]kindStyle{
+	KindOrderFailed:     {"🔴", "Orden fallida", "El proveedor informó que no entregó: contactar al cliente."},
+	KindOrderInDoubt:    {"🟡", "Orden en duda", "No se pudo confirmar la entrega: verificar en la máquina si salió el producto."},
+	KindPaymentMismatch: {"🟠", "Pago con monto distinto", "Revisar el cobro en Mercado Pago y devolver o completar la diferencia a mano."},
+	KindPaymentUnknown:  {"🟣", "Pago en estado desconocido", "Revisar el cobro en el panel de Mercado Pago: no se despachó ni se canceló."},
 }
 
 type TelegramOption func(*TelegramNotifier)
@@ -38,6 +49,20 @@ func WithTelegramHTTPClient(httpClient *http.Client) TelegramOption {
 	return func(t *TelegramNotifier) {
 		if httpClient != nil {
 			t.httpClient = httpClient
+		}
+	}
+}
+
+func WithTelegramKiosks(names map[string]string) TelegramOption {
+	return func(t *TelegramNotifier) {
+		t.kioskNames = names
+	}
+}
+
+func WithTelegramClock(now func() time.Time) TelegramOption {
+	return func(t *TelegramNotifier) {
+		if now != nil {
+			t.now = now
 		}
 	}
 }
@@ -57,6 +82,8 @@ type TelegramNotifier struct {
 	env        string
 	httpClient *http.Client
 	backoff    time.Duration
+	kioskNames map[string]string
+	now        func() time.Time
 }
 
 func NewTelegram(logger *slog.Logger, baseURL, token, chatID, env string, opts ...TelegramOption) *TelegramNotifier {
@@ -73,6 +100,7 @@ func NewTelegram(logger *slog.Logger, baseURL, token, chatID, env string, opts .
 		env:        env,
 		httpClient: &http.Client{Timeout: telegramAttemptTimeout},
 		backoff:    telegramBackoff,
+		now:        time.Now,
 	}
 
 	for _, opt := range opts {
@@ -111,28 +139,76 @@ func (t *TelegramNotifier) Notify(ctx context.Context, ev Event) error {
 }
 
 func (t *TelegramNotifier) message(ev Event) string {
-	title, ok := kindTitles[ev.Kind]
+	style, ok := kindStyles[ev.Kind]
 	if !ok {
-		title = string(ev.Kind)
+		style = kindStyle{icon: "⚠️", title: string(ev.Kind)}
+	}
+
+	env := "🧪 " + t.env
+	if t.env == "production" {
+		env = "🚨 PRODUCCIÓN"
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "⚠️ compras-remotas [%s]\n%s\nOrden: %s\n", t.env, title, ev.OrderID)
-	if ev.LineID != "" {
-		fmt.Fprintf(&b, "Línea: %s\n", ev.LineID)
-	}
-	b.WriteString(ev.Detail)
+	fmt.Fprintf(&b, "%s <b>%s</b>\n", style.icon, esc(style.title))
+	fmt.Fprintf(&b, "<i>%s · compras-remotas</i>\n\n", esc(env))
 
-	text := b.String()
-	if len(text) > telegramMaxText {
-		text = strings.ToValidUTF8(text[:telegramMaxText], "") + "…"
+	if kiosk := t.kioskLabel(ev.KioskID); kiosk != "" {
+		fmt.Fprintf(&b, "📍 %s\n", esc(kiosk))
 	}
-	return text
+	fmt.Fprintf(&b, "🧾 Orden: <code>%s</code>\n", esc(ev.OrderID))
+	if ev.LineID != "" {
+		fmt.Fprintf(&b, "🔹 Línea: <code>%s</code>\n", esc(ev.LineID))
+	}
+	fmt.Fprintf(&b, "🕒 %s (hora Argentina)\n", t.now().In(argentina).Format("02/01/2006 15:04"))
+
+	if detail := sentence(ev.Detail); detail != "" {
+		fmt.Fprintf(&b, "\n<blockquote>%s</blockquote>\n", esc(detail))
+	}
+
+	if style.action != "" {
+		fmt.Fprintf(&b, "\n👉 %s", esc(style.action))
+	}
+
+	return b.String()
+}
+
+func (t *TelegramNotifier) kioskLabel(id string) string {
+	if id == "" {
+		return ""
+	}
+	if name := t.kioskNames[id]; name != "" {
+		return name + " (" + id + ")"
+	}
+	return id
+}
+
+func sentence(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if len(detail) > telegramMaxDetail {
+		detail = strings.ToValidUTF8(detail[:telegramMaxDetail], "") + "…"
+	}
+	if detail == "" {
+		return ""
+	}
+
+	first, size := utf8.DecodeRuneInString(detail)
+	detail = string(unicode.ToUpper(first)) + detail[size:]
+
+	if !strings.HasSuffix(detail, ".") && !strings.HasSuffix(detail, "…") {
+		detail += "."
+	}
+	return detail
+}
+
+func esc(s string) string {
+	return html.EscapeString(s)
 }
 
 type sendMessageBody struct {
 	ChatID                string `json:"chat_id"`
 	Text                  string `json:"text"`
+	ParseMode             string `json:"parse_mode"`
 	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
 }
 
@@ -143,7 +219,7 @@ type telegramResponse struct {
 }
 
 func (t *TelegramNotifier) send(ctx context.Context, text string) (bool, error) {
-	raw, err := json.Marshal(sendMessageBody{ChatID: t.chatID, Text: text, DisableWebPagePreview: true})
+	raw, err := json.Marshal(sendMessageBody{ChatID: t.chatID, Text: text, ParseMode: "HTML", DisableWebPagePreview: true})
 	if err != nil {
 		return false, fmt.Errorf("telegram: no se pudo serializar el mensaje: %w", err)
 	}
