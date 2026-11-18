@@ -19,6 +19,28 @@ type orderResponse struct {
 	PaidAt      *time.Time        `json:"paid_at,omitempty"`
 	ClosedAt    *time.Time        `json:"closed_at,omitempty"`
 	Lines       []lineResponse    `json:"lines"`
+	Payment     *paymentResponse  `json:"payment,omitempty"`
+}
+
+type paymentResponse struct {
+	Status    store.PaymentStatus `json:"status"`
+	QRData    string              `json:"qr_data,omitempty"`
+	ExpiresAt *time.Time          `json:"expires_at,omitempty"`
+}
+
+func newPaymentResponse(intent store.PaymentIntent) *paymentResponse {
+	response := &paymentResponse{Status: intent.Status}
+
+	if intent.Status == store.PaymentPending {
+		response.QRData = intent.QRData
+	}
+
+	if !intent.ExpiresAt.IsZero() {
+		expiresAt := intent.ExpiresAt
+		response.ExpiresAt = &expiresAt
+	}
+
+	return response
 }
 
 type lineResponse struct {

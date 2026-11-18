@@ -16,6 +16,8 @@ var ErrPaymentsDisabled = errors.New("el cobro con QR no está configurado")
 
 var ErrNotPayable = errors.New("la orden no está esperando el pago")
 
+var ErrQRUnavailable = errors.New("el proveedor de pagos no pudo crear el QR")
+
 func (e *Engine) RequestQR(ctx context.Context, orderID, posID string) (store.PaymentIntent, error) {
 	if e.payments == nil {
 		return store.PaymentIntent{}, ErrPaymentsDisabled
@@ -52,7 +54,7 @@ func (e *Engine) RequestQR(ctx context.Context, orderID, posID string) (store.Pa
 		ExpiresIn:   e.qrExpiry,
 	})
 	if err != nil {
-		return store.PaymentIntent{}, fmt.Errorf("orden %s: no se pudo crear el QR: %w", orderID, err)
+		return store.PaymentIntent{}, fmt.Errorf("%w: orden %s: %w", ErrQRUnavailable, orderID, err)
 	}
 
 	intent := store.PaymentIntent{
