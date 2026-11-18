@@ -25,6 +25,7 @@ const publicBaseConfig = `{
     {
       "id": "kiosco-demo",
       "name": "Mueble demo",
+      "mp_pos_id": "POS-1",
       "machines": [
         {"type": "batidos", "name": "Batidos", "device_id": "d1", "device_no": "n1", "device_type_id": "t1"},
         {"type": "snacks", "name": "Snacks", "mid": "M1"}
@@ -90,6 +91,7 @@ func configWithPublicBase(t *testing.T, env, baseURL, batidosSecret string) stri
     {
       "id": "kiosco-demo",
       "name": "Mueble demo",
+      "mp_pos_id": "POS-1",
       "machines": [
         {"type": "batidos", "name": "Batidos", "device_id": "d1", "device_no": "n1", "device_type_id": "t1"},
         {"type": "snacks", "name": "Snacks", "mid": "M1"}
@@ -158,6 +160,10 @@ func TestConfigRejectsACallbackSecretThatBreaksTheRoute(t *testing.T) {
 }
 
 func TestConfigAcceptsACallbackSecretMadeOfPathSafeCharacters(t *testing.T) {
+	t.Setenv("MP_ACCESS_TOKEN", "TEST-token")
+	t.Setenv("MP_WEBHOOK_SECRET", "whsec")
+	t.Setenv("MP_CALLBACK_SECRET", "mp-callback")
+
 	cfg, err := config.Load(writeConfig(t, configWithPublicBase(t, config.EnvProduction, "https://api.example.com", "Kiosco-01_abc.XYZ")))
 	if err != nil {
 		t.Fatalf("un secreto con letras, números, guiones y punto debe servir: %v", err)

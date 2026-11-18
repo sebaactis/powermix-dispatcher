@@ -17,6 +17,7 @@ const validConfig = `{
     {
       "id": "kiosk-1",
       "name": "Mueble 1",
+      "mp_pos_id": "POS-1",
       "machines": [
         { "type": "batidos", "name": "Batidos", "device_id": "dev-1", "device_no": "devno-1", "device_type_id": "dt-1" },
         { "type": "snacks", "name": "Snacks", "mid": "mid-1" }
@@ -24,6 +25,14 @@ const validConfig = `{
     }
   ]
 }`
+
+func setMercadoPagoEnv(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("MP_ACCESS_TOKEN", "TEST-token")
+	t.Setenv("MP_WEBHOOK_SECRET", "whsec")
+	t.Setenv("MP_CALLBACK_SECRET", "mp-callback")
+}
 
 func writeTempConfig(t *testing.T, body string) string {
 	t.Helper()
@@ -63,6 +72,7 @@ func TestLoadAppliesSandboxDefaultAndEnvSecrets(t *testing.T) {
 
 func TestLoadUsesProductionURLWhenEnvironmentIsProduction(t *testing.T) {
 	body := strings.Replace(validConfig, `"env": "sandbox"`, `"env": "production"`, 1)
+	setMercadoPagoEnv(t)
 
 	cfg, err := Load(writeTempConfig(t, body))
 	if err != nil {

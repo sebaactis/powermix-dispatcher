@@ -20,7 +20,7 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	batidosFake := NewBatidos("mykey", "mysecret")
 	snacksFake := NewSnacks("ak_test", "testsecret")
 
-	return &adminFixture{batidos: batidosFake, snacks: snacksFake, handler: NewAdmin(batidosFake, snacksFake)}
+	return &adminFixture{batidos: batidosFake, snacks: snacksFake, handler: NewAdmin(batidosFake, snacksFake, nil)}
 }
 
 func (f *adminFixture) call(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
