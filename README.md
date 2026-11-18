@@ -60,7 +60,7 @@ worse than none.
 ## Run
 
 ```bash
-go test ./...            # no tests in main: the 341 live in branch archive/tests
+go test ./...            # no tests in main: the 461 live in branch archive/tests
 go vet ./...
 go build ./...
 

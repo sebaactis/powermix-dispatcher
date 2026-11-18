@@ -19,7 +19,7 @@ Para consultar el estado de las tareas pendientes, deudas técnicas y bloqueos e
 ## Comandos
 
 ```bash
-go test ./...                          # en main no hay tests: los 341 (42 archivos) viven en la rama archive/tests
+go test ./...                          # en main no hay tests: los 461 (53 archivos) viven en la rama archive/tests
 go test ./... -race                    # NO corre en esta máquina (sin compilador de C)
 gofmt -l . && go vet ./... && go build ./...
 
@@ -41,7 +41,7 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 
 ## Tests: dónde viven y cómo se usan
 
-`main` no tiene ni un archivo de test. Los 42 `*_test.go` —341 funciones— viven en la rama `archive/tests` (commit `8fc5761`), que se sube a `origin` junto con `main`. El flujo de trabajo es el siguiente:
+`main` no tiene ni un archivo de test. Los 53 `*_test.go` —461 tests— viven en la rama `archive/tests`, que se sube a `origin` junto con `main`. El flujo de trabajo es el siguiente:
 
 - **Antes de tocar comportamiento**, traer los tests con el comando `git checkout` indicado arriba. Sin ellos `go test ./...` responde `[no test files]` en todos los paquetes: la suite no existe hasta que se traen.
 - **El test nuevo va primero**, en el paquete que le corresponde y usando los ayudantes que ya usan los demás archivos de ese paquete (paquete externo `_test` cuando el test mira el borde). Se corre la suite completa, no sólo el test nuevo.

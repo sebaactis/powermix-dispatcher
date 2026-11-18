@@ -55,7 +55,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 - **Webhook perdido en el circuito completo**: el Mercado Pago falso siempre envía el aviso, así que «se pierde el webhook y lo recupera el barrido» sólo está cubierto por tests (`ReconcilePayments` y el `Runner`), no por una prueba de punta a punta.
 - **`go test -race`**: No corre en entornos Windows sin compilador de C configurado para cgo. La mayor parte de la concurrencia está cubierta de forma determinista mediante inyección de estados desactualizados, con la excepción del chequeo previo paralelo (`preflight/checker_parallel_test.go`).
 - **Flujo completo automatizado**: El circuito completo `POST /orders` → `pay` → callbacks → `delivered` se ha probado únicamente de forma manual contra las APIs simuladas.
-- **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 42 archivos (341 tests) residen en `archive/tests`.
+- **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 53 archivos (461 tests, contados con `go test -list` el 2026-11-18) residen en `archive/tests`. Para traer `main` a esa rama se mergea y se restauran los `*_test.go` antes de commitear: `main` los borra y un merge directo los eliminaría.
 - **Estado de Postgres y migraciones (lo que SÍ está verificado)**:
   - El store de Postgres (`internal/store/postgres`) cuenta con 27 tests que pasan exitosamente contra una instancia real de PostgreSQL cuando se define `TEST_DATABASE_URL`.
   - El ejecutor de migraciones (`internal/migrate`) ha sido probado contra Postgres real aplicando las 6 versiones sobre un esquema vacío y validando el checksum SHA-256 en `schema_migrations`.
