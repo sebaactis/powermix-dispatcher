@@ -34,6 +34,13 @@ func setMercadoPagoEnv(t *testing.T) {
 	t.Setenv("MP_CALLBACK_SECRET", "mp-callback")
 }
 
+func setTelegramEnv(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("TELEGRAM_BOT_TOKEN", "123:bot-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "-100123")
+}
+
 func writeTempConfig(t *testing.T, body string) string {
 	t.Helper()
 
@@ -73,6 +80,7 @@ func TestLoadAppliesSandboxDefaultAndEnvSecrets(t *testing.T) {
 func TestLoadUsesProductionURLWhenEnvironmentIsProduction(t *testing.T) {
 	body := strings.Replace(validConfig, `"env": "sandbox"`, `"env": "production"`, 1)
 	setMercadoPagoEnv(t)
+	setTelegramEnv(t)
 
 	cfg, err := Load(writeTempConfig(t, body))
 	if err != nil {

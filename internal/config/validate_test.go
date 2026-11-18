@@ -163,6 +163,8 @@ func TestConfigAcceptsACallbackSecretMadeOfPathSafeCharacters(t *testing.T) {
 	t.Setenv("MP_ACCESS_TOKEN", "TEST-token")
 	t.Setenv("MP_WEBHOOK_SECRET", "whsec")
 	t.Setenv("MP_CALLBACK_SECRET", "mp-callback")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "123:bot-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "-100123")
 
 	cfg, err := config.Load(writeConfig(t, configWithPublicBase(t, config.EnvProduction, "https://api.example.com", "Kiosco-01_abc.XYZ")))
 	if err != nil {
