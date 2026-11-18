@@ -19,6 +19,8 @@ const (
 
 	SnacksSandboxURL    = "http://47.110.236.144:5130"
 	SnacksProductionURL = "https://ysopenapi.ourvend.com"
+
+	MercadoPagoURL = "https://api.mercadopago.com"
 )
 
 type Machine struct {
@@ -35,6 +37,7 @@ type Machine struct {
 type Kiosk struct {
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
+	MPPosID  string    `json:"mp_pos_id"`
 	Machines []Machine `json:"machines"`
 }
 
@@ -65,7 +68,16 @@ type Config struct {
 	SnacksAppSecret      string
 	SnacksCallbackSecret string
 
+	MercadoPagoBaseURL        string
+	MercadoPagoAccessToken    string
+	MercadoPagoWebhookSecret  string
+	MercadoPagoCallbackSecret string
+
 	Kiosks []Kiosk
+}
+
+func (c *Config) MercadoPagoEnabled() bool {
+	return c.MercadoPagoAccessToken != ""
 }
 
 type batidosFile struct {
@@ -82,14 +94,22 @@ type snacksFile struct {
 	CallbackSecret string `json:"callback_secret"`
 }
 
+type mercadoPagoFile struct {
+	BaseURL        string `json:"base_url"`
+	AccessToken    string `json:"access_token"`
+	WebhookSecret  string `json:"webhook_secret"`
+	CallbackSecret string `json:"callback_secret"`
+}
+
 type fileConfig struct {
-	Env           string      `json:"env"`
-	Store         string      `json:"store"`
-	DatabaseURL   string      `json:"database_url"`
-	PublicBaseURL string      `json:"public_base_url"`
-	Batidos       batidosFile `json:"batidos"`
-	Snacks        snacksFile  `json:"snacks"`
-	Kiosks        []Kiosk     `json:"kiosks"`
+	Env           string          `json:"env"`
+	Store         string          `json:"store"`
+	DatabaseURL   string          `json:"database_url"`
+	PublicBaseURL string          `json:"public_base_url"`
+	Batidos       batidosFile     `json:"batidos"`
+	Snacks        snacksFile      `json:"snacks"`
+	MercadoPago   mercadoPagoFile `json:"mercadopago"`
+	Kiosks        []Kiosk         `json:"kiosks"`
 }
 
 func Load(path string) (*Config, error) {
@@ -118,7 +138,13 @@ func Load(path string) (*Config, error) {
 		SnacksAccessKey:       file.Snacks.AccessKey,
 		SnacksAppSecret:       file.Snacks.AppSecret,
 		SnacksCallbackSecret:  file.Snacks.CallbackSecret,
-		Kiosks:                file.Kiosks,
+
+		MercadoPagoBaseURL:        strings.TrimSpace(file.MercadoPago.BaseURL),
+		MercadoPagoAccessToken:    file.MercadoPago.AccessToken,
+		MercadoPagoWebhookSecret:  file.MercadoPago.WebhookSecret,
+		MercadoPagoCallbackSecret: file.MercadoPago.CallbackSecret,
+
+		Kiosks: file.Kiosks,
 	}
 
 	cfg.applyEnvOverrides()
@@ -145,6 +171,10 @@ func (c *Config) applyEnvOverrides() {
 	override(&c.SnacksAppSecret, "SNACKS_APP_SECRET")
 	override(&c.BatidosCallbackSecret, "BATIDOS_CALLBACK_SECRET")
 	override(&c.SnacksCallbackSecret, "SNACKS_CALLBACK_SECRET")
+	override(&c.MercadoPagoBaseURL, "MP_BASE_URL")
+	override(&c.MercadoPagoAccessToken, "MP_ACCESS_TOKEN")
+	override(&c.MercadoPagoWebhookSecret, "MP_WEBHOOK_SECRET")
+	override(&c.MercadoPagoCallbackSecret, "MP_CALLBACK_SECRET")
 }
 
 func override(target *string, envName string) {
@@ -156,6 +186,11 @@ func override(target *string, envName string) {
 func (c *Config) applyDefaults() {
 	if c.Store == "" {
 		c.Store = StoreMemory
+	}
+
+	c.MercadoPagoBaseURL = strings.TrimSuffix(c.MercadoPagoBaseURL, "/")
+	if c.MercadoPagoBaseURL == "" {
+		c.MercadoPagoBaseURL = MercadoPagoURL
 	}
 
 	if c.SnacksBaseURL != "" {

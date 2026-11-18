@@ -13,10 +13,17 @@
     "app_secret": "replace-me",
     "callback_secret": "replace-me"
   },
+  "mercadopago": {
+    "base_url": "",
+    "access_token": "",
+    "webhook_secret": "",
+    "callback_secret": ""
+  },
   "kiosks": [
     {
       "id": "kiosk-demo",
       "name": "Mueble demo",
+      "mp_pos_id": "",
       "machines": [
         {
           "type": "batidos",
