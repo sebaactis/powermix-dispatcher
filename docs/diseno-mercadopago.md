@@ -22,7 +22,7 @@ Para el contexto general, consulta [arquitectura.md](arquitectura.md); para el e
 | 3 | **Si Mercado Pago dice que se pagó, se despacha**, aunque haya pasado el plazo | Sin devoluciones en el MVP, cobrar sin entregar es el peor resultado |
 | 4 | **El monto pagado se compara con el del catálogo**; si no coincide, no se despacha y se avisa a soporte | Invariante 1: el precio sale del catálogo |
 | 5 | **Una aplicación de Mercado Pago propia** para compras-remotas | El webhook es uno por aplicación; compartirla mezclaría avisos de otros sistemas |
-| 6 | **El webhook responde enseguida y el despacho corre en segundo plano** | `ConfirmPayment` puede tardar hasta 2 min y Mercado Pago reintenta si no respondemos rápido |
+| 6 | **El webhook responde enseguida y el despacho corre en segundo plano** | `MarkPaid` puede tardar hasta 2 min y Mercado Pago reintenta si no respondemos rápido |
 | 7 | **Secreto en la ruta además de la firma** | Misma defensa que los callbacks de batidos y snacks |
 | 8 | **La tablet consulta `GET /orders/{id}` cada 2 s** | Suficiente para el MVP; no hace falta SSE ni WebSocket |
 
@@ -56,7 +56,7 @@ Validación en dos capas:
 1. **Firma** y `ts` dentro de una ventana de 5 minutos → prueba que el aviso viene de Mercado Pago. Si falla, 401.
 2. **`GET /v1/orders/{data.id}`** → prueba qué pasó de verdad: estado, monto pagado y `external_reference`. La firma no cubre el cuerpo, así que el cuerpo no se usa.
 
-La deduplicación no hace falta: `ConfirmPayment` ignora una orden que ya no está en `pending_payment`.
+La deduplicación no hace falta: `MarkPaid` ignora una orden que ya no está en `pending_payment`.
 
 ## Piezas
 
@@ -98,16 +98,16 @@ En `internal/fakeapi`, puerto 9404: crea, consulta y cancela órdenes, y envía 
 | Método | Qué hace |
 | --- | --- |
 | `RequestQR(orderID, posID)` | Idempotente: si hay un QR pendiente lo devuelve; si no, lo crea en Mercado Pago (clave de idempotencia = id de orden) y lo guarda |
-| `ConfirmFromGateway(providerID)` | `Lookup` → verifica `external_reference` y que sea el cobro guardado de esa orden → aprobada y monto correcto: marca pagada y despacha en segundo plano. Monto distinto: no despacha, la orden queda en `pending_payment`, el pago en `amount_mismatch` y se avisa `payment_mismatch`. Estado desconocido: avisa `payment_unknown` y no toca nada |
-| `ReconcilePayments(limit)` | En el barrido, sobre QR pendientes de más de 10 s: aprobada → mismo camino que el webhook; vencida o cancelada → cancela la orden; pendiente y pasado `expires_at` + 30 s → `Cancel` en Mercado Pago y se obedece la respuesta |
+| `SyncPayment(providerID)` | `Lookup` → verifica `external_reference` y que sea el cobro guardado de esa orden → aprobada y monto correcto: marca pagada y despacha en segundo plano. Monto distinto: no despacha, la orden queda en `pending_payment`, el pago en `amount_mismatch` y se avisa `payment_mismatch`. Estado desconocido: avisa `payment_unknown` y no toca nada |
+| `SyncPendingPayments(limit)` | En el barrido, sobre QR pendientes de más de 10 s: aprobada → mismo camino que el webhook; vencida o cancelada → cancela la orden; pendiente y pasado `expires_at` + 30 s → `Cancel` en Mercado Pago y se obedece la respuesta |
 
-Las escrituras van siempre en el orden **primero el efecto, después el pago**: si el proceso muere entre las dos, el pago sigue `pending` y el barrido completa lo que faltó. Si el proceso muere después de marcar pagada y antes de despachar, el barrido existente (`resumeStalledLine`) retoma las líneas `pending`. Si muere antes de marcar pagada, `ReconcilePayments` encuentra el QR aprobado.
+Las escrituras van siempre en el orden **primero el efecto, después el pago**: si el proceso muere entre las dos, el pago sigue `pending` y el barrido completa lo que faltó. Si el proceso muere después de marcar pagada y antes de despachar, el barrido existente (`resumeStalledLine`) retoma las líneas `pending`. Si muere antes de marcar pagada, `SyncPendingPayments` encuentra el QR aprobado.
 
 ### HTTP
 
-- `POST /orders` = `Place` + `RequestQR`. La respuesta suma `"payment": {"status", "qr_data", "expires_at"}`. Si Mercado Pago falla: 502, y la tablet reintenta con el mismo `client_key` sin duplicar orden ni QR.
+- `POST /orders` = `CreateOrder` + `RequestQR`. La respuesta suma `"payment": {"status", "qr_data", "expires_at"}`. Si Mercado Pago falla: 502, y la tablet reintenta con el mismo `client_key` sin duplicar orden ni QR.
 - `GET /orders/{id}` incluye el mismo bloque `payment`.
-- `POST /callbacks/mercadopago/{secret}`: secreto de ruta → firma → `type == order` → `ConfirmFromGateway` → 200.
+- `POST /callbacks/mercadopago/{secret}`: secreto de ruta → firma → `type == order` → `SyncPayment` → 200.
 - `POST /orders/{id}/pay` sigue sólo en `sandbox`.
 
 ### Configuración
@@ -120,7 +120,7 @@ Las escrituras van siempre en el orden **primero el efecto, después el pago**: 
 
 1. Migración `0007` + store (memoria y Postgres).
 2. Puerto + adaptador de Mercado Pago + firma + Mercado Pago falso.
-3. Motor: `RequestQR`, `ConfirmFromGateway`, `ReconcilePayments`.
+3. Motor: `RequestQR`, `SyncPayment`, `SyncPendingPayments`.
 4. HTTP + configuración + wiring en `cmd/api`.
 5. Documentación.
 

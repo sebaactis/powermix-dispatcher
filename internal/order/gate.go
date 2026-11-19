@@ -9,7 +9,7 @@ import (
 
 var ErrNotSellable = errors.New("el combo no se puede vender ahora")
 
-type Gate interface {
+type AvailabilityChecker interface {
 	Check(ctx context.Context, draft Draft) error
 }
 
@@ -29,7 +29,7 @@ func (e *NotSellableError) Unwrap() error {
 	return ErrNotSellable
 }
 
-func WithGate(g Gate) Option {
+func WithAvailabilityChecker(g AvailabilityChecker) Option {
 	return func(engine *Engine) {
 		if g != nil {
 			engine.gate = g

@@ -9,8 +9,8 @@ import (
 	"compras-remotas/internal/store"
 )
 
-func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Time) error {
-	loaded, started, err := e.markPaid(ctx, orderID, at)
+func (e *Engine) MarkPaid(ctx context.Context, orderID string, at time.Time) error {
+	loaded, started, err := e.claimPaid(ctx, orderID, at)
 	if err != nil || !started {
 		return err
 	}
@@ -18,7 +18,7 @@ func (e *Engine) ConfirmPayment(ctx context.Context, orderID string, at time.Tim
 	return e.dispatchLines(context.WithoutCancel(ctx), orderID, loaded.Lines)
 }
 
-func (e *Engine) markPaid(ctx context.Context, orderID string, at time.Time) (store.Order, bool, error) {
+func (e *Engine) claimPaid(ctx context.Context, orderID string, at time.Time) (store.Order, bool, error) {
 	loaded, err := e.store.LoadOrder(ctx, orderID)
 	if err != nil {
 		return store.Order{}, false, err

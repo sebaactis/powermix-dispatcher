@@ -35,7 +35,7 @@ type Callback struct {
 	Reason       string
 }
 
-func (e *Engine) CloseFromCallback(ctx context.Context, cb Callback) (duplicate bool, err error) {
+func (e *Engine) ApplyCallback(ctx context.Context, cb Callback) (duplicate bool, err error) {
 	line, duplicate, err := e.beginCallback(ctx, cb)
 	if err != nil {
 		return duplicate, err
@@ -45,14 +45,14 @@ func (e *Engine) CloseFromCallback(ctx context.Context, cb Callback) (duplicate 
 		return e.recordCallback(ctx, cb, e.settleOrder(ctx, cb.OrderID))
 	}
 
-	if err := errors.Join(e.applyCallback(ctx, line, cb), e.settleOrder(ctx, cb.OrderID)); err != nil {
+	if err := errors.Join(e.applyLineCallback(ctx, line, cb), e.settleOrder(ctx, cb.OrderID)); err != nil {
 		return false, err
 	}
 
 	return e.recordCallback(ctx, cb, nil)
 }
 
-func (e *Engine) ConfirmFromCallback(ctx context.Context, cb Callback) (duplicate bool, err error) {
+func (e *Engine) SyncLineFromCallback(ctx context.Context, cb Callback) (duplicate bool, err error) {
 	line, duplicate, err := e.beginCallback(ctx, cb)
 	if err != nil {
 		return duplicate, err
@@ -202,7 +202,7 @@ func lineClosed(line store.Line) bool {
 	return line.State == linestate.Delivered || line.State == linestate.Failed
 }
 
-func (e *Engine) applyCallback(ctx context.Context, line store.Line, cb Callback) error {
+func (e *Engine) applyLineCallback(ctx context.Context, line store.Line, cb Callback) error {
 	line = adoptRef(line, cb)
 
 	switch cb.State {

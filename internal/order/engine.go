@@ -40,7 +40,7 @@ type Engine struct {
 	reconcileInterval time.Duration
 	maxAttempts       int
 	notifier          notify.Notifier
-	gate              Gate
+	gate              AvailabilityChecker
 	newID             func() string
 	payments          payments.Gateway
 	paymentProvider   string
@@ -131,7 +131,7 @@ func WithIDGenerator(newID func() string) Option {
 	}
 }
 
-func WithPayments(provider string, gateway payments.Gateway) Option {
+func WithQRPayments(provider string, gateway payments.Gateway) Option {
 	return func(engine *Engine) {
 		if provider != "" && gateway != nil {
 			engine.paymentProvider = provider

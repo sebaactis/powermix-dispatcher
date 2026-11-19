@@ -32,7 +32,7 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	placed, err := h.placer.Place(r.Context(), draft)
+	placed, err := h.creator.CreateOrder(r.Context(), draft)
 	if err != nil {
 		fail(w, r, h.logger, err)
 		return
@@ -40,8 +40,8 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 
 	response := newOrderResponse(placed)
 
-	if h.charger != nil {
-		intent, err := h.charger.RequestQR(r.Context(), placed.ID, kiosk.MPPosID)
+	if h.qrRequester != nil {
+		intent, err := h.qrRequester.RequestQR(r.Context(), placed.ID, kiosk.MPPosID)
 		if err != nil {
 			fail(w, r, h.logger, err)
 			return
@@ -84,7 +84,7 @@ func (h *Handler) payOrder(w http.ResponseWriter, r *http.Request) {
 
 	orderID := r.PathValue("id")
 
-	if err := h.confirmer.ConfirmPayment(r.Context(), orderID, h.now()); err != nil {
+	if err := h.paidMarker.MarkPaid(r.Context(), orderID, h.now()); err != nil {
 		loaded, readErr := h.orders.LoadOrder(r.Context(), orderID)
 		if readErr != nil {
 			fail(w, r, h.logger, errors.Join(err, readErr))

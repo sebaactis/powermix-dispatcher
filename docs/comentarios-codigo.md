@@ -1510,13 +1510,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Store
 
-> `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `DueLines` responde la pregunta del worker: qué venció. `StalledLines` responde la otra: qué quedó `pending` sin que nadie sepa si se llegó a llamar.
+> `CreateOrder`/`LoadOrder` mueven la orden entera con sus líneas, porque las líneas nacen sólo junto a su orden. `SaveOrder` toca únicamente la cabecera. `SaveLine` actualiza una línea suelta —lo que hace el worker al vencer un plazo— y nunca crea: una línea sin orden sería un producto sin quien lo pague. `RegisterWebhook` responde «¿es nuevo?», que es justo lo que el handler necesita. `OverdueLines` responde la pregunta del worker: qué venció. `StalledLines` responde la otra: qué quedó `pending` sin que nadie sepa si se llegó a llamar.
 >
 > `SaveLine` recibe una línea con su versión y **devuelve la línea persistida con la versión nueva**: es un guardado condicional, no un reemplazo. Si la versión recibida no es la que tiene el store, devuelve `ErrStale` y no escribe nada; si coincide, guarda con `Version+1`. Devolver la línea y no sólo un error es lo que evita que el motor tenga que releer para la escritura siguiente, y es la diferencia entre un puerto que compite por la última escritura y uno que la rechaza.
 >
-> `SaveOrder` guarda sólo la cabecera y **lleva versión**, igual que `SaveLine`: recibe la orden con la versión que se leyó y devuelve la orden persistida con la versión siguiente, o `ErrStale` si alguien escribió antes. Las líneas quedan fuera a propósito, y siguen fuera con versión: escribirlas convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. Devolver la orden y no sólo un error es lo que permite encadenar el guardado siguiente —`ConfirmPayment` guarda dos veces— sin releer la cabecera. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
+> `SaveOrder` guarda sólo la cabecera y **lleva versión**, igual que `SaveLine`: recibe la orden con la versión que se leyó y devuelve la orden persistida con la versión siguiente, o `ErrStale` si alguien escribió antes. Las líneas quedan fuera a propósito, y siguen fuera con versión: escribirlas convertiría el guardado de la orden en una segunda escritura sin condición sobre las mismas filas que el callback y el worker se disputan. Devolver la orden y no sólo un error es lo que permite encadenar el guardado siguiente —`MarkPaid` guarda dos veces— sin releer la cabecera. `AppendAttempt`/`SaveAttempt` tampoco llevan versión, y no por omisión: la clave de idempotencia ya es única en todo el sistema y un intento, una vez registrado, no se reescribe. Un número de versión ahí protegería una escritura que no existe.
 >
-> `DueLines` y `StalledLines` son dos preguntas distintas sobre líneas `pending`, y confundirlas cuesta un producto. Una `pending` **con** plazo es una línea que alguien reclamó antes de llamar a la máquina y nunca dejó el resultado: puede haberse despachado, así que se reconcilia. Una `pending` **sin** plazo es una línea que nadie llegó a reclamar: no hubo llamada, así que se despacha. El plazo es el único dato que separa «no sé si salió» de «no salió», y por eso la condición de `StalledLines` incluye el `DeadlineAt` en cero y la de `DueLines` lo exige vencido.
+> `OverdueLines` y `StalledLines` son dos preguntas distintas sobre líneas `pending`, y confundirlas cuesta un producto. Una `pending` **con** plazo es una línea que alguien reclamó antes de llamar a la máquina y nunca dejó el resultado: puede haberse despachado, así que se reconcilia. Una `pending` **sin** plazo es una línea que nadie llegó a reclamar: no hubo llamada, así que se despacha. El plazo es el único dato que separa «no sé si salió» de «no salió», y por eso la condición de `StalledLines` incluye el `DeadlineAt` en cero y la de `OverdueLines` lo exige vencido.
 >
 > `NotificationSent` y `RecordNotification` son el registro de los avisos de excepción y el único dedupe que hay para ellos. Preguntar primero y grabar **después** de que `Notify` devolvió sin error es lo que conserva el reintento que antes daba la repetición: un aviso que no salió no queda registrado, así que la pasada siguiente lo reintenta. Grabar dos veces no es error —en SQL es `ON CONFLICT DO NOTHING`— y la orden inexistente es `ErrNotFound` en las dos implementaciones, igual que el resto del puerto. `kind` viaja como `string` y no como `notify.Kind` porque el store no puede depender del paquete de avisos: el borde que traduce es el dominio, que ya tiene el `Kind` en la mano.
 
@@ -1534,9 +1534,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `NotificationSent` y `RecordNotification` comparten un mapa `(orden, tipo)` protegido por el mismo mutex, con el instante del aviso como valor porque la tabla guarda cuándo salió y no sólo que salió. La pareja pregunta-graba **no** es atómica: dos procesos que preguntan a la vez pueden avisar los dos, igual que una caída entre el aviso y el registro. Se acepta por la misma razón en las dos implementaciones —B es at-least-once y un aviso de más es menos grave que uno perdido—; lo que el lock garantiza es que el mapa no se corrompa, no que el dedupe sea perfecto.
 >
-> `DueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Entran `pending`, `sent`, `brewing` e `in_doubt`: las cuatro tienen un plazo que venció y las cuatro se reconcilian, nunca se redespachan. `pending` es la novedad —una línea reclamada antes del intento y abandonada— y comparte la regla del resto: mientras el plazo no venza, no se toca.
+> `OverdueLines` ordena después de soltar el lock, por plazo ascendente y con el ID como desempate. Ese desempate no es cosmético: el recorrido del mapa es aleatorio y un worker con tope tendría resultados no deterministas. Entran `pending`, `sent`, `brewing` e `in_doubt`: las cuatro tienen un plazo que venció y las cuatro se reconcilian, nunca se redespachan. `pending` es la novedad —una línea reclamada antes del intento y abandonada— y comparte la regla del resto: mientras el plazo no venza, no se toca.
 >
-> `StalledLines` es la otra cara: recorre las órdenes `paid` y `dispatching` cuya `PaidAt` ya pasó el corte, y devuelve sus líneas `pending` **sin** plazo. El filtro por estado de la orden no es un detalle de eficiencia: una orden `pending_payment` también tiene líneas `pending` sin plazo —es lo normal— y despacharlas sería entregar sin cobrar. El `PaidAt` en cero se descarta igual que el `NULL` de SQL: una orden sin pago no tiene antigüedad que medir. Ordena por `paid_at` y después por ID, por el mismo motivo que `DueLines`: el recorrido del mapa no es determinista.
+> `StalledLines` es la otra cara: recorre las órdenes `paid` y `dispatching` cuya `PaidAt` ya pasó el corte, y devuelve sus líneas `pending` **sin** plazo. El filtro por estado de la orden no es un detalle de eficiencia: una orden `pending_payment` también tiene líneas `pending` sin plazo —es lo normal— y despacharlas sería entregar sin cobrar. El `PaidAt` en cero se descarta igual que el `NULL` de SQL: una orden sin pago no tiene antigüedad que medir. Ordena por `paid_at` y después por ID, por el mismo motivo que `OverdueLines`: el recorrido del mapa no es determinista.
 >
 > `SaveLine` compara la versión con el lock tomado: si no coinciden devuelve `ErrStale` sin tocar el slice, y si coinciden escribe `Version+1` y devuelve la línea guardada. La comparación y la escritura ocurren dentro del mismo lock, que es lo único que convierte el número en una garantía y no en una sugerencia. Nunca se escribe «sólo algunos campos»: la versión protege la línea entera, y por eso el llamador tiene que traer la copia completa que leyó.
 >
@@ -1558,7 +1558,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Los dos de la versión de la orden trasladan ese mismo contrato a la cabecera: el guardado aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` dejando intactos el estado, `paid_at`, `closed_at` y la versión.
 >
-> `TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` fijan las dos preguntas nuevas y su diferencia: el plazo es lo que decide a cuál pertenece una línea `pending`. El segundo arma seis órdenes —`paid` vieja, `dispatching` vieja, `paid` reciente, `pending_payment`, `delivered` y una con la línea ya reclamada— y exige que sólo salgan las dos primeras, en orden de `paid_at` y de ID, con y sin tope. Las tres exclusiones son las que importan: sin el filtro de estado se despacharía una orden sin pagar, sin el corte de `paid_at` se despacharía un cobro recién registrado, y sin el plazo en cero se volvería a despachar una línea que quizá ya salió.
+> `TestMemoryOverdueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestMemoryStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` fijan las dos preguntas nuevas y su diferencia: el plazo es lo que decide a cuál pertenece una línea `pending`. El segundo arma seis órdenes —`paid` vieja, `dispatching` vieja, `paid` reciente, `pending_payment`, `delivered` y una con la línea ya reclamada— y exige que sólo salgan las dos primeras, en orden de `paid_at` y de ID, con y sin tope. Las tres exclusiones son las que importan: sin el filtro de estado se despacharía una orden sin pagar, sin el corte de `paid_at` se despacharía un cobro recién registrado, y sin el plazo en cero se volvería a despachar una línea que quizá ya salió.
 >
 > Los tres del registro de avisos fijan el dedupe del puerto: la pregunta empieza en `false`, la grabación la deja en `true`, grabar dos veces no da error ni borra el aviso, los tipos y las órdenes son independientes entre sí y una orden inexistente devuelve `ErrNotFound` en las dos operaciones. El de los tipos es el que importa para el dominio: `order_in_doubt` y `order_failed` son dos avisos, no uno.
 >
@@ -1632,7 +1632,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > En este paso no se agregó ninguna validación en el store: `validateDraft` ya rechazaba un ítem sin familia y en PostgreSQL el `CHECK` de `machine_type` era la última red, así que el store en memoria quedó más permisivo que la base y anotado como deuda. S10 la cerró con `validateLine` en `internal/store/memory.go`, que rechaza la familia desconocida igual que el `CHECK`; desde entonces la regla vive en tres lugares con propósitos distintos —el borde para devolver el número de ítem, la memoria para no aceptar lo que la base rechaza, y el `CHECK` como última red— y no por duplicación, sino porque cada uno responde a un llamador distinto.
 
-### Place
+### CreateOrder
 
 > Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
 >
@@ -1640,7 +1640,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/order/payment.go
 
-### ConfirmPayment
+### MarkPaid
 
 > Es el único disparador del despacho y tiene que ser inofensivo si el proveedor de pagos repite el webhook: si la orden ya no está `pending_payment`, responde nil sin tocar nada.
 >
@@ -1660,7 +1660,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### dispatchWithinDeadline
 
-> Es el plazo por línea en un solo lugar: deriva `context.WithTimeout(ctx, e.deadline)`, difiere el `cancel` y llama a `dispatchLine`. Existe porque hay dos caminos que despachan —`ConfirmPayment` y `resumeStalledLine`— y los dos tienen que cortar con el mismo número con el que se reclama la línea. Si el barrido usara un plazo más corto que el reclamo, cortaría llamadas que todavía estaban vivas; si usara uno más largo, el barrido reconciliaría una línea mientras la llamada sigue en curso. Un `context.Background()` con el plazo escrito a mano en cada camino tendría el mismo problema una versión después, cuando alguien cambie `e.deadline` y olvide el otro.
+> Es el plazo por línea en un solo lugar: deriva `context.WithTimeout(ctx, e.deadline)`, difiere el `cancel` y llama a `dispatchLine`. Existe porque hay dos caminos que despachan —`MarkPaid` y `resumeStalledLine`— y los dos tienen que cortar con el mismo número con el que se reclama la línea. Si el barrido usara un plazo más corto que el reclamo, cortaría llamadas que todavía estaban vivas; si usara uno más largo, el barrido reconciliaría una línea mientras la llamada sigue en curso. Un `context.Background()` con el plazo escrito a mano en cada camino tendría el mismo problema una versión después, cuando alguien cambie `e.deadline` y olvide el otro.
 >
 > No se aplica a `reconcileLine`: la consulta de estado de una línea vencida corre con el contexto del barrido, porque no hay forma de que su cancelación deje dinero a medias —no despacha nada—.
 
@@ -1670,7 +1670,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El orden de las llamadas es la garantía contra la doble entrega: primero se registra el intento como `ambiguous`, después se llama a la máquina, y al final se cierra el intento y se guarda la línea. Si el proceso muere en el medio, queda un intento `ambiguous` —la evidencia de que hubo una llamada— y la línea sigue `pending`.
 >
-> Antes de ese orden hay un paso más: **cada vuelta empieza reclamando la línea**, con un `SaveLine` que deja `DeadlineAt = ahora + plazo` y `ReconcileUntil = ahora + plazo + ventana`, sin mover el estado. El reclamo es lo que convierte «murió en el medio» en un hecho observable: una línea `pending` **con plazo** significa «alguien la llamó y no sabemos cómo terminó», y el barrido la encuentra por `DueLines` para reconciliarla. Sin el reclamo ese caso era invisible: la línea quedaba `pending` sin plazo, `DueLines` no la miraba —sólo buscaba `sent`, `brewing` e `in_doubt`— y ni el worker ni nadie la volvía a tocar.
+> Antes de ese orden hay un paso más: **cada vuelta empieza reclamando la línea**, con un `SaveLine` que deja `DeadlineAt = ahora + plazo` y `ReconcileUntil = ahora + plazo + ventana`, sin mover el estado. El reclamo es lo que convierte «murió en el medio» en un hecho observable: una línea `pending` **con plazo** significa «alguien la llamó y no sabemos cómo terminó», y el barrido la encuentra por `OverdueLines` para reconciliarla. Sin el reclamo ese caso era invisible: la línea quedaba `pending` sin plazo, `OverdueLines` no la miraba —sólo buscaba `sent`, `brewing` e `in_doubt`— y ni el worker ni nadie la volvía a tocar.
 >
 > El reclamo va **antes** de `AppendAttempt` y no después: la clave de idempotencia ya impide que dos escritores registren el mismo intento, así que el segundo pierde en `AppendAttempt` y devuelve nil. Si el reclamo fuera posterior, ese segundo escritor podría morir antes de reclamar y la línea quedaría sin dueño ni plazo. Reclamar primero deja la línea marcada incluso cuando el que llega segundo se va con las manos vacías. Un `ErrStale` en el reclamo es exactamente eso —otro escritor la tomó— y se responde nil, igual que en el guardado del resultado.
 >
@@ -1714,17 +1714,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/store — Line.Machine
 
-> La referencia de la máquina es un dato de la línea, no del proceso. Antes vivía en un mapa en RAM del motor y eso rompía dos cosas reales: después de un reinicio una línea `pending` no se podía despachar, y un `Place` en una instancia con un `ConfirmPayment` en otra no funcionaba.
+> La referencia de la máquina es un dato de la línea, no del proceso. Antes vivía en un mapa en RAM del motor y eso rompía dos cosas reales: después de un reinicio una línea `pending` no se podía despachar, y un `CreateOrder` en una instancia con un `MarkPaid` en otra no funcionaba.
 >
 > Se guarda como un único campo con la `machine.Ref` entera, no como cuatro strings sueltos, porque la referencia viaja junta al `dispenser.Request` y separarla obligaría a reconstruirla en cada borde. Sigue siendo un struct de strings, así que la copia por valor del slice de líneas sigue aislándose sin código nuevo.
 
 ## internal/order/place.go — cambios
 
-> `Place` copia la máquina del ítem a la línea antes de persistir: es lo que convierte la orden en algo autosuficiente. El motor ya no retiene nada en memoria, así que puede perder el proceso entero entre el cobro y el despacho sin perder con qué hablarle a la máquina.
+> `CreateOrder` copia la máquina del ítem a la línea antes de persistir: es lo que convierte la orden en algo autosuficiente. El motor ya no retiene nada en memoria, así que puede perder el proceso entero entre el cobro y el despacho sin perder con qué hablarle a la máquina.
 
 ## internal/order/dispatch.go — cambios
 
-> `dispatchLine` toma la máquina de la línea. Un reinicio es indistinguible de una llamada normal: sólo cambia de dónde vino el store. Ya no existe el caso «no se conoce la máquina» porque la línea no puede nacer sin máquina: `validateDraft` lo impide en `Place`.
+> `dispatchLine` toma la máquina de la línea. Un reinicio es indistinguible de una llamada normal: sólo cambia de dónde vino el store. Ya no existe el caso «no se conoce la máquina» porque la línea no puede nacer sin máquina: `validateDraft` lo impide en `CreateOrder`.
 >
 > `isProviderRejection` pregunta por el error del puerto y no por los tipos de cada proveedor. Ese era el punto: el motor no debe conocer que Batidos y Snacks existen, y con los dos imports cualquier proveedor nuevo obligaba a editar el motor para clasificar sus rechazos.
 
@@ -1740,7 +1740,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/order/dispatch.go — el reintento del fallido (T9a): `defaultMaxAttempts` y `dispatchLine`
 
-### TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed
+### TestEngineMarkPaidKeepsARetriedLinePendingInsteadOfFailed
 
 > Registra cada `SaveLine` (con `recordingStore.lineStatesFor`) y exige la secuencia `[pending, pending, pending, sent]` para una línea rechazada una vez y aceptada después: el reclamo de la primera vuelta, el rechazo con intentos pendientes, el reclamo de la segunda vuelta y el resultado aceptado. Mira las escrituras y no sólo el estado final porque el defecto era justamente un estado intermedio visible para otros escritores. Además comprueba, sobre la instantánea del rechazo, que conserva `Attempts=1` y deja los dos plazos en cero: con el plazo del reclamo vivo, el barrido la habría tratado como «quizá despachada» en vez de reintentarla.
 >
@@ -1776,7 +1776,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### dispatchLine — la duda también arma plazos
 
-> Cuando el despacho queda en duda (E4) la línea arma sus plazos igual que cuando fue aceptada: **no hay nada que esperar** porque ya sabemos que no hubo respuesta, así que la primera consulta va al intervalo (30 s) y el tope a la ventana (2 min). Antes de esto la línea quedaba en duda **sin plazo**, y como `DueLines` sólo miraba `sent` y `brewing`, ese caso —el más común de todos— no lo reconciliaba nadie nunca.
+> Cuando el despacho queda en duda (E4) la línea arma sus plazos igual que cuando fue aceptada: **no hay nada que esperar** porque ya sabemos que no hubo respuesta, así que la primera consulta va al intervalo (30 s) y el tope a la ventana (2 min). Antes de esto la línea quedaba en duda **sin plazo**, y como `OverdueLines` sólo miraba `sent` y `brewing`, ese caso —el más común de todos— no lo reconciliaba nadie nunca.
 
 ### dispatchLine — el código del proveedor se guarda aunque el intento no se acepte (S4r)
 
@@ -1784,7 +1784,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Un intento aceptado sigue asignando `line.Ref` **aunque venga vacío**: es la política anterior y se conserva a propósito, porque el asa tiene que describir el intento que la máquina aceptó y no uno anterior. Sin eso, una línea rechazada con código (campaña emitida, canje rechazado) y reintentada con éxito quedaría con el código de la campaña vieja, y la reconciliación preguntaría por un pedido que no es el que la máquina aceptó. La copia condicionada a no vacío vale sólo para los desenlaces que no son `accepted`; ahí un rechazo no inventa una referencia y la línea conserva la que tuviera. El resto del bucle no cambia: un aceptado limpia `LastError` y fija los dos plazos.
 >
-> `TestEngineDispatchKeepsTheProviderRefOfAnAttemptThatEndsInDoubt` fija un lado de punta a punta: la máquina devuelve `ProviderRef` junto con un error de transporte, la línea queda en duda con el `Ref` guardado, y el `ReconcileDue` siguiente le pasa ese mismo `KnownRef` a la máquina. Sin ese cambio, el `Ref` queda vacío y no hay reconciliación posible. `TestEngineDispatchDoesNotKeepTheProviderRefOfAnEarlierRejectedAttempt` fija el otro: un primer despacho rechazado que trae `code-A` y un reintento aceptado sin código dejan `Ref` vacío y la línea `sent`, así que el asa de la campaña rechazada no sobrevive. `TestEngineConfirmPaymentDispatchesBothMachines` sigue cubriendo que un aceptado con código lo guarde y deje `LastError` vacío.
+> `TestEngineDispatchKeepsTheProviderRefOfAnAttemptThatEndsInDoubt` fija un lado de punta a punta: la máquina devuelve `ProviderRef` junto con un error de transporte, la línea queda en duda con el `Ref` guardado, y el `SyncOverdueLines` siguiente le pasa ese mismo `KnownRef` a la máquina. Sin ese cambio, el `Ref` queda vacío y no hay reconciliación posible. `TestEngineDispatchDoesNotKeepTheProviderRefOfAnEarlierRejectedAttempt` fija el otro: un primer despacho rechazado que trae `code-A` y un reintento aceptado sin código dejan `Ref` vacío y la línea `sent`, así que el asa de la campaña rechazada no sobrevive. `TestEngineMarkPaidDispatchesBothMachines` sigue cubriendo que un aceptado con código lo guarde y deje `LastError` vacío.
 
 ### lineDue
 
@@ -1792,7 +1792,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Y devuelve `pending` cuando el plazo venció, que es el caso C1 del paso 3: el proceso cayó entre el reclamo y el resultado. Entra por la misma puerta que el resto porque su desenlace también se decide preguntándole a la máquina, no adivinando; lo que **no** hace es despacharse de nuevo, porque el intento ya pudo haber llegado.
 
-### ReconcileDue / reconcileLine
+### SyncOverdueLines / reconcileLine
 
 > El worker que cierra E4: lee las líneas vencidas y le pregunta al proveedor qué pasó realmente con cada una. Las procesa de a una, en serie: un worker corre sobre una cadencia y el manejo de fallos se lee de arriba abajo. `limit` es la perilla — una máquina lenta retrasa el lote entero.
 >
@@ -1804,7 +1804,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Las órdenes tocadas se asientan al final con `settleOrder`, igual que las que cerraron una línea, y el `seen` compartido evita asentarlas dos veces cuando la misma orden aparece por los dos caminos. Los errores se acumulan con los del primer lote: una línea que falló no deja sin recuperar a las demás.
 >
-> Los cuatro tests de la recuperación están separados por caso porque son cuatro hechos distintos. `TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching` arma el caso C1 a mano —línea `pending` con plazo vencido e intento registrado— y exige que la máquina reciba **una consulta y ningún despacho**, con dos finales: entregado por el proveedor y en duda con la ventana agotada. `TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt` es C2: línea sin plazo de una orden pagada hace tres minutos, y comprueba en el store de grabación que el intento es el número 2 —clave terminada en `:2`— y no un replay del primero. `TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLines` es C3, con las dos máquinas. `TestEngineReconcileDueLeavesThePendingLinesThatWereNeverAbandoned` es el guardián: una línea reclamada con el plazo abierto, una sin plazo de una orden pagada hace un minuto y una de una orden `pending_payment` no se tocan, ni siquiera se leen — el test compara la línea entera antes y después.
+> Los cuatro tests de la recuperación están separados por caso porque son cuatro hechos distintos. `TestEngineSyncOverdueLinesReconcilesAClaimedPendingLineInsteadOfRedispatching` arma el caso C1 a mano —línea `pending` con plazo vencido e intento registrado— y exige que la máquina reciba **una consulta y ningún despacho**, con dos finales: entregado por el proveedor y en duda con la ventana agotada. `TestEngineSyncOverdueLinesResumesAStalledPendingLineWithTheNextAttempt` es C2: línea sin plazo de una orden pagada hace tres minutos, y comprueba en el store de grabación que el intento es el número 2 —clave terminada en `:2`— y no un replay del primero. `TestEngineSyncOverdueLinesMovesAPaidOrderToDispatchingAndDispatchesItsStalledLines` es C3, con las dos máquinas. `TestEngineSyncOverdueLinesLeavesThePendingLinesThatWereNeverAbandoned` es el guardián: una línea reclamada con el plazo abierto, una sin plazo de una orden pagada hace un minuto y una de una orden `pending_payment` no se tocan, ni siquiera se leen — el test compara la línea entera antes y después.
 
 ### extendReconcile
 
@@ -1816,15 +1816,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### closeLine / settleOrder / refreshOrderStatus / notifyOrder
 
-> Cerrar es limpiar los dos plazos: una línea cerrada no vuelve a aparecer en `DueLines`, y eso es lo que impide interrogarla después de que alguien ya sabe la respuesta. Entregado limpia `LastError`; fallido conserva o reemplaza el motivo, nunca lo borra.
+> Cerrar es limpiar los dos plazos: una línea cerrada no vuelve a aparecer en `OverdueLines`, y eso es lo que impide interrogarla después de que alguien ya sabe la respuesta. Entregado limpia `LastError`; fallido conserva o reemplaza el motivo, nunca lo borra.
 >
 > `closeLine` es el llamador que **reacciona distinto** ante `ErrStale`, porque cerrar es irreversible y el que llega segundo no puede ganar por llegar segundo. Relee la orden, busca la línea por `ID` y decide: si ya está cerrada —entregada o fallida— no hace nada y devuelve nil, porque alguien con más autoridad la resolvió; si sigue abierta reintenta **una sola vez** la transición con la versión fresca. Una sola vez y no un bucle: si el segundo intento también encuentra la línea cambiada, hay un tercer escritor y volver a probar es una carrera sin final. Nunca se reabre ni se reescribe un cierre ajeno, y el `Ref` adoptado por el callback sobrevive porque la copia vieja simplemente no se escribe.
 >
 > Una línea cerrada no arregla la orden sola: si el worker no recalcula el estado, la orden se queda en `dispatching` para siempre. `refreshOrderStatus` es ese recálculo y ahora es compartido: recarga, avanza con la misma tabla de transiciones del resto del motor y guarda sólo si cambió.
 >
-> La cabecera también compite —el callback de snacks, `ConfirmPayment` y el barrido escriben la misma orden—, así que el guardado lleva versión y `refreshOrderStatus` reintenta **una sola vez** ante `ErrStale`: recarga y vuelve a derivar. Un segundo `ErrStale` se devuelve como error, porque un tercer escritor significa que reintentar es una carrera sin final. El reintento es seguro acá, a diferencia de la línea: el estado no se inventa, se vuelve a derivar de las líneas frescas.
+> La cabecera también compite —el callback de snacks, `MarkPaid` y el barrido escriben la misma orden—, así que el guardado lleva versión y `refreshOrderStatus` reintenta **una sola vez** ante `ErrStale`: recarga y vuelve a derivar. Un segundo `ErrStale` se devuelve como error, porque un tercer escritor significa que reintentar es una carrera sin final. El reintento es seguro acá, a diferencia de la línea: el estado no se inventa, se vuelve a derivar de las líneas frescas.
 >
-> `settleOrder` es `refreshOrderStatus` más el aviso; la cola de `ConfirmPayment` usa `refreshOrderStatus` a secas porque no avisa. Mismo cálculo, dos políticas.
+> `settleOrder` es `refreshOrderStatus` más el aviso; la cola de `MarkPaid` usa `refreshOrderStatus` a secas porque no avisa. Mismo cálculo, dos políticas.
 >
 > Un aviso por orden afectada, y sólo cuando el estado final es duda o fallo: es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
 >
@@ -1920,9 +1920,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Cuando la línea resuelta tiene el `Ref` vacío y el callback sí trae referencia, se adopta antes de aplicar el estado, así el próximo evento de esa línea entra por la primera regla y no vuelve a depender de una deducción. No agrega ninguna escritura: el guardado lo hacen `closeLine` y `markBrewing`, que ya iban a guardar la línea. Por eso tampoco se adopta en la reconciliación: ahí el que manda es el proveedor.
 
-### CloseFromCallback / ConfirmFromCallback
+### ApplyCallback / SyncLineFromCallback
 
-> `CloseFromCallback` aplica el estado que informa el proveedor: entregado, fallido con su motivo, o en elaboración. `ConfirmFromCallback` **ignora** el estado del callback para cerrar y consulta al proveedor; el único uso que le da al callback es el de "en curso", que sube la línea a elaboración porque es información cierta y visible para la tablet, sin poder cerrar nada.
+> `ApplyCallback` aplica el estado que informa el proveedor: entregado, fallido con su motivo, o en elaboración. `SyncLineFromCallback` **ignora** el estado del callback para cerrar y consulta al proveedor; el único uso que le da al callback es el de "en curso", que sube la línea a elaboración porque es información cierta y visible para la tablet, sin poder cerrar nada.
 >
 > Los dos terminan recalculando el estado de la orden, y sólo después. Una línea cerrada no arregla la orden sola: sin ese paso la orden se quedaba en `dispatching` para siempre.
 
@@ -1998,11 +1998,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El puerto por el que el motor pregunta si el combo se puede vender, sin saber quién contesta. El motor no importa `preflight` ni los drivers: conoce una interfaz de una sola función y un error de negocio, y el adaptador que traduce vive en `internal/gate`. Es la regla de dependencias del motor escrita en tipos: si mañana el chequeo cambia de proveedor, `internal/order` no se entera.
 
-### Gate
+### AvailabilityChecker
 
 > `Check` recibe el mismo `Draft` que se está por crear, no una consulta a medida, para que el adaptador pueda traducirlo sin que el motor le pase datos ya masticados. Devolver `nil` significa «se puede vender»: el contrato es de bloqueo explícito, no de permiso explícito.
 
-### WithGate
+### WithAvailabilityChecker
 
 > Ignora un `nil` a propósito. Con la puerta en `nil` el motor no llama a nadie, así que los tests y los llamadores que ya existían siguen comportándose igual: el chequeo previo se enciende cableándolo, no se apaga con un interruptor de configuración.
 
@@ -2014,7 +2014,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Lleva las razones para que el mensaje se entienda sin abrir el log, y las expone como campo para que la respuesta HTTP las pueda listar. `Unwrap` devuelve `ErrNotSellable`, así que `errors.Is` funciona y `errors.As` sigue dando acceso a las razones. Sin razones el mensaje es sólo la frase: un bloqueo que no se pudo explicar no inventa una causa.
 
-## internal/order/place.go — Place y la puerta de disponibilidad
+## internal/order/place.go — CreateOrder y la puerta de disponibilidad
 
 > La consulta va exactamente en un lugar: **después** de validar el draft, **después** del lookup de idempotencia por `client_key` y **antes** de generar cualquier identificador. Las tres posiciones son decisiones, no casualidad.
 >
@@ -2070,7 +2070,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/order — el worker y los callbacks sobre la misma línea: `reconcile.go`, `callback.go` y `dispatch.go`
 
-> `ReconcileDue` corre en su propia goroutine —el barrido cada 30 s de `internal/sweep`— mientras el callback llega por HTTP en otra. Los dos escriben la misma línea, y hasta que existió `Line.Version` el último en escribir ganaba: el worker tomaba una copia de las líneas al empezar (`DueLines`), el callback cerraba la línea como entregada en el medio, y el worker guardaba su copia vieja encima. El resultado era un `delivered` revertido y el `Ref` adoptado borrado, con la orden recalculada sobre el estado revertido. No era teórico: es la primera carrera real del sistema.
+> `SyncOverdueLines` corre en su propia goroutine —el barrido cada 30 s de `internal/sweep`— mientras el callback llega por HTTP en otra. Los dos escriben la misma línea, y hasta que existió `Line.Version` el último en escribir ganaba: el worker tomaba una copia de las líneas al empezar (`OverdueLines`), el callback cerraba la línea como entregada en el medio, y el worker guardaba su copia vieja encima. El resultado era un `delivered` revertido y el `Ref` adoptado borrado, con la orden recalculada sobre el estado revertido. No era teórico: es la primera carrera real del sistema.
 >
 > `ErrStale` significa cosas distintas según quién escribe, y por eso cada llamador reacciona distinto. No hay una política única y no debería haberla: cerrar es irreversible y reprogramar no.
 >
@@ -2078,29 +2078,29 @@ Formato: `Símbolo --> "texto del comentario"`.
 > - `extendReconcile` — `(false, nil)`. La línea ya tiene dueño: no se reprograma ni se cierra, porque rearmar un plazo sobre una línea que otro acaba de cerrar es reabrirla de costado.
 > - `dispatchLine` — nil, sin revertir nada. El efecto del despacho ya ocurrió y el estado de la línea lo resuelve la reconciliación con lo que diga el proveedor; el cierre del intento ya se registró antes, así que no se pierde la evidencia.
 > - `markBrewing` — `(false, nil)`. «En curso» es la información más débil de las tres y no gana una carrera contra un cierre o contra un aplazo.
-> - `settleOrder`, `Place` y `ConfirmPayment` — sin reacción propia: escriben la orden, no la línea, y `SaveOrder` guarda sólo la cabecera.
+> - `settleOrder`, `CreateOrder` y `MarkPaid` — sin reacción propia: escriben la orden, no la línea, y `SaveOrder` guarda sólo la cabecera.
 >
-> La carrera se demuestra sin goroutines, porque una carrera reproducida por suerte no es un test. `staleDueStore` (`internal/order/callback_test.go`) guarda la copia que devolvió `DueLines` y la repite en las llamadas siguientes: es exactamente el estado en el que está el worker cuando el callback se le adelanta. El test `TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade` copia la línea abierta, la cierra por el camino real del callback —que además adopta un `Ref`— y recién ahí corre el barrido con la copia vieja, en tres variantes según lo que la máquina le conteste al worker (cierre fallido, entrega y aplazo). Las tres afirman lo mismo: la línea sigue `delivered`, el `Ref` adoptado sigue ahí, los plazos siguen en cero, no hay error en `LastError` y la orden sigue `delivered`.
+> La carrera se demuestra sin goroutines, porque una carrera reproducida por suerte no es un test. `staleDueStore` (`internal/order/callback_test.go`) guarda la copia que devolvió `OverdueLines` y la repite en las llamadas siguientes: es exactamente el estado en el que está el worker cuando el callback se le adelanta. El test `TestSyncOverdueLinesDoesNotOverwriteTheCloseThatACallbackAlreadyMade` copia la línea abierta, la cierra por el camino real del callback —que además adopta un `Ref`— y recién ahí corre el barrido con la copia vieja, en tres variantes según lo que la máquina le conteste al worker (cierre fallido, entrega y aplazo). Las tres afirman lo mismo: la línea sigue `delivered`, el `Ref` adoptado sigue ahí, los plazos siguen en cero, no hay error en `LastError` y la orden sigue `delivered`.
 >
-> `TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight` cubre el mismo conflicto por el otro camino: el stub de la máquina dispara un `CloseFromCallback` real **dentro** de `Dispatch`, así que la línea queda cerrada entre la lectura y el guardado del despacho. La aserción es que la línea siga entregada, que el `Ref` tardío del despacho no se adopte sobre una línea cerrada, y que `ConfirmPayment` no devuelva error.
+> `TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight` cubre el mismo conflicto por el otro camino: el stub de la máquina dispara un `ApplyCallback` real **dentro** de `Dispatch`, así que la línea queda cerrada entre la lectura y el guardado del despacho. La aserción es que la línea siga entregada, que el `Ref` tardío del despacho no se adopte sobre una línea cerrada, y que `MarkPaid` no devuelva error.
 
 ## internal/order — el versionado de la orden en el dominio (S3b)
 
 > `competingOrderStore` (`internal/order/callback_test.go`) envuelve `store.Memory` y, antes de delegar un `SaveOrder`, guarda la orden que acaba de leer el store: escribe la cabecera con la versión siguiente sin cambiar ningún campo. Es la forma determinista de representar al otro escritor —un segundo `/pay`, otro callback, el barrido— sin goroutines ni suerte, igual que `competingWriteStore` hace con la línea. `arm` y `armFrom` eligen a partir de qué llamada compite.
 >
-> `TestEngineConfirmPaymentDoesNotDispatchWhenAnotherWriterPaidTheOrder` fija la decisión del segundo `/pay`: el guardado a `paid` choca, `ConfirmPayment` devuelve nil y las máquinas no reciben ni un despacho. `TestEngineConfirmPaymentDoesNotDispatchWhenTheDispatchingSaveIsStale` fija la otra mitad: si el choque llega en el guardado a `dispatching`, el error se devuelve y tampoco se despacha, porque sin ese estado no hay arista legal hacia la entrega.
+> `TestEngineMarkPaidDoesNotDispatchWhenAnotherWriterPaidTheOrder` fija la decisión del segundo `/pay`: el guardado a `paid` choca, `MarkPaid` devuelve nil y las máquinas no reciben ni un despacho. `TestEngineMarkPaidDoesNotDispatchWhenTheDispatchingSaveIsStale` fija la otra mitad: si el choque llega en el guardado a `dispatching`, el error se devuelve y tampoco se despacha, porque sin ese estado no hay arista legal hacia la entrega.
 >
-> `TestCloseFromCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt` fija el reintento de `refreshOrderStatus` con dos casos y el mismo escenario: tras el pago se entrega por callback la línea de snacks y después falla la de batidos, así que el estado derivado pasa de `dispatching` a `partial` y hay que escribir la cabecera. Con un escritor adelantado se reintenta una sola vez y la orden termina en `partial`; con dos, el error devuelve `store.ErrStale` y la cabecera no se toca. Los dos casos cuentan las llamadas a `SaveOrder` para probar que el reintento es exactamente uno.
+> `TestApplyCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt` fija el reintento de `refreshOrderStatus` con dos casos y el mismo escenario: tras el pago se entrega por callback la línea de snacks y después falla la de batidos, así que el estado derivado pasa de `dispatching` a `partial` y hay que escribir la cabecera. Con un escritor adelantado se reintenta una sola vez y la orden termina en `partial`; con dos, el error devuelve `store.ErrStale` y la cabecera no se toca. Los dos casos cuentan las llamadas a `SaveOrder` para probar que el reintento es exactamente uno.
 
 ## internal/store — SaveOrder
 
 > Guarda **sólo la cabecera** de la orden: estado, importes y las tres fechas. Nunca toca las líneas.
 >
-> No siempre fue así: antes reemplazaba la orden entera, líneas incluidas, y había un test que lo fijaba como intención. Ese contrato se volvió una carrera en cuanto las líneas empezaron a tener escritura propia y condicional: `settleOrder` y `ConfirmPayment` leen la orden, y si entre la lectura y el guardado un callback cierra una línea, el guardado de la orden devolvía la línea a su estado anterior — con el `Ref` adoptado borrado y la versión pisada. Ahora las líneas sólo cambian por `SaveLine`, que sí es condicional, y la orden sólo cambia por acá.
+> No siempre fue así: antes reemplazaba la orden entera, líneas incluidas, y había un test que lo fijaba como intención. Ese contrato se volvió una carrera en cuanto las líneas empezaron a tener escritura propia y condicional: `settleOrder` y `MarkPaid` leen la orden, y si entre la lectura y el guardado un callback cierra una línea, el guardado de la orden devolvía la línea a su estado anterior — con el `Ref` adoptado borrado y la versión pisada. Ahora las líneas sólo cambian por `SaveLine`, que sí es condicional, y la orden sólo cambia por acá.
 >
 > El store sobre Postgres (`internal/store/postgres`) cumple ese contrato al pie de la letra: el guardado de la orden es un `UPDATE` de las columnas de cabecera, sin tocar `order_line`.
 >
-> Después de S3b la cabecera también se escribe con versión: `SaveOrder` recibe la orden con la versión leída y devuelve la guardada con `Version+1`, o `ErrStale` si otro escritor se adelantó. La razón es la misma que motivó la versión de la línea, un escalón más arriba: `ConfirmPayment` y `settleOrder` recalculan y guardan el estado de la orden desde caminos distintos, y sin número el último en escribir gana. Las líneas siguen afuera porque la versión protege la fila de `orders`, no la de `order_line`, que tiene la suya.
+> Después de S3b la cabecera también se escribe con versión: `SaveOrder` recibe la orden con la versión leída y devuelve la guardada con `Version+1`, o `ErrStale` si otro escritor se adelantó. La razón es la misma que motivó la versión de la línea, un escalón más arriba: `MarkPaid` y `settleOrder` recalculan y guardan el estado de la orden desde caminos distintos, y sin número el último en escribir gana. Las líneas siguen afuera porque la versión protege la fila de `orders`, no la de `order_line`, que tiene la suya.
 
 ## internal/store/postgres
 
@@ -2132,7 +2132,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `CreateOrder` va en una transacción: orden y líneas entran juntas o no entra ninguna, y cada línea se inserta con `version = 0` sin importar lo que traiga el llamador. Una línea que naciera con versión inventada quedaría inmune a los conflictos durante toda su vida. La cabecera se inserta con la versión que traiga la orden —cero en la práctica—, igual que en memoria. Si el `INSERT` de la orden choca con la clave primaria o con `client_key`, la transacción se revierte y el error es `ErrAlreadyExists`: no puede quedar media orden escrita.
 >
-> `SaveOrder` es un `UPDATE` de las nueve columnas de cabecera —`kiosk_id`, `combo_id`, `client_key`, `amount_cents`, `currency`, `status`, `created_at`, `paid_at`, `closed_at`— más `version = version + 1`, condicionado a `id = $1 AND version = $11` y con `RETURNING version`, y **nunca toca `order_line`**. Es la contraparte en SQL de la decisión del puerto: al escribir, la orden no es dueña de sus líneas. Si las escribiera, `settleOrder` o `ConfirmPayment` podrían revertir un `delivered` que un callback acaba de guardar —con su `Ref` adoptado y todo— aunque la línea tenga versión, porque un reemplazo total escribe todas las columnas y no compara ninguna.
+> `SaveOrder` es un `UPDATE` de las nueve columnas de cabecera —`kiosk_id`, `combo_id`, `client_key`, `amount_cents`, `currency`, `status`, `created_at`, `paid_at`, `closed_at`— más `version = version + 1`, condicionado a `id = $1 AND version = $11` y con `RETURNING version`, y **nunca toca `order_line`**. Es la contraparte en SQL de la decisión del puerto: al escribir, la orden no es dueña de sus líneas. Si las escribiera, `settleOrder` o `MarkPaid` podrían revertir un `delivered` que un callback acaba de guardar —con su `Ref` adoptado y todo— aunque la línea tenga versión, porque un reemplazo total escribe todas las columnas y no compara ninguna.
 >
 > Con cero filas el `UPDATE` confunde dos causas y se separan como en `SaveLine`, con un `EXISTS` posterior y sólo en ese camino: la orden existe con otra versión (`ErrStale`) o no existe (`ErrNotFound`). La versión devuelta sale del `RETURNING` y no de la copia del llamador, que es la única forma de que el siguiente guardado parta del número real.
 
@@ -2150,11 +2150,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `SaveAttempt` actualiza por `idempotency_key` sólo `outcome`, `error_detail` y `finished_at`: una violación del `CHECK` de `outcome` devuelve `store.ErrInvalid` y cero filas es `ErrNotFound`. Nunca crea y nunca toca la línea: si el cierre pudiera insertar, un error de orden de llamadas inventaría intentos que nunca ocurrieron, y si tocara la línea estaría escribiendo sin condición sobre las mismas filas que protege la versión.
 
-### RegisterWebhook / DueLines
+### RegisterWebhook / OverdueLines
 
 > `RegisterWebhook` es un `INSERT … ON CONFLICT (source, dedupe_key) DO NOTHING` y devuelve `first` según las filas afectadas: un webhook repetido es el caso normal de un proveedor que reintenta, no un error. Un `INSERT` ciego más un `ErrAlreadyExists` obligaría al llamador a tratar un duplicado como excepción.
 >
-> `DueLines` filtra `deadline_at IS NOT NULL AND deadline_at <= $1` y ordena por `deadline_at` con `id` como desempate, para que dos plazos iguales salgan siempre en el mismo orden y un worker con tope no se comporte distinto entre corridas. El `LIMIT` sólo se agrega cuando el tope es mayor que cero: el puerto define que cero significa «sin tope», y un `LIMIT 0` de SQL devolvería nada, que es lo contrario. Los estados son `pending`, `sent`, `brewing` e `in_doubt`: la misma condición de plazo para las cuatro, y `pending` incluida porque una línea reclamada sin resultado también hay que reconciliarla.
+> `OverdueLines` filtra `deadline_at IS NOT NULL AND deadline_at <= $1` y ordena por `deadline_at` con `id` como desempate, para que dos plazos iguales salgan siempre en el mismo orden y un worker con tope no se comporte distinto entre corridas. El `LIMIT` sólo se agrega cuando el tope es mayor que cero: el puerto define que cero significa «sin tope», y un `LIMIT 0` de SQL devolvería nada, que es lo contrario. Los estados son `pending`, `sent`, `brewing` e `in_doubt`: la misma condición de plazo para las cuatro, y `pending` incluida porque una línea reclamada sin resultado también hay que reconciliarla.
 
 ### StalledLines
 
@@ -2178,7 +2178,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Los dos tests nuevos son el contrato del guardado condicional de la cabecera, espejo de los de `SaveLine`: el aceptado devuelve `Version+1` y es lo que se lee después, y el de una copia vieja devuelve `ErrStale` sin mover ni el estado ni las fechas ni la versión.
 >
-> `TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` son el espejo en SQL de los de la memoria, y por eso cubren las mismas exclusiones: estado de la orden, corte de `paid_at` y plazo en cero. En SQL además prueban que el `JOIN` y las columnas prefijadas devuelven una línea completa —`scanLine` recibe las 19 columnas en orden—, que es lo que un test de memoria no puede ver.
+> `TestOverdueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne` y `TestStalledLinesSelectsUnclaimedPendingLinesOfPaidOrders` son el espejo en SQL de los de la memoria, y por eso cubren las mismas exclusiones: estado de la orden, corte de `paid_at` y plazo en cero. En SQL además prueban que el `JOIN` y las columnas prefijadas devuelven una línea completa —`scanLine` recibe las 19 columnas en orden—, que es lo que un test de memoria no puede ver.
 >
 > Los tres del registro de avisos son el espejo de los de la memoria y agregan lo que sólo se ve en SQL: el `ON CONFLICT DO NOTHING` de la segunda grabación, la independencia por tipo y por orden, y el `23503` de una orden inexistente traducido a `ErrNotFound` en las dos consultas. `notification_sent` entra en el `TRUNCATE` del arranque para que un test no vea el aviso del anterior.
 >
@@ -2381,19 +2381,19 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/order/payment_test.go — el despacho que sobrevive a la tablet (S5b)
 
-### TestEngineConfirmPaymentDispatchesWithACancelledRequestContext
+### TestEngineMarkPaidDispatchesWithACancelledRequestContext
 
 > El caso real que motivó S5b: la tablet confirma el pago, el cobro se registra y la conexión se corta. `cancellingOrderStore` reproduce ese corte en el único punto donde no hay duda de que el dinero ya está tomado: envuelve la memoria y cancela el contexto del request **después** del guardado a `dispatching`. La aserción es doble y las dos mitades importan: dentro de `Dispatch` el `ctx.Err()` tiene que ser `nil` —con el contexto del pedido sería `context.Canceled`— y la orden tiene que quedar `dispatching` con las dos líneas `sent`, no trabada a medio despachar.
 >
 > Sin el test, el arreglo se puede «lograr» pasando `context.Background()` y nadie notaría que la llamada a la máquina ya no se corta pero tampoco se puede cortar nunca: por eso el plazo vive en el mismo camino y lo fija el test siguiente.
 
-### TestEngineConfirmPaymentKeepsTheRequestContextValues
+### TestEngineMarkPaidKeepsTheRequestContextValues
 
 > `WithoutCancel` quita la cancelación y conserva los valores; `context.Background()` habría pasado el test anterior igual. Este fija la diferencia con un valor puesto con `context.WithValue` que la máquina lee dentro de `Dispatch`. Es la guardia contra el arreglo fácil, que hoy no cambia nada visible —todavía no hay ningún valor en el contexto del `/pay`— y deja de ser cosmética el día que alguien mande el id de correlación o el kiosco por ahí.
 
-### TestEngineConfirmPaymentGivesALineTheClaimDeadline
+### TestEngineMarkPaidGivesALineTheClaimDeadline
 
-> La otra mitad de S5b: el despacho no puede sobrevivir a su propio reclamo. `blockedMachine` espera a que su contexto termine y devuelve lo que ve; el plazo se baja a 100 ms con `order.WithLineDeadline`, la opción que ya existía para el plazo de reclamo, y por eso el test fija de paso que el tope del proceso y el número que se escribe en `DeadlineAt` son el mismo. Se espera `context.DeadlineExceeded` adentro de `Dispatch` —no `context.Canceled`, que sería el request—, la línea en `in_doubt` y `ConfirmPayment` de vuelta: una máquina que no contesta no puede colgar el `/pay`. La cota de 10 s con `time.After` es del test, no del motor: si el despacho se queda esperando, el test falla en vez de colgarse.
+> La otra mitad de S5b: el despacho no puede sobrevivir a su propio reclamo. `blockedMachine` espera a que su contexto termine y devuelve lo que ve; el plazo se baja a 100 ms con `order.WithLineDeadline`, la opción que ya existía para el plazo de reclamo, y por eso el test fija de paso que el tope del proceso y el número que se escribe en `DeadlineAt` son el mismo. Se espera `context.DeadlineExceeded` adentro de `Dispatch` —no `context.Canceled`, que sería el request—, la línea en `in_doubt` y `MarkPaid` de vuelta: una máquina que no contesta no puede colgar el `/pay`. La cota de 10 s con `time.After` es del test, no del motor: si el despacho se queda esperando, el test falla en vez de colgarse.
 >
 > La máquina tiene además una salida propia a los 5 s para que la versión sin arreglo termine y el rojo se lea como «terminó con `<nil>`» en vez de como un cuelgue del binario de pruebas.
 
@@ -2507,13 +2507,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/order — el cobro con QR (unidad 3)
 
-### ConfirmPayment / markPaid / dispatchLines
+### MarkPaid / claimPaid / dispatchLines
 
-> `ConfirmPayment` se partió en dos sin cambiar lo que hace: `markPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
+> `MarkPaid` se partió en dos sin cambiar lo que hace: `claimPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
 
-### WithPayments / WithQRExpiry
+### WithQRPayments / WithQRExpiry
 
-> Sin gateway el cobro con QR está apagado: `RequestQR` y `ConfirmFromGateway` devuelven `ErrPaymentsDisabled` y `ReconcilePayments` no hace nada. Así el sandbox sin credenciales sigue funcionando con el pago simulado. El nombre del proveedor (`"mercadopago"`) viaja con el gateway porque es lo que se guarda en `payment_intent.provider`.
+> Sin gateway el cobro con QR está apagado: `RequestQR` y `SyncPayment` devuelven `ErrPaymentsDisabled` y `SyncPendingPayments` no hace nada. Así el sandbox sin credenciales sigue funcionando con el pago simulado. El nombre del proveedor (`"mercadopago"`) viaja con el gateway porque es lo que se guarda en `payment_intent.provider`.
 
 ### WithBackground / WithBackgroundErrors / Wait / spawn
 
@@ -2523,7 +2523,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Idempotente por orden: si la orden ya tiene un pago guardado, lo devuelve **tal como está** —pendiente, vencido o pagado— y no llama a Mercado Pago. Si no lo tiene, crea el QR en Mercado Pago **antes** de guardarlo: si el guardado falla, el reintento vuelve a llamar con la misma clave de idempotencia (el id de la orden) y recibe el mismo QR, así que nunca queda un QR cobrable sin registro. Dos pedidos simultáneos chocan en `ErrAlreadyExists` y el perdedor devuelve el del ganador. Sólo se pide QR para una orden `pending_payment` con importe positivo (`ErrNotPayable`).
 
-### ConfirmFromGateway
+### SyncPayment
 
 > La entrada del webhook. Nunca usa el cuerpo del aviso: pregunta a Mercado Pago (`Lookup`) y obedece la respuesta. El cobro tiene que apuntar, por `external_reference`, a una orden nuestra **y** ser el mismo cobro que esa orden tiene guardado; si no, es `ErrUnknownCharge` y el webhook responde 200 igual, porque reintentar no lo va a arreglar.
 
@@ -2531,17 +2531,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El único lugar que traduce lo que dice Mercado Pago en efectos, compartido por el webhook y el barrido. Un pago que ya no está `pending` no se vuelve a tocar: lo que diga después el proveedor (por ejemplo un `refunded` manual de soporte) no genera avisos ni cambios.
 >
-> El orden de las escrituras es lo que hace seguro un corte del proceso a mitad de camino: **primero el efecto, después el pago**. Pagado: primero la orden (`markPaid`), después el pago `approved`. Monto distinto: primero el aviso, después el pago `amount_mismatch`. Vencido o cancelado: primero la orden `cancelled`, después el pago. Si el proceso muere entre las dos, el pago sigue `pending`, el barrido lo vuelve a encontrar y la segunda pasada completa lo que faltó sin repetir lo hecho (`markPaid` no repite, el aviso se deduplica, cancelar una orden ya cancelada no hace nada).
+> El orden de las escrituras es lo que hace seguro un corte del proceso a mitad de camino: **primero el efecto, después el pago**. Pagado: primero la orden (`claimPaid`), después el pago `approved`. Monto distinto: primero el aviso, después el pago `amount_mismatch`. Vencido o cancelado: primero la orden `cancelled`, después el pago. Si el proceso muere entre las dos, el pago sigue `pending`, el barrido lo vuelve a encontrar y la segunda pasada completa lo que faltó sin repetir lo hecho (`claimPaid` no repite, el aviso se deduplica, cancelar una orden ya cancelada no hace nada).
 
 ### acceptPayment
 
-> Si `markPaid` movió la orden, el despacho se lanza en segundo plano. Si no la movió porque ya estaba pagada, no se despacha de nuevo: una orden pagada sin despachar es trabajo del barrido de líneas (`resumeStalledLine`), que ya existía. Si no la movió porque estaba **cancelada**, Mercado Pago está cobrando una orden que dimos por muerta: no se reabre (la transición `cancelled → paid` sigue cerrada) y se avisa `payment_unknown`.
+> Si `claimPaid` movió la orden, el despacho se lanza en segundo plano. Si no la movió porque ya estaba pagada, no se despacha de nuevo: una orden pagada sin despachar es trabajo del barrido de líneas (`resumeStalledLine`), que ya existía. Si no la movió porque estaba **cancelada**, Mercado Pago está cobrando una orden que dimos por muerta: no se reabre (la transición `cancelled → paid` sigue cerrada) y se avisa `payment_unknown`.
 
 ### rejectPaidAmount
 
 > Decidido con el dueño del producto: con un monto distinto al del catálogo —de más o de menos— no se despacha, la orden **se queda en `pending_payment`** y el pago pasa a `amount_mismatch`. No se cancela porque hubo cobro, y no hay transición a `failed` desde `pending_payment`. Se avisa `payment_mismatch` una sola vez.
 
-### ReconcilePayments
+### SyncPendingPayments
 
 > El barrido de los pagos `pending` con más de 10 s (antes, la tablet acaba de mostrar el QR y el webhook todavía puede llegar). Recupera el webhook que no llegó con el mismo `applyCharge`. Si el cobro sigue pendiente y pasaron 30 s del vencimiento, le pide a Mercado Pago que lo cancele y aplica **su** respuesta; si Mercado Pago no acepta cancelar (`ErrNotCancelable`), consulta de nuevo y obedece lo que diga: así un pago que entró justo al vencer se despacha en lugar de perderse. Un error en un pago no frena a los demás.
 
@@ -2575,13 +2575,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## internal/httpapi — cobro con QR (unidad 4)
 
-### Deps.Charger / Deps.Payments
+### Deps.QRRequester / Deps.Payments
 
-> Van juntos o no va ninguno: con los dos se cobra con QR, sin ninguno se cobra con el pago simulado. Uno solo es un error de armado y `New` lo rechaza. `simulated` queda prendido sólo en sandbox **y** sin `Charger`.
+> Van juntos o no va ninguno: con los dos se cobra con QR, sin ninguno se cobra con el pago simulado. Uno solo es un error de armado y `New` lo rechaza. `simulated` queda prendido sólo en sandbox **y** sin `QRRequester`.
 
 ### createOrder
 
-> Con Mercado Pago, después de `Place` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo.
+> Con Mercado Pago, después de `CreateOrder` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo.
 
 ### readOrder
 
@@ -2597,7 +2597,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### MercadoPagoWebhook.receive
 
-> El orden de los chequeos es de más barato a más caro: secreto de ruta (404, igual que una ruta inexistente), `data.id` (400), firma con su ventana de 5 minutos (401), tópico (200 sin hacer nada si no es `order`), y recién ahí `ConfirmFromGateway`, que consulta a Mercado Pago. El cuerpo no se lee: la firma no lo cubre. Un cobro ajeno responde 200 porque reintentar no lo arregla; cualquier otro error responde 500 para que Mercado Pago reintente, y como `ConfirmFromGateway` es idempotente el reintento es seguro.
+> El orden de los chequeos es de más barato a más caro: secreto de ruta (404, igual que una ruta inexistente), `data.id` (400), firma con su ventana de 5 minutos (401), tópico (200 sin hacer nada si no es `order`), y recién ahí `SyncPayment`, que consulta a Mercado Pago. El cuerpo no se lee: la firma no lo cubre. Un cobro ajeno responde 200 porque reintentar no lo arregla; cualquier otro error responde 500 para que Mercado Pago reintente, y como `SyncPayment` es idempotente el reintento es seguro.
 
 ## internal/httpapi/mercadopago_test.go (rama `tests/mercadopago`)
 
@@ -2607,14 +2607,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Envuelve sólo la falla de `CreateQR`, para que el borde HTTP distinga «Mercado Pago no respondió» (502) de una falla propia (500).
 
-## internal/sweep — WithPayments
+## internal/sweep — WithPaymentSync
 
 > Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro.
 
 ## internal/sweep/payments_test.go (rama `tests/mercadopago`)
 
-> Un sweeper que cuenta llamadas y límites. Cubre que los dos barridos corren con el mismo límite, que sin `WithPayments` el de pagos no corre y que un error en las líneas no frena a los pagos. Mutación verificada en rojo: pasar otro límite al barrido de pagos.
+> Un sweeper que cuenta llamadas y límites. Cubre que los dos barridos corren con el mismo límite, que sin `WithPaymentSync` el de pagos no corre y que un error en las líneas no frena a los pagos. Mutación verificada en rojo: pasar otro límite al barrido de pagos.
 
 ## cmd/api/main.go — Mercado Pago (unidad 4)
 
-> Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithPayments`), al handler (`Charger` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.
+> Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithQRPayments`), al handler (`QRRequester` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.

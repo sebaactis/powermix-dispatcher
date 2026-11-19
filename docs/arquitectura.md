@@ -67,17 +67,17 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/dispenser` | **El puerto** hacia las máquinas, sin saber de proveedores | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
 | `internal/dispenser/batidos` | Adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | Adaptador YS: HMAC, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
-| `internal/store` | **El puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `PaymentIntent`, `OrderStatus`, `PaymentStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalid`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines`, `PendingPaymentIntents` |
+| `internal/store` | **El puerto** de persistencia + memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `PaymentIntent`, `OrderStatus`, `PaymentStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalid`, `NotificationSent`, `RecordNotification`, `OverdueLines`, `StalledLines`, `PendingPaymentIntents` |
 | `internal/store/postgres` | Implementación sobre Postgres (importa también `catalog` y `config` para `seed.go`) | `Open`, `Store`, `Seed` |
 | `internal/topology` | Upsert de muebles/máquinas/combos al arrancar (Postgres tiene FK) | `Seed` |
-| `internal/order` | **El dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `Place`, `RequestQR`, `ConfirmFromGateway`, `ReconcilePayments`, `ConfirmPayment`, `ReconcileDue`, `CloseFromCallback`, `ConfirmFromCallback`, `Gate`, `NotSellableError`, `DeriveOrderStatus` |
-| `internal/gate` | Adaptador `order.Gate` sobre `preflight` | `New`, `Check` |
+| `internal/order` | **El dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `CreateOrder`, `RequestQR`, `SyncPayment`, `SyncPendingPayments`, `MarkPaid`, `SyncOverdueLines`, `ApplyCallback`, `SyncLineFromCallback`, `AvailabilityChecker`, `NotSellableError`, `DeriveOrderStatus` |
+| `internal/gate` | Adaptador `order.AvailabilityChecker` sobre `preflight` | `New`, `Check` |
 | `internal/preflight` | La regla de disponibilidad (consulta las dos máquinas y sus productos) | `Checker`, `Request`, `Result`, `Reason` |
 | `internal/httpapi` | El borde: **tres contratos separados** (tablet, callbacks de máquinas y webhook de Mercado Pago) | `Handler`, `Callbacks`, `MercadoPagoWebhook`, `Deps`, `BatidosCallbackURL` |
 | `internal/payments` | **El puerto** de cobro (`Gateway`: crear QR, consultar, cancelar). También el puerto de devoluciones con su mock, que sigue sin conectar (fuera del MVP) | `Gateway`, `Charge`, `ChargeStatus`, `QRRequest`, `Refunder`, `MockRefunder` |
 | `internal/payments/mercadopago` | Adaptador de la Orders API de Mercado Pago (`net/http`, sin SDK) + validación de la firma del webhook | `Client`, `VerifySignature`, `SignatureHeader` |
 | `internal/notify` | Puerto de avisos + transportes por log y por Telegram | `Notifier`, `Kind`, `Event`, `LogNotifier`, `TelegramNotifier` |
-| `internal/sweep` | Barrido periódico que dispara `ReconcileDue` y, con Mercado Pago, `ReconcilePayments` | `Runner`, `New`, `WithPayments` |
+| `internal/sweep` | Barrido periódico que dispara `SyncOverdueLines` y, con Mercado Pago, `SyncPendingPayments` | `Runner`, `New`, `WithPaymentSync` |
 | `internal/logging` | `slog` con mensajes capitalizados en el borde | `New`, `Capitalize` |
 | `internal/fakeapi` | Implementación de los proveedores falsos (batidos, snacks, Mercado Pago) + administración | `NewBatidos`, `NewSnacks`, `NewMercadoPago`, `NewAdmin` |
 
@@ -133,6 +133,20 @@ Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 | `payments.ChargeStatus` | `internal/payments` | `pending`, `approved`, `expired`, `cancelled`, `unknown` |
 | `notify.Kind` | `internal/notify` | `order_in_doubt`, `order_failed`, `payment_mismatch`, `payment_unknown` |
 | `preflight.Reason` | `internal/preflight` | `batidos_device_offline`, `snacks_sku_out_of_stock`, … |
+
+## Glosario de verbos
+
+Los nombres del motor y de sus puertos siguen un vocabulario fijo (revisión de terminología del 2026-11-18):
+
+| Verbo | Significa | Ejemplos |
+| --- | --- | --- |
+| **Create** | Crea algo nuevo | `CreateOrder` (valida, chequea disponibilidad, idempotente por `client_key`) |
+| **Mark** | Cambia un estado propio sin preguntarle a nadie | `MarkPaid` (marca pagada y despacha; hoy lo usa el pago simulado) |
+| **Apply** | Aplica un aviso tal cual, porque el aviso es la verdad | `ApplyCallback` (callback de snacks) |
+| **Sync** | Le pregunta al proveedor cómo está algo y aplica lo que responde | `SyncPayment` (webhook de MP), `SyncLineFromCallback` (callback de batidos), `SyncOverdueLines`, `SyncPendingPayments` |
+| **Barrido** | El worker de fondo (`sweep.Runner`) que cada 30 s llama a los `Sync…` | `sweep.WithPaymentSync` |
+
+«Overdue» es **vencida** (`deadline_at` ya pasó), no «en duda» (`in_doubt`). Las interfaces de los bordes se nombran por lo que piden: `OrderCreator`, `PaidMarker`, `QRRequester`, `PaymentSyncer`, `CallbackHandler`, `AvailabilityChecker`.
 
 ## Valores por defecto que no están en configuración
 
@@ -202,10 +216,10 @@ main (:41)
  │                                │        + Seed (postgres/seed.go:12)
  │                                └ no → store.NewMemory (store/memory.go:45)
  ├─ gate.New(preflight.New) ............ gate/gate.go:23, preflight/checker.go:68
- ├─ ¿Mercado Pago? → mercadopago.NewClient + order.WithPayments ... main.go:117
+ ├─ ¿Mercado Pago? → mercadopago.NewClient + order.WithQRPayments ... main.go:117
  ├─ order.New(store, machines, notifier, gate, pagos) .. order/engine.go:55
  ├─ sweep.New(engine) (30 s, lote 10; + pagos con MP) .. sweep/runner.go:57
- ├─ httpapi.New (+ Charger/Payments con MP) ...... main.go:150
+ ├─ httpapi.New (+ QRRequester/Payments con MP) ...... main.go:150
  ├─ rutas en el mux (+ webhook de MP) ............ main.go:189, :196
  ├─ newServer (timeouts) .......................... cmd/api/server.go:16
  ├─ go sweep.Run ........ :209        go ListenAndServe ........ :217
@@ -221,12 +235,12 @@ Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migr
 | --- | --- | --- |
 | `GET /healthz` | `cmd/api/main.go:137` | Retorna 200 OK |
 | `GET /combos` | `httpapi/combos.go:7 listCombos` | `catalog/memory.go:40 Combos` |
-| `POST /orders` | `httpapi/orders.go:10 createOrder` | `order/place.go:12 Place` + (con MP) `order/qr.go:21 RequestQR` |
+| `POST /orders` | `httpapi/orders.go:10 createOrder` | `order/place.go:12 CreateOrder` + (con MP) `order/qr.go:21 RequestQR` |
 | `GET /orders/{id}` | `httpapi/orders.go:56 readOrder` | `store.LoadOrder` + (con MP) `store.PaymentIntentByOrder` |
-| `POST /orders/{id}/pay` | `httpapi/orders.go:79 payOrder` | `order/payment.go:12 ConfirmPayment` (simulado; 403 fuera de sandbox o con MP) |
-| `POST /callbacks/mercadopago/{secret}` | `httpapi/mercadopago.go:77 receive` | `order/charge.go:15 ConfirmFromGateway` |
-| `POST /callbacks/batidos/{secret}/{orderId}` | `httpapi/callbacks.go:116` | `order/callback.go:55 ConfirmFromCallback` |
-| `POST /callbacks/snacks/{secret}` | `httpapi/callbacks.go:155` | `order/callback.go:38 CloseFromCallback` |
+| `POST /orders/{id}/pay` | `httpapi/orders.go:79 payOrder` | `order/payment.go:12 MarkPaid` (simulado; 403 fuera de sandbox o con MP) |
+| `POST /callbacks/mercadopago/{secret}` | `httpapi/mercadopago.go:77 receive` | `order/charge.go:15 SyncPayment` |
+| `POST /callbacks/batidos/{secret}/{orderId}` | `httpapi/callbacks.go:116` | `order/callback.go:55 SyncLineFromCallback` |
+| `POST /callbacks/snacks/{secret}` | `httpapi/callbacks.go:155` | `order/callback.go:38 ApplyCallback` |
 
 ## 3. Flujo de una compra, de punta a punta
 
@@ -239,7 +253,7 @@ httpapi/orders.go:10 createOrder
   ├─ resolveKiosk ........... httpapi/draft.go:44
   └─ buildDraft ............. httpapi/draft.go:66   (precio SIEMPRE del catálogo)
   ▼
-order/place.go:12 Place
+order/place.go:12 CreateOrder
   ├─ validateDraft :74 ──► machine.Ref.Validate (identificadores según Kind)
   ├─ ¿ya existe client_key? (:18) ── sí → devuelve la misma orden (idempotencia)
   ├─ gate.Check (gate/gate.go:27) → preflight.Check (preflight/checker.go:93)
@@ -258,20 +272,20 @@ COBRO, por uno de dos caminos:
      MP ──► POST /callbacks/mercadopago/{secret} (httpapi/mercadopago.go:77)
             secreto de ruta → firma → type == order
        ▼
-     order/charge.go:15 ConfirmFromGateway
+     order/charge.go:15 SyncPayment
        ├─ Lookup en MP (no se usa el cuerpo del aviso)
        ├─ external_reference → payment_intent de la orden, mismo cobro
        └─ applyCharge (:45)
-            approved + monto correcto → markPaid y despacho en segundo plano (spawn)
+            approved + monto correcto → claimPaid y despacho en segundo plano (spawn)
             approved + monto distinto → no despacha, aviso payment_mismatch
             expired / cancelled       → orden cancelled
             unknown                   → aviso payment_unknown, no toca nada
      El webhook responde 200 sin esperar el despacho. Si el aviso se pierde, lo
-     recupera ReconcilePayments (order/reconcile_payments.go:17) en el barrido.
+     recupera SyncPendingPayments (order/reconcile_payments.go:17) en el barrido.
 
   b) Sin Mercado Pago (sólo sandbox): TABLET POST /orders/{id}/pay
   ▼
-order/payment.go:12 ConfirmPayment = markPaid (:21) + dispatchLines (:58)
+order/payment.go:12 MarkPaid = claimPaid (:21) + dispatchLines (:58)
   ├─ si no está pending_payment → no hace nada (:18)
   ├─ SaveOrder → paid       (ErrStale: otro /pay ganó → termina sin despachar)
   ├─ AdvanceOrder → dispatching (order/status.go:92)
@@ -323,7 +337,7 @@ Regla clave: sólo se reintenta un **rechazo explícito**. Un error de red o tim
 
 ### Quién mueve una línea `pending`
 
-- **`ConfirmPayment`**: Es el camino habitual tras el pago. Ejecuta una vuelta de `dispatchLine` por intento, con el contexto separado de la cancelación HTTP del cliente y un plazo por línea igual al plazo de reclamo (2 minutos).
+- **`MarkPaid`**: Es el camino habitual tras el pago. Ejecuta una vuelta de `dispatchLine` por intento, con el contexto separado de la cancelación HTTP del cliente y un plazo por línea igual al plazo de reclamo (2 minutos).
 - **El barrido periódico (`sweep`)**: Aplica dos reglas independientes:
   - Una línea `pending` **con plazo vencido** quedó reclamada por un despacho que no dejó resultado comprobado: se **reconcilia** consultando al proveedor (nunca se vuelve a despachar a ciegas).
   - Una línea `pending` **sin plazo** que pertenezca a una orden en estado `paid` o `dispatching` pagada hace más de 2 minutos nunca llegó a reclamarse: se **despacha** ejecutando el intento siguiente (`resumeStalledLine`).
@@ -334,17 +348,17 @@ Regla clave: sólo se reintenta un **rechazo explícito**. Un error de red o tim
  A) CALLBACK DEL PROVEEDOR                      B) BARRIDO (cada 30 s)
  httpapi/callbacks.go:116 / :155                sweep/runner.go:65 Run → tick :79
    └ secretMatches :270 (tiempo constante;        ▼
-     si falla → 404)                            order/reconcile.go:20 ReconcileDue
-   ▼                                              ├─ DueLines (plazo vencido, también pending)
+     si falla → 404)                            order/reconcile.go:20 SyncOverdueLines
+   ▼                                              ├─ OverdueLines (plazo vencido, también pending)
  order/callback.go                                │    └ reconcileLine :96 → machine.Reconcile
    ├ recordCallback :187 (webhook_event:          │        ├ resuelto → closeLine :131
    │   duplicado → 200 sin procesar)              │        └ indeterminado → extendReconcile :187
    ├ callbackLine :103                            │             (pospone o pasa a in_doubt)
    │   lineByRef :124 → lineByThirdOrderNo :138   ├─ StalledLines (pending sin plazo, pagada
    │   → lineByMachineType :152                   │    hace más de 2 min)
-   ├ SNACKS  CloseFromCallback :38                │    └ resumeStalledLine :76 → dispatchWithinDeadline
+   ├ SNACKS  ApplyCallback :38                │    └ resumeStalledLine :76 → dispatchWithinDeadline
    │   → applyCallback :205 (delivered/failed)    │
-   └ BATIDOS ConfirmFromCallback :55              └─ settleOrder de cada orden tocada (:67)
+   └ BATIDOS SyncLineFromCallback :55              └─ settleOrder de cada orden tocada (:67)
        → markBrewing :222 + reconcileLine
          (no se confía en el aviso: se pregunta a la API)
    ▼
@@ -352,8 +366,8 @@ Regla clave: sólo se reintenta un **rechazo explícito**. Un error de red o tim
 ```
 
 Quién cierra una línea y cómo:
-- **Snacks**: Sólo el callback (`CloseFromCallback`) o el barrido. El barrido para snacks siempre concluye duda si no hay respuesta (`in_doubt`). `CloseFromCallback` aplica directamente el resultado reportado por el proveedor (`delivered` o `failed`).
-- **Batidos**: `ConfirmFromCallback` **no se fía** del webhook por sí solo (no viene firmado por el proveedor): marca la línea en preparación (`markBrewing`) y consulta inmediatamente `getOrderInfo` usando la misma función `reconcileLine` que utiliza el barrido periódico.
+- **Snacks**: Sólo el callback (`ApplyCallback`) o el barrido. El barrido para snacks siempre concluye duda si no hay respuesta (`in_doubt`). `ApplyCallback` aplica directamente el resultado reportado por el proveedor (`delivered` o `failed`).
+- **Batidos**: `SyncLineFromCallback` **no se fía** del webhook por sí solo (no viene firmado por el proveedor): marca la línea en preparación (`markBrewing`) y consulta inmediatamente `getOrderInfo` usando la misma función `reconcileLine` que utiliza el barrido periódico.
 
 ## 6. Asentar la orden y avisar (`internal/order/settle.go`)
 
@@ -385,7 +399,7 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49   (se deriva con DeriveOrderSt
 
 ## 8. Persistencia
 
-- **Puerto** `internal/store/store.go:91-104`, 12 métodos: `CreateOrder`, `LoadOrder`, `OrderByClientKey`, `SaveOrder`, `SaveLine`, `AppendAttempt`, `SaveAttempt`, `RegisterWebhook`, `NotificationSent`, `RecordNotification`, `DueLines`, `StalledLines`.
+- **Puerto** `internal/store/store.go:91-104`, 12 métodos: `CreateOrder`, `LoadOrder`, `OrderByClientKey`, `SaveOrder`, `SaveLine`, `AppendAttempt`, `SaveAttempt`, `RegisterWebhook`, `NotificationSent`, `RecordNotification`, `OverdueLines`, `StalledLines`.
 - **Errores** `store.go:85-88`: `ErrNotFound`, `ErrAlreadyExists`, `ErrStale` (escritura concurrente detectada), `ErrInvalid` (violación de invariante o `CHECK`).
 - **Implementaciones**: `store/memory.go:32` (mutex y copias profundas) y `store/postgres/postgres.go:31` (`WHERE version = $n`, *optimistic locking*: no bloquea al leer y detecta choques al escribir).
 - **Migraciones**: `0001` esquema inicial · `0002` estado `failed` de orden · `0003` `reconcile_until` · `0004` `client_key` y versión de línea · `0005` versión de orden · `0006` `notification_sent` · `0007` `payment_intent` para el cobro con Mercado Pago (FK a la orden, un cobro por orden, `expires_at`, versión). `internal/migrate` las aplica de forma atómica y vigila su huella SHA-256.
@@ -401,7 +415,7 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49   (se deriva con DeriveOrderSt
 | Por qué se canceló una orden sin pagar | `internal/order/reconcile_payments.go:40` (`reconcilePayment`) |
 | Por qué una línea no se reintenta | `internal/order/dispatch.go:133` (`classifyDispatch`) |
 | Cuándo se reintenta o queda en duda | `internal/order/dispatch.go:87`, `:133` |
-| Por qué una línea `pending` se recuperó | `internal/order/reconcile.go:20` (`ReconcileDue`, `resumeStalledLine` `:76`) y `StalledLines` en `internal/store` |
+| Por qué una línea `pending` se recuperó | `internal/order/reconcile.go:20` (`SyncOverdueLines`, `resumeStalledLine` `:76`) y `StalledLines` en `internal/store` |
 | Cuándo se declara una duda | `internal/order/reconcile.go:187` (`extendReconcile`) |
 | Cómo se elige el driver de una máquina | `internal/order/engine.go` (`machines`) y `dispatch.go` |
 | Por qué un callback no encontró su línea | `internal/order/callback.go:103` (`callbackLine`, tres reglas de resolución) |

@@ -124,7 +124,7 @@ type Store interface {
 	RegisterWebhook(ctx context.Context, wh Webhook) (duplicate bool, err error)
 	NotificationSent(ctx context.Context, orderID, kind string) (bool, error)
 	RecordNotification(ctx context.Context, orderID, kind string, at time.Time) error
-	DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error)
+	OverdueLines(ctx context.Context, now time.Time, limit int) ([]Line, error)
 	StalledLines(ctx context.Context, paidBefore time.Time, limit int) ([]Line, error)
 	CreatePaymentIntent(ctx context.Context, intent PaymentIntent) error
 	PaymentIntentByOrder(ctx context.Context, orderID string) (PaymentIntent, error)

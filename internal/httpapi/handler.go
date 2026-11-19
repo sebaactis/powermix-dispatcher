@@ -20,19 +20,19 @@ type Catalog interface {
 	Combos(ctx context.Context) ([]catalog.Combo, error)
 }
 
-type Placer interface {
-	Place(ctx context.Context, draft order.Draft) (store.Order, error)
+type OrderCreator interface {
+	CreateOrder(ctx context.Context, draft order.Draft) (store.Order, error)
 }
 
-type Confirmer interface {
-	ConfirmPayment(ctx context.Context, orderID string, at time.Time) error
+type PaidMarker interface {
+	MarkPaid(ctx context.Context, orderID string, at time.Time) error
 }
 
 type OrderReader interface {
 	LoadOrder(ctx context.Context, orderID string) (store.Order, error)
 }
 
-type Charger interface {
+type QRRequester interface {
 	RequestQR(ctx context.Context, orderID, posID string) (store.PaymentIntent, error)
 }
 
@@ -41,24 +41,24 @@ type PaymentReader interface {
 }
 
 type Deps struct {
-	Catalog   Catalog
-	Placer    Placer
-	Confirmer Confirmer
-	Orders    OrderReader
-	Kiosks    []config.Kiosk
-	Env       string
+	Catalog      Catalog
+	OrderCreator OrderCreator
+	PaidMarker   PaidMarker
+	Orders       OrderReader
+	Kiosks       []config.Kiosk
+	Env          string
 
-	Charger  Charger
-	Payments PaymentReader
+	QRRequester QRRequester
+	Payments    PaymentReader
 }
 
 type Handler struct {
-	catalog   Catalog
-	placer    Placer
-	confirmer Confirmer
-	orders    OrderReader
-	charger   Charger
-	payments  PaymentReader
+	catalog     Catalog
+	creator     OrderCreator
+	paidMarker  PaidMarker
+	orders      OrderReader
+	qrRequester QRRequester
+	payments    PaymentReader
 
 	kiosks    map[string]config.Kiosk
 	onlyKiosk string
@@ -87,11 +87,11 @@ func WithLogger(logger *slog.Logger) Option {
 }
 
 func New(deps Deps, opts ...Option) (*Handler, error) {
-	if deps.Catalog == nil || deps.Placer == nil || deps.Confirmer == nil || deps.Orders == nil {
+	if deps.Catalog == nil || deps.OrderCreator == nil || deps.PaidMarker == nil || deps.Orders == nil {
 		return nil, errors.New("el handler HTTP necesita catálogo, motor y store")
 	}
 
-	if (deps.Charger == nil) != (deps.Payments == nil) {
+	if (deps.QRRequester == nil) != (deps.Payments == nil) {
 		return nil, errors.New("el handler HTTP necesita el cobro con QR y la lectura de pagos juntos, o ninguno de los dos")
 	}
 
@@ -114,16 +114,16 @@ func New(deps Deps, opts ...Option) (*Handler, error) {
 	}
 
 	handler := &Handler{
-		catalog:   deps.Catalog,
-		placer:    deps.Placer,
-		confirmer: deps.Confirmer,
-		orders:    deps.Orders,
-		charger:   deps.Charger,
-		payments:  deps.Payments,
-		kiosks:    byID,
-		simulated: deps.Env == config.EnvSandbox && deps.Charger == nil,
-		now:       time.Now,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		catalog:     deps.Catalog,
+		creator:     deps.OrderCreator,
+		paidMarker:  deps.PaidMarker,
+		orders:      deps.Orders,
+		qrRequester: deps.QRRequester,
+		payments:    deps.Payments,
+		kiosks:      byID,
+		simulated:   deps.Env == config.EnvSandbox && deps.QRRequester == nil,
+		now:         time.Now,
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	if len(byID) == 1 {

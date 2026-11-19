@@ -9,7 +9,7 @@ import (
 	"compras-remotas/internal/store"
 )
 
-func (e *Engine) Place(ctx context.Context, draft Draft) (store.Order, error) {
+func (e *Engine) CreateOrder(ctx context.Context, draft Draft) (store.Order, error) {
 	if err := e.validateDraft(draft); err != nil {
 		return store.Order{}, err
 	}
