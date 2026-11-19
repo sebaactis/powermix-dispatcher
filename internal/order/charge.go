@@ -12,7 +12,7 @@ import (
 
 var ErrUnknownCharge = errors.New("el cobro no corresponde a ninguna orden de este sistema")
 
-func (e *Engine) ConfirmFromGateway(ctx context.Context, providerID string) error {
+func (e *Engine) SyncPayment(ctx context.Context, providerID string) error {
 	if e.payments == nil {
 		return ErrPaymentsDisabled
 	}
@@ -73,7 +73,7 @@ func (e *Engine) applyCharge(ctx context.Context, intent store.PaymentIntent, ch
 func (e *Engine) acceptPayment(ctx context.Context, intent store.PaymentIntent, charge payments.Charge) error {
 	now := e.now()
 
-	loaded, started, err := e.markPaid(ctx, intent.OrderID, now)
+	loaded, started, err := e.claimPaid(ctx, intent.OrderID, now)
 	if err != nil {
 		return err
 	}

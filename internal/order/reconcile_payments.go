@@ -14,7 +14,7 @@ const paymentReconcileAge = 10 * time.Second
 
 const paymentCancelGrace = 30 * time.Second
 
-func (e *Engine) ReconcilePayments(ctx context.Context, limit int) error {
+func (e *Engine) SyncPendingPayments(ctx context.Context, limit int) error {
 	if e.payments == nil {
 		return nil
 	}

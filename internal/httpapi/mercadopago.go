@@ -15,8 +15,8 @@ import (
 
 const mercadoPagoOrderTopic = "order"
 
-type GatewayConfirmer interface {
-	ConfirmFromGateway(ctx context.Context, providerID string) error
+type PaymentSyncer interface {
+	SyncPayment(ctx context.Context, providerID string) error
 }
 
 type MercadoPagoSecrets struct {
@@ -25,10 +25,10 @@ type MercadoPagoSecrets struct {
 }
 
 type MercadoPagoWebhook struct {
-	confirmer GatewayConfirmer
-	secrets   MercadoPagoSecrets
-	now       func() time.Time
-	logger    *slog.Logger
+	syncer  PaymentSyncer
+	secrets MercadoPagoSecrets
+	now     func() time.Time
+	logger  *slog.Logger
 }
 
 type MercadoPagoOption func(*MercadoPagoWebhook)
@@ -49,12 +49,12 @@ func WithMercadoPagoClock(now func() time.Time) MercadoPagoOption {
 	}
 }
 
-func NewMercadoPagoWebhook(confirmer GatewayConfirmer, secrets MercadoPagoSecrets, opts ...MercadoPagoOption) *MercadoPagoWebhook {
+func NewMercadoPagoWebhook(syncer PaymentSyncer, secrets MercadoPagoSecrets, opts ...MercadoPagoOption) *MercadoPagoWebhook {
 	webhook := &MercadoPagoWebhook{
-		confirmer: confirmer,
-		secrets:   secrets,
-		now:       time.Now,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		syncer:  syncer,
+		secrets: secrets,
+		now:     time.Now,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	for _, opt := range opts {
@@ -67,7 +67,7 @@ func NewMercadoPagoWebhook(confirmer GatewayConfirmer, secrets MercadoPagoSecret
 }
 
 func (m *MercadoPagoWebhook) Register(mux *http.ServeMux) {
-	if m.confirmer == nil {
+	if m.syncer == nil {
 		return
 	}
 
@@ -118,7 +118,7 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = m.confirmer.ConfirmFromGateway(r.Context(), providerID)
+	err = m.syncer.SyncPayment(r.Context(), providerID)
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusOK)

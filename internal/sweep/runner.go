@@ -12,19 +12,19 @@ const (
 	defaultLimit    = 10
 )
 
-type Sweeper interface {
-	ReconcileDue(ctx context.Context, limit int) error
+type OverdueLineSyncer interface {
+	SyncOverdueLines(ctx context.Context, limit int) error
 }
 
-type PaymentSweeper interface {
-	ReconcilePayments(ctx context.Context, limit int) error
+type PendingPaymentSyncer interface {
+	SyncPendingPayments(ctx context.Context, limit int) error
 }
 
 type Option func(*Runner)
 
 type Runner struct {
-	sweeper  Sweeper
-	payments PaymentSweeper
+	sweeper  OverdueLineSyncer
+	payments PendingPaymentSyncer
 	logger   *slog.Logger
 	interval time.Duration
 	limit    int
@@ -46,7 +46,7 @@ func WithLimit(n int) Option {
 	}
 }
 
-func WithPayments(p PaymentSweeper) Option {
+func WithPaymentSync(p PendingPaymentSyncer) Option {
 	return func(runner *Runner) {
 		if p != nil {
 			runner.payments = p
@@ -54,7 +54,7 @@ func WithPayments(p PaymentSweeper) Option {
 	}
 }
 
-func New(s Sweeper, logger *slog.Logger, opts ...Option) *Runner {
+func New(s OverdueLineSyncer, logger *slog.Logger, opts ...Option) *Runner {
 	runner := &Runner{
 		sweeper:  s,
 		logger:   logger,
@@ -90,7 +90,7 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) tick(ctx context.Context) {
-	if err := r.sweeper.ReconcileDue(ctx, r.limit); err != nil {
+	if err := r.sweeper.SyncOverdueLines(ctx, r.limit); err != nil {
 		r.logger.Error("falló el barrido de reconciliación", "error", err, "limit", r.limit)
 	}
 
@@ -98,7 +98,7 @@ func (r *Runner) tick(ctx context.Context) {
 		return
 	}
 
-	if err := r.payments.ReconcilePayments(ctx, r.limit); err != nil {
+	if err := r.payments.SyncPendingPayments(ctx, r.limit); err != nil {
 		r.logger.Error("falló el barrido de pagos", "error", err, "limit", r.limit)
 	}
 }

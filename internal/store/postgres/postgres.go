@@ -268,7 +268,7 @@ func (s *Store) RecordNotification(ctx context.Context, orderID, kind string, at
 	return nil
 }
 
-func (s *Store) DueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {
+func (s *Store) OverdueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {
 	query := `SELECT ` + lineColumns + ` FROM order_line
 		WHERE deadline_at IS NOT NULL AND deadline_at <= $1
 			AND state IN ('pending', 'sent', 'brewing', 'in_doubt')

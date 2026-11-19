@@ -125,7 +125,7 @@ func main() {
 
 	engineOpts := []order.Option{
 		order.WithNotifier(notifier),
-		order.WithGate(availability),
+		order.WithAvailabilityChecker(availability),
 		order.WithBackgroundErrors(func(orderID string, err error) {
 			logger.Error("el despacho en segundo plano terminó con error", "order_id", orderID, "error", err)
 		}),
@@ -133,24 +133,24 @@ func main() {
 
 	if cfg.MercadoPagoEnabled() {
 		mpClient := mercadopago.NewClient(cfg.MercadoPagoBaseURL, cfg.MercadoPagoAccessToken)
-		engineOpts = append(engineOpts, order.WithPayments(paymentProvider, mpClient))
+		engineOpts = append(engineOpts, order.WithQRPayments(paymentProvider, mpClient))
 	}
 
 	engine := order.New(orders, machines, engineOpts...)
 
 	runnerOpts := []sweep.Option{sweep.WithInterval(sweepInterval), sweep.WithLimit(sweepLimit)}
 	apiDeps := httpapi.Deps{
-		Catalog:   comboCatalog,
-		Placer:    engine,
-		Confirmer: engine,
-		Orders:    orders,
-		Kiosks:    cfg.Kiosks,
-		Env:       cfg.Env,
+		Catalog:      comboCatalog,
+		OrderCreator: engine,
+		PaidMarker:   engine,
+		Orders:       orders,
+		Kiosks:       cfg.Kiosks,
+		Env:          cfg.Env,
 	}
 
 	if cfg.MercadoPagoEnabled() {
-		runnerOpts = append(runnerOpts, sweep.WithPayments(engine))
-		apiDeps.Charger = engine
+		runnerOpts = append(runnerOpts, sweep.WithPaymentSync(engine))
+		apiDeps.QRRequester = engine
 		apiDeps.Payments = orders
 
 		logger.Info("cobro con QR de Mercado Pago activo: el pago simulado está apagado",

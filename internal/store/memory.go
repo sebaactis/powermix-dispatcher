@@ -295,7 +295,7 @@ func (m *Memory) RecordNotification(ctx context.Context, orderID, kind string, a
 	return nil
 }
 
-func (m *Memory) DueLines(ctx context.Context, now time.Time, limit int) ([]Line, error) {
+func (m *Memory) OverdueLines(ctx context.Context, now time.Time, limit int) ([]Line, error) {
 	m.mu.Lock()
 	due := make([]Line, 0)
 	for _, order := range m.orders {

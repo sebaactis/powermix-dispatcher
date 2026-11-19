@@ -27,9 +27,9 @@ const (
 	batidosAckMessage    = "操作成功"
 )
 
-type Receiver interface {
-	CloseFromCallback(ctx context.Context, cb order.Callback) (duplicate bool, err error)
-	ConfirmFromCallback(ctx context.Context, cb order.Callback) (duplicate bool, err error)
+type CallbackHandler interface {
+	ApplyCallback(ctx context.Context, cb order.Callback) (duplicate bool, err error)
+	SyncLineFromCallback(ctx context.Context, cb order.Callback) (duplicate bool, err error)
 }
 
 type CallbackSecrets struct {
@@ -38,7 +38,7 @@ type CallbackSecrets struct {
 }
 
 type Callbacks struct {
-	receiver Receiver
+	receiver CallbackHandler
 	secrets  CallbackSecrets
 	logger   *slog.Logger
 }
@@ -53,7 +53,7 @@ func WithCallbacksLogger(logger *slog.Logger) CallbacksOption {
 	}
 }
 
-func NewCallbacks(receiver Receiver, secrets CallbackSecrets, opts ...CallbacksOption) *Callbacks {
+func NewCallbacks(receiver CallbackHandler, secrets CallbackSecrets, opts ...CallbacksOption) *Callbacks {
 	callbacks := &Callbacks{
 		receiver: receiver,
 		secrets:  secrets,
@@ -149,7 +149,7 @@ func (c *Callbacks) batidosCallback(w http.ResponseWriter, r *http.Request) {
 		Reason:      batidosFailureReason,
 	}
 
-	c.writeCallbackResult(w, r, c.applyCallback(r.Context(), event, c.receiver.ConfirmFromCallback), ack)
+	c.writeCallbackResult(w, r, c.runCallback(r.Context(), event, c.receiver.SyncLineFromCallback), ack)
 }
 
 func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
@@ -201,13 +201,13 @@ func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
 			Reason:       result.ShipmentErrorReason,
 		}
 
-		failures = append(failures, c.applyCallback(r.Context(), event, c.receiver.CloseFromCallback))
+		failures = append(failures, c.runCallback(r.Context(), event, c.receiver.ApplyCallback))
 	}
 
 	c.writeCallbackResult(w, r, errors.Join(failures...), ack)
 }
 
-func (c *Callbacks) applyCallback(ctx context.Context, event order.Callback, apply func(context.Context, order.Callback) (bool, error)) error {
+func (c *Callbacks) runCallback(ctx context.Context, event order.Callback, apply func(context.Context, order.Callback) (bool, error)) error {
 	duplicate, err := apply(ctx, event)
 	if err != nil {
 		return err

@@ -32,7 +32,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 | 5 | **`GET /orders/{id}` no devuelve el `Ref` de cada línea** | Ante un reclamo de cliente, soporte no ve en la respuesta el código de canje (batidos) ni el `subOrderId` (snacks) | Chica |
 | 6 | **Riesgo L8: líneas `pending` agotadas** | Con `maxAttempts` reducido por configuración, líneas `pending` agotadas vuelven en cada barrido ocupando cupo; ningún camino normal de uso lo provoca | Chica |
 | 7 | **`fakeapi` no puede volver una máquina de batidos a `online`** | Devuelve 501 Not Implemented; sólo afecta a pruebas locales con la superficie de administración del falso | Chica |
-| 8 | **Revisar la terminología de todo el proyecto** (archivos, tipos, funciones, opciones) | Hay nombres que no dicen qué hacen. Ejemplos: `Place` (crea la orden y chequea la disponibilidad), `WithPayments` (en `order` prende el cobro con QR; en `sweep` sólo suma el barrido de pagos; y sin él igual se cobra, con el pago simulado), `Confirmer` / `ConfirmFromCallback` / `ConfirmFromGateway` / `ConfirmPayment` (cuatro «confirmar» distintos). Cuesta leer el código sin el glosario de la cabeza | Media |
+| 8 | ~~**Revisar la terminología del motor y sus puertos**~~ | Hecho el 2026-11-18: vocabulario fijo Create / Mark / Apply / Sync, documentado en el «Glosario de verbos» de [arquitectura.md](arquitectura.md). Quedaron fuera a propósito `dispenser`, `preflight`, `store` y `linestate`, cuyos nombres siguen la documentación de los proveedores | — |
 | 9 | **Orden sin QR que queda en `pending_payment` para siempre** | Si `RequestQR` falla (502) y la tablet nunca reintenta, la orden no tiene cobro y ningún barrido la cancela. No despacha nada, pero ensucia los listados | Chica |
 | 10 | **Un aviso que Telegram rechaza 3 veces se pierde** (decisión del 2026-11-18) | Queda sólo como ERROR en el log y se registra como enviado en `notification_sent`: no hay reintento posterior. La alternativa robusta es una tabla de avisos pendientes que reintente el barrido | Media |
 
@@ -53,7 +53,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 - **Proveedores reales**: Ninguna llamada se ha ejecutado contra los servidores de producción de los proveedores (todo el desarrollo se validó contra los servidores falsos de `cmd/fakeapi`).
 - **Mercado Pago real**: el mapeo de `status` / `status_detail` a nuestros estados y la forma exacta del webhook están tomados de la documentación, no de un sandbox.
-- **Webhook perdido en el circuito completo**: el Mercado Pago falso siempre envía el aviso, así que «se pierde el webhook y lo recupera el barrido» sólo está cubierto por tests (`ReconcilePayments` y el `Runner`), no por una prueba de punta a punta.
+- **Webhook perdido en el circuito completo**: el Mercado Pago falso siempre envía el aviso, así que «se pierde el webhook y lo recupera el barrido» sólo está cubierto por tests (`SyncPendingPayments` y el `Runner`), no por una prueba de punta a punta.
 - **`go test -race`**: No corre en entornos Windows sin compilador de C configurado para cgo. La mayor parte de la concurrencia está cubierta de forma determinista mediante inyección de estados desactualizados, con la excepción del chequeo previo paralelo (`preflight/checker_parallel_test.go`).
 - **Flujo completo automatizado**: El circuito completo `POST /orders` → `pay` → callbacks → `delivered` se ha probado únicamente de forma manual contra las APIs simuladas.
 - **Tests en `main`**: La rama `main` no contiene archivos `*_test.go`. Los 55 archivos (479 tests, contados con `go test -list` el 2026-11-18) residen en `archive/tests`. Para traer `main` a esa rama se mergea y se restauran los `*_test.go` antes de commitear: `main` los borra y un merge directo los eliminaría.
@@ -67,7 +67,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 
 1. ~~**Alertas a soporte**~~: hecho el 2026-11-18 (Telegram).
 2. **Despliegue en Render**: crear el servicio con Postgres y fijar `PUBLIC_BASE_URL`; con eso, validar Mercado Pago contra su sandbox.
-3. **Revisión de terminología** (deuda B8), antes de que el código crezca más.
+3. ~~**Revisión de terminología**~~: hecho el 2026-11-18 (deuda B8).
 4. **Antes de producción**: Integrar los tests en `main` y configurar el pipeline de integración continua (CI).
 5. **Deudas técnicas menores**: Incluir `Ref` en la respuesta de `GET /orders/{id}`.
 6. **Implementación de lease**: Sustituir el plazo fijo de 2 minutos por un mecanismo de lease/latido cuando se opere con proveedores reales y se conozcan sus latencias efectivas.

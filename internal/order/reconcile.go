@@ -17,10 +17,10 @@ const defaultReconcileWindow = 2 * time.Minute
 
 const defaultReconcileInterval = 30 * time.Second
 
-func (e *Engine) ReconcileDue(ctx context.Context, limit int) error {
+func (e *Engine) SyncOverdueLines(ctx context.Context, limit int) error {
 	now := e.now()
 
-	due, err := e.store.DueLines(ctx, now, limit)
+	due, err := e.store.OverdueLines(ctx, now, limit)
 	if err != nil {
 		return err
 	}
