@@ -26,7 +26,7 @@ func (g *stubGate) Check(ctx context.Context, draft order.Draft) error {
 	return g.err
 }
 
-func newGatedFixture(t *testing.T, g order.Gate) *fixture {
+func newGatedFixture(t *testing.T, g order.AvailabilityChecker) *fixture {
 	t.Helper()
 
 	comboCatalog, err := catalog.NewMemory(testCombos())
@@ -45,19 +45,19 @@ func newGatedFixture(t *testing.T, g order.Gate) *fixture {
 			counter++
 			return "id-" + itoa(counter)
 		}),
-		order.WithGate(g),
+		order.WithAvailabilityChecker(g),
 	)
 
 	confirmer := &fakeConfirmer{orders: memory}
 
 	handler, err := New(
 		Deps{
-			Catalog:   comboCatalog,
-			Placer:    engine,
-			Confirmer: confirmer,
-			Orders:    memory,
-			Kiosks:    []config.Kiosk{testKiosk("kiosk-1")},
-			Env:       config.EnvSandbox,
+			Catalog:      comboCatalog,
+			OrderCreator: engine,
+			PaidMarker:   confirmer,
+			Orders:       memory,
+			Kiosks:       []config.Kiosk{testKiosk("kiosk-1")},
+			Env:          config.EnvSandbox,
 		},
 		WithClock(func() time.Time { return fixedClock }),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),

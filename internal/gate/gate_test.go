@@ -74,7 +74,7 @@ func mixedDraft() order.Draft {
 func TestGateTranslatesTheDraftIntoAPreflightRequest(t *testing.T) {
 	checker := &stubChecker{result: preflight.Result{Sellable: true}}
 
-	var _ order.Gate = gate.New(checker)
+	var _ order.AvailabilityChecker = gate.New(checker)
 
 	if err := gate.New(checker).Check(context.Background(), mixedDraft()); err != nil {
 		t.Fatalf("Check: %v", err)

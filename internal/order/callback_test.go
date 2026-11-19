@@ -93,7 +93,7 @@ func dispatchedWith(t *testing.T, draft order.Draft, batidosRef, snacksRef strin
 
 	placed := place(t, engine, draft)
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
 		t.Fatalf("la confirmación de pago no debía fallar: %v", err)
 	}
 
@@ -124,10 +124,10 @@ func (m reconcilingMachine) Reconcile(ctx context.Context, req dispenser.Request
 	return m.reconcile.Reconcile(ctx, req)
 }
 
-func TestCloseFromCallbackDeliversTheLine(t *testing.T) {
+func TestApplyCallbackDeliversTheLine(t *testing.T) {
 	fx := dispatched(t)
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   fx.orderID,
@@ -163,14 +163,14 @@ func TestCloseFromCallbackDeliversTheLine(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackClosesTheOrderWhenBothLinesArrive(t *testing.T) {
+func TestApplyCallbackClosesTheOrderWhenBothLinesArrive(t *testing.T) {
 	fx := dispatched(t)
 
 	for _, event := range []order.Callback{
 		{Source: "batidos", DedupeKey: "batidos-1", OrderID: fx.orderID, Ref: "code-batidos", State: order.CallbackDelivered},
 		{Source: "snacks", DedupeKey: "snacks-1", OrderID: fx.orderID, Ref: "sub-snacks", State: order.CallbackDelivered},
 	} {
-		if _, err := fx.engine.CloseFromCallback(context.Background(), event); err != nil {
+		if _, err := fx.engine.ApplyCallback(context.Background(), event); err != nil {
 			t.Fatalf("el callback de %s no debía fallar: %v", event.Source, err)
 		}
 	}
@@ -187,10 +187,10 @@ func TestCloseFromCallbackClosesTheOrderWhenBothLinesArrive(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackMarksTheLineFailedWithTheProviderReason(t *testing.T) {
+func TestApplyCallbackMarksTheLineFailedWithTheProviderReason(t *testing.T) {
 	fx := dispatched(t)
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   fx.orderID,
@@ -213,7 +213,7 @@ func TestCloseFromCallbackMarksTheLineFailedWithTheProviderReason(t *testing.T) 
 	}
 }
 
-func TestCloseFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
+func TestApplyCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	fx := dispatched(t)
 
 	event := order.Callback{
@@ -224,7 +224,7 @@ func TestCloseFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 		State:     order.CallbackDelivered,
 	}
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), event); err != nil {
+	if _, err := fx.engine.ApplyCallback(context.Background(), event); err != nil {
 		t.Fatalf("el primer callback no debía fallar: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestCloseFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	repeated.State = order.CallbackFailed
 	repeated.Reason = "llego tarde"
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), repeated)
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), repeated)
 	if err != nil {
 		t.Fatalf("un reintento del mismo callback no debe devolver error: %v", err)
 	}
@@ -251,10 +251,10 @@ func TestCloseFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackRejectsAReferenceThatIsNotInTheOrder(t *testing.T) {
+func TestApplyCallbackRejectsAReferenceThatIsNotInTheOrder(t *testing.T) {
 	fx := dispatched(t)
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   fx.orderID,
@@ -276,7 +276,7 @@ func TestCloseFromCallbackRejectsAReferenceThatIsNotInTheOrder(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackRejectsAnIncompleteEvent(t *testing.T) {
+func TestApplyCallbackRejectsAnIncompleteEvent(t *testing.T) {
 	fx := dispatched(t)
 
 	cases := []struct {
@@ -291,7 +291,7 @@ func TestCloseFromCallbackRejectsAnIncompleteEvent(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			duplicate, err := fx.engine.CloseFromCallback(context.Background(), testCase.event)
+			duplicate, err := fx.engine.ApplyCallback(context.Background(), testCase.event)
 			if !errors.Is(err, order.ErrCallbackIncomplete) {
 				t.Fatalf("se esperaba ErrCallbackIncomplete y llegó %v", err)
 			}
@@ -303,10 +303,10 @@ func TestCloseFromCallbackRejectsAnIncompleteEvent(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackRejectsAnUnknownOrder(t *testing.T) {
+func TestApplyCallbackRejectsAnUnknownOrder(t *testing.T) {
 	fx := dispatched(t)
 
-	_, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	_, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   "orden-que-no-existe",
@@ -319,12 +319,12 @@ func TestCloseFromCallbackRejectsAnUnknownOrder(t *testing.T) {
 	}
 }
 
-func TestConfirmFromCallbackAsksTheProviderInsteadOfTrustingTheCallback(t *testing.T) {
+func TestSyncLineFromCallbackAsksTheProviderInsteadOfTrustingTheCallback(t *testing.T) {
 	fx := dispatched(t)
 
 	fx.reconcile["batidos"].status = dispenser.Status{State: linestate.Delivered}
 
-	duplicate, err := fx.engine.ConfirmFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.SyncLineFromCallback(context.Background(), order.Callback{
 		Source:    "batidos",
 		DedupeKey: "batidos-1",
 		OrderID:   fx.orderID,
@@ -359,12 +359,12 @@ func TestConfirmFromCallbackAsksTheProviderInsteadOfTrustingTheCallback(t *testi
 	}
 }
 
-func TestConfirmFromCallbackKeepsWaitingWhenTheProviderIsStillWorking(t *testing.T) {
+func TestSyncLineFromCallbackKeepsWaitingWhenTheProviderIsStillWorking(t *testing.T) {
 	fx := dispatched(t)
 
 	fx.reconcile["batidos"].status = dispenser.Status{State: linestate.Brewing, Reason: "todavía preparando"}
 
-	duplicate, err := fx.engine.ConfirmFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.SyncLineFromCallback(context.Background(), order.Callback{
 		Source:    "batidos",
 		DedupeKey: "batidos-1",
 		OrderID:   fx.orderID,
@@ -395,10 +395,10 @@ func TestConfirmFromCallbackKeepsWaitingWhenTheProviderIsStillWorking(t *testing
 	}
 }
 
-func TestCloseFromCallbackDoesNotTouchAClosedLine(t *testing.T) {
+func TestApplyCallbackDoesNotTouchAClosedLine(t *testing.T) {
 	fx := dispatched(t)
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   fx.orderID,
@@ -408,7 +408,7 @@ func TestCloseFromCallbackDoesNotTouchAClosedLine(t *testing.T) {
 		t.Fatalf("el primer callback no debía fallar: %v", err)
 	}
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-2",
 		OrderID:   fx.orderID,
@@ -430,10 +430,10 @@ func TestCloseFromCallbackDoesNotTouchAClosedLine(t *testing.T) {
 	}
 }
 
-func TestConfirmFromCallbackDoesNotReopenAClosedLine(t *testing.T) {
+func TestSyncLineFromCallbackDoesNotReopenAClosedLine(t *testing.T) {
 	fx := dispatched(t)
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "batidos",
 		DedupeKey: "batidos-1",
 		OrderID:   fx.orderID,
@@ -443,7 +443,7 @@ func TestConfirmFromCallbackDoesNotReopenAClosedLine(t *testing.T) {
 		t.Fatalf("el cierre no debía fallar: %v", err)
 	}
 
-	if _, err := fx.engine.ConfirmFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.SyncLineFromCallback(context.Background(), order.Callback{
 		Source:    "batidos",
 		DedupeKey: "batidos-2",
 		OrderID:   fx.orderID,
@@ -474,7 +474,7 @@ func newStaleDueStore() *staleDueStore {
 	return &staleDueStore{Memory: store.NewMemory()}
 }
 
-func (s *staleDueStore) DueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {
+func (s *staleDueStore) OverdueLines(ctx context.Context, now time.Time, limit int) ([]store.Line, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -482,15 +482,15 @@ func (s *staleDueStore) DueLines(ctx context.Context, now time.Time, limit int) 
 		return append([]store.Line(nil), s.due...), nil
 	}
 
-	return s.Memory.DueLines(ctx, now, limit)
+	return s.Memory.OverdueLines(ctx, now, limit)
 }
 
 func (s *staleDueStore) copyDueLines(t *testing.T, now time.Time) []store.Line {
 	t.Helper()
 
-	due, err := s.Memory.DueLines(context.Background(), now, 10)
+	due, err := s.Memory.OverdueLines(context.Background(), now, 10)
 	if err != nil {
-		t.Fatalf("DueLines: %v", err)
+		t.Fatalf("OverdueLines: %v", err)
 	}
 	if len(due) == 0 {
 		t.Fatalf("el worker necesita una línea vencida para copiar y no hubo ninguna")
@@ -503,7 +503,7 @@ func (s *staleDueStore) copyDueLines(t *testing.T, now time.Time) []store.Line {
 	return due
 }
 
-func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing.T) {
+func TestSyncOverdueLinesDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing.T) {
 	cases := []struct {
 		name   string
 		status dispenser.Status
@@ -539,8 +539,8 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 			)
 
 			placed := place(t, engine, drinkOnlyDraft())
-			if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-				t.Fatalf("ConfirmPayment: %v", err)
+			if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
 			}
 
 			clock.set(engineNow.Add(2 * time.Minute))
@@ -550,7 +550,7 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 				t.Fatalf("el worker debía copiar una línea abierta y copió %q", copied[0].State)
 			}
 
-			duplicate, err := engine.CloseFromCallback(ctx, order.Callback{
+			duplicate, err := engine.ApplyCallback(ctx, order.Callback{
 				Source:      "batidos",
 				DedupeKey:   "batidos-1",
 				OrderID:     placed.ID,
@@ -570,7 +570,7 @@ func TestReconcileDueDoesNotOverwriteTheCloseThatACallbackAlreadyMade(t *testing
 				t.Fatalf("el callback debía dejar la línea entregada con su referencia y quedó %+v", closed)
 			}
 
-			if err := engine.ReconcileDue(ctx, 10); err != nil {
+			if err := engine.SyncOverdueLines(ctx, 10); err != nil {
 				t.Fatalf("el barrido con una copia vieja no debe devolver error: %v", err)
 			}
 
@@ -656,7 +656,7 @@ func (s *competingWriteStore) callCount() int {
 	return s.calls
 }
 
-func TestCloseFromCallbackRetriesOnceWhenAnotherWriterTookTheLine(t *testing.T) {
+func TestApplyCallbackRetriesOnceWhenAnotherWriterTookTheLine(t *testing.T) {
 	cases := []struct {
 		name      string
 		competing int
@@ -691,13 +691,13 @@ func TestCloseFromCallbackRetriesOnceWhenAnotherWriterTookTheLine(t *testing.T) 
 			}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
 
 			placed := place(t, engine, comboDraft())
-			if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-				t.Fatalf("ConfirmPayment: %v", err)
+			if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
 			}
 
 			orders.arm(tc.competing)
 
-			duplicate, err := engine.CloseFromCallback(ctx, order.Callback{
+			duplicate, err := engine.ApplyCallback(ctx, order.Callback{
 				Source:      "snacks",
 				DedupeKey:   "snacks-1",
 				OrderID:     placed.ID,
@@ -776,7 +776,7 @@ func (s *competingOrderStore) callCount() int {
 	return s.calls
 }
 
-func TestCloseFromCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *testing.T) {
+func TestApplyCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *testing.T) {
 	cases := []struct {
 		name      string
 		competing int
@@ -810,11 +810,11 @@ func TestCloseFromCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *test
 			}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
 
 			placed := place(t, engine, comboDraft())
-			if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-				t.Fatalf("ConfirmPayment: %v", err)
+			if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
 			}
 
-			if _, err := engine.CloseFromCallback(ctx, order.Callback{
+			if _, err := engine.ApplyCallback(ctx, order.Callback{
 				Source:      "snacks",
 				DedupeKey:   "snacks-1",
 				OrderID:     placed.ID,
@@ -827,7 +827,7 @@ func TestCloseFromCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *test
 
 			orders.arm(tc.competing)
 
-			_, err := engine.CloseFromCallback(ctx, order.Callback{
+			_, err := engine.ApplyCallback(ctx, order.Callback{
 				Source:      "batidos",
 				DedupeKey:   "batidos-1",
 				OrderID:     placed.ID,
@@ -898,7 +898,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 
 	placed := place(t, engine, comboDraft())
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
 		t.Fatalf("la confirmación de pago no debía fallar: %v", err)
 	}
 
@@ -912,7 +912,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 
 	failing.failNextSaveLine()
 
-	duplicate, err := engine.CloseFromCallback(context.Background(), event)
+	duplicate, err := engine.ApplyCallback(context.Background(), event)
 	if err == nil {
 		t.Fatalf("si el efecto no se pudo guardar el callback debe devolver el error")
 	}
@@ -921,7 +921,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 		t.Fatalf("un callback que no se pudo aplicar no debe quedar registrado como visto ni como duplicado")
 	}
 
-	duplicate, err = engine.CloseFromCallback(context.Background(), event)
+	duplicate, err = engine.ApplyCallback(context.Background(), event)
 	if err != nil {
 		t.Fatalf("el reintento del proveedor con la misma clave debía procesarse: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestCallbackDoesNotBurnItsKeyWhenTheApplyFails(t *testing.T) {
 	}
 }
 
-func TestConfirmFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
+func TestSyncLineFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	fx := dispatched(t)
 
 	fx.reconcile["batidos"].status = dispenser.Status{State: linestate.Delivered}
@@ -949,11 +949,11 @@ func TestConfirmFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 		State:     order.CallbackDelivered,
 	}
 
-	if _, err := fx.engine.ConfirmFromCallback(context.Background(), event); err != nil {
+	if _, err := fx.engine.SyncLineFromCallback(context.Background(), event); err != nil {
 		t.Fatalf("el primer callback no debía fallar: %v", err)
 	}
 
-	duplicate, err := fx.engine.ConfirmFromCallback(context.Background(), event)
+	duplicate, err := fx.engine.SyncLineFromCallback(context.Background(), event)
 	if err != nil {
 		t.Fatalf("un reintento del mismo callback no debe devolver error: %v", err)
 	}
@@ -967,7 +967,7 @@ func TestConfirmFromCallbackIsIdempotentBySourceAndKey(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackResolvesTheLineByThirdOrderNo(t *testing.T) {
+func TestApplyCallbackResolvesTheLineByThirdOrderNo(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, comboDraft())
 
 	snacksBefore := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
@@ -975,7 +975,7 @@ func TestCloseFromCallbackResolvesTheLineByThirdOrderNo(t *testing.T) {
 		t.Fatalf("el escenario necesita una línea sin referencia y tiene %q", snacksBefore.Ref)
 	}
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:       "snacks",
 		DedupeKey:    "snacks-1",
 		OrderID:      fx.orderID,
@@ -1006,12 +1006,12 @@ func TestCloseFromCallbackResolvesTheLineByThirdOrderNo(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackAdoptedRefWinsOnTheNextEvent(t *testing.T) {
+func TestApplyCallbackAdoptedRefWinsOnTheNextEvent(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, comboDraft())
 
 	snacksBefore := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "snacks")
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:       "snacks",
 		DedupeKey:    "snacks-1",
 		OrderID:      fx.orderID,
@@ -1023,7 +1023,7 @@ func TestCloseFromCallbackAdoptedRefWinsOnTheNextEvent(t *testing.T) {
 		t.Fatalf("el primer callback no debía fallar: %v", err)
 	}
 
-	if _, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	if _, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-2",
 		OrderID:   fx.orderID,
@@ -1044,10 +1044,10 @@ func TestCloseFromCallbackAdoptedRefWinsOnTheNextEvent(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackClosesTheOnlyLineWithoutRef(t *testing.T) {
+func TestApplyCallbackClosesTheOnlyLineWithoutRef(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, comboDraft())
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:      "snacks",
 		DedupeKey:   "snacks-1",
 		OrderID:     fx.orderID,
@@ -1073,10 +1073,10 @@ func TestCloseFromCallbackClosesTheOnlyLineWithoutRef(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackRefusesToGuessBetweenTwoLines(t *testing.T) {
+func TestApplyCallbackRefusesToGuessBetweenTwoLines(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, twoSnackLinesDraft())
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:      "snacks",
 		DedupeKey:   "snacks-1",
 		OrderID:     fx.orderID,
@@ -1099,10 +1099,10 @@ func TestCloseFromCallbackRefusesToGuessBetweenTwoLines(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackDoesNotAdoptTheOtherMachineLineWithoutRef(t *testing.T) {
+func TestApplyCallbackDoesNotAdoptTheOtherMachineLineWithoutRef(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, comboDraft())
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:      "snacks",
 		DedupeKey:   "snacks-1",
 		OrderID:     fx.orderID,
@@ -1134,10 +1134,10 @@ func TestCloseFromCallbackDoesNotAdoptTheOtherMachineLineWithoutRef(t *testing.T
 	}
 }
 
-func TestCloseFromCallbackDoesNotGuessWithoutTheMachineType(t *testing.T) {
+func TestApplyCallbackDoesNotGuessWithoutTheMachineType(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, comboDraft())
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   fx.orderID,
@@ -1160,12 +1160,12 @@ func TestCloseFromCallbackDoesNotGuessWithoutTheMachineType(t *testing.T) {
 	}
 }
 
-func TestCloseFromCallbackWithoutAnyReferenceIsAnUnknownLine(t *testing.T) {
+func TestApplyCallbackWithoutAnyReferenceIsAnUnknownLine(t *testing.T) {
 	fx := dispatched(t)
 
 	for _, machineType := range []string{"", "snacks"} {
 		t.Run("maquina="+machineType, func(t *testing.T) {
-			_, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+			_, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 				Source:      "snacks",
 				DedupeKey:   "snacks-" + machineType,
 				OrderID:     fx.orderID,
@@ -1193,12 +1193,12 @@ func giveLineRef(t *testing.T, orders *store.Memory, orderID string, position in
 	return line
 }
 
-func TestCloseFromCallbackDoesNotCloseAnotherSnackLineWhenTheRefDoesNotMatch(t *testing.T) {
+func TestApplyCallbackDoesNotCloseAnotherSnackLineWhenTheRefDoesNotMatch(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, twoSnackLinesDraft())
 
 	giveLineRef(t, fx.orders, fx.orderID, 0, "sub-guardado")
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:      "snacks",
 		DedupeKey:   "snacks-1",
 		OrderID:     fx.orderID,
@@ -1226,12 +1226,12 @@ func TestCloseFromCallbackDoesNotCloseAnotherSnackLineWhenTheRefDoesNotMatch(t *
 	}
 }
 
-func TestCloseFromCallbackWithARefMismatchAndNoMachineTypeIsAnUnknownLine(t *testing.T) {
+func TestApplyCallbackWithARefMismatchAndNoMachineTypeIsAnUnknownLine(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, twoSnackLinesDraft())
 
 	giveLineRef(t, fx.orders, fx.orderID, 0, "sub-guardado")
 
-	duplicate, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	duplicate, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "snacks",
 		DedupeKey: "snacks-1",
 		OrderID:   fx.orderID,
@@ -1254,12 +1254,12 @@ func TestCloseFromCallbackWithARefMismatchAndNoMachineTypeIsAnUnknownLine(t *tes
 	}
 }
 
-func TestCloseFromCallbackDoesNotCloseTheOtherMachineLineByThirdOrderNo(t *testing.T) {
+func TestApplyCallbackDoesNotCloseTheOtherMachineLineByThirdOrderNo(t *testing.T) {
 	fx := dispatched(t)
 
 	batidosBefore := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
 
-	_, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	_, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:       "snacks",
 		DedupeKey:    "snacks-1",
 		OrderID:      fx.orderID,
@@ -1278,7 +1278,7 @@ func TestCloseFromCallbackDoesNotCloseTheOtherMachineLineByThirdOrderNo(t *testi
 	}
 }
 
-func TestCloseFromCallbackDoesNotMatchAThirdOrderNoWithoutTheMachineType(t *testing.T) {
+func TestApplyCallbackDoesNotMatchAThirdOrderNoWithoutTheMachineType(t *testing.T) {
 	fx := dispatchedWithoutProviderRefs(t, comboDraft())
 
 	batidosBefore := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
@@ -1286,7 +1286,7 @@ func TestCloseFromCallbackDoesNotMatchAThirdOrderNoWithoutTheMachineType(t *test
 		t.Fatalf("el escenario necesita una línea de batidos sin referencia y tiene %q", batidosBefore.Ref)
 	}
 
-	_, err := fx.engine.CloseFromCallback(context.Background(), order.Callback{
+	_, err := fx.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:       "snacks",
 		DedupeKey:    "snacks-1",
 		OrderID:      fx.orderID,

@@ -23,7 +23,7 @@ type countingSweeper struct {
 	ticked    chan struct{}
 }
 
-func (c *countingSweeper) ReconcileDue(_ context.Context, limit int) error {
+func (c *countingSweeper) SyncOverdueLines(_ context.Context, limit int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -33,7 +33,7 @@ func (c *countingSweeper) ReconcileDue(_ context.Context, limit int) error {
 	return c.linesErr
 }
 
-func (c *countingSweeper) ReconcilePayments(_ context.Context, limit int) error {
+func (c *countingSweeper) SyncPendingPayments(_ context.Context, limit int) error {
 	c.mu.Lock()
 	c.payments++
 	c.limits = append(c.limits, limit)
@@ -86,7 +86,7 @@ func runOneTick(t *testing.T, sweeper *countingSweeper, logs *bytes.Buffer, opts
 func TestRunnerReconcilesPaymentsWithSameLimit(t *testing.T) {
 	sweeper := &countingSweeper{ticked: make(chan struct{}, 1)}
 
-	runOneTick(t, sweeper, &bytes.Buffer{}, sweep.WithPayments(sweeper))
+	runOneTick(t, sweeper, &bytes.Buffer{}, sweep.WithPaymentSync(sweeper))
 
 	lines, payments, limits := sweeper.snapshot()
 	if lines == 0 || payments == 0 {
@@ -111,7 +111,7 @@ func TestRunnerWithoutPaymentsSkipsThem(t *testing.T) {
 	}
 
 	if payments != 0 {
-		t.Fatalf("sin WithPayments no debería barrer pagos; corrió %d veces", payments)
+		t.Fatalf("sin WithPaymentSync no debería barrer pagos; corrió %d veces", payments)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestRunnerLineErrorDoesNotStopPayments(t *testing.T) {
 	}
 	logs := &bytes.Buffer{}
 
-	runOneTick(t, sweeper, logs, sweep.WithPayments(sweeper))
+	runOneTick(t, sweeper, logs, sweep.WithPaymentSync(sweeper))
 
 	if _, payments, _ := sweeper.snapshot(); payments == 0 {
 		t.Fatal("un error en las líneas no debería frenar el barrido de pagos")

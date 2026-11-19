@@ -98,9 +98,9 @@ func mustSaveLine(t *testing.T, m *store.Memory, line store.Line) store.Line {
 
 func mustDue(t *testing.T, m *store.Memory, now time.Time, limit int) []store.Line {
 	t.Helper()
-	due, err := m.DueLines(context.Background(), now, limit)
+	due, err := m.OverdueLines(context.Background(), now, limit)
 	if err != nil {
-		t.Fatalf("DueLines(limit=%d): %v", limit, err)
+		t.Fatalf("OverdueLines(limit=%d): %v", limit, err)
 	}
 	return due
 }
@@ -677,7 +677,7 @@ func dueLine(id string, position int, kind machine.Kind, state linestate.State, 
 	}
 }
 
-func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
+func TestMemoryOverdueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 	m := store.NewMemory()
 	now := baseTime.Add(10 * time.Minute)
 
@@ -738,18 +738,18 @@ func TestMemoryDueLinesSelectsAndOrdersDeadlines(t *testing.T) {
 		t.Run(fmt.Sprintf("limit=%d", tc.limit), func(t *testing.T) {
 			got := lineIDs(mustDue(t, m, now, tc.limit))
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("DueLines devolvió %v, se esperaba %v", got, tc.want)
+				t.Fatalf("OverdueLines devolvió %v, se esperaba %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestMemoryDueLinesIsEmptyForAnEmptyStore(t *testing.T) {
+func TestMemoryOverdueLinesIsEmptyForAnEmptyStore(t *testing.T) {
 	m := store.NewMemory()
 
 	due := mustDue(t, m, baseTime, 0)
 	if len(due) != 0 {
-		t.Fatalf("DueLines devolvió %v en un store vacío", lineIDs(due))
+		t.Fatalf("OverdueLines devolvió %v en un store vacío", lineIDs(due))
 	}
 }
 
@@ -796,7 +796,7 @@ func TestMemoryReturnsCopiesOfStoredOrders(t *testing.T) {
 	}
 }
 
-func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
+func TestMemoryReturnsCopiesOfOverdueLines(t *testing.T) {
 	m := store.NewMemory()
 	order := fixtureOrder()
 	order.Lines[0].State = linestate.Sent
@@ -805,7 +805,7 @@ func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
 
 	due := mustDue(t, m, baseTime, 0)
 	if len(due) != 1 || due[0].ID != drinkLineID {
-		t.Fatalf("DueLines devolvió %v, se esperaba [%s]", lineIDs(due), drinkLineID)
+		t.Fatalf("OverdueLines devolvió %v, se esperaba [%s]", lineIDs(due), drinkLineID)
 	}
 
 	due[0].State = linestate.Delivered
@@ -828,7 +828,7 @@ func TestMemoryReturnsCopiesOfDueLines(t *testing.T) {
 
 	stored := mustOrder(t, m, order.ID)
 	if stored.Lines[0].State != linestate.Sent {
-		t.Fatalf("mutar el resultado de DueLines cambió la orden: %q", stored.Lines[0].State)
+		t.Fatalf("mutar el resultado de OverdueLines cambió la orden: %q", stored.Lines[0].State)
 	}
 }
 
@@ -915,8 +915,8 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 				t.Errorf("RegisterWebhook(%q) devolvió duplicate=true", webhook.ID)
 			}
 
-			if _, err := m.DueLines(ctx, now, 10); err != nil {
-				t.Errorf("DueLines: %v", err)
+			if _, err := m.OverdueLines(ctx, now, 10); err != nil {
+				t.Errorf("OverdueLines: %v", err)
 			}
 		}(i)
 	}
@@ -942,7 +942,7 @@ func TestMemoryIsSafeForConcurrentUse(t *testing.T) {
 
 	due := mustDue(t, m, now, 0)
 	if len(due) != workers {
-		t.Fatalf("DueLines devolvió %d líneas, se esperaban %d", len(due), workers)
+		t.Fatalf("OverdueLines devolvió %d líneas, se esperaban %d", len(due), workers)
 	}
 }
 
@@ -992,7 +992,7 @@ func unclaimedLine(lineID, orderID string, position int, kind machine.Kind) stor
 	}
 }
 
-func TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T) {
+func TestMemoryOverdueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T) {
 	m := store.NewMemory()
 	now := baseTime.Add(10 * time.Minute)
 
@@ -1012,7 +1012,7 @@ func TestMemoryDueLinesSelectsAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testi
 	want := []string{"line-reclamada"}
 
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("DueLines devolvió %v, se esperaba %v: una línea pendiente con plazo venció, una sin plazo no", got, want)
+		t.Fatalf("OverdueLines devolvió %v, se esperaba %v: una línea pendiente con plazo venció, una sin plazo no", got, want)
 	}
 }
 

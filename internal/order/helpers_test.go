@@ -359,9 +359,9 @@ func lineFor(t *testing.T, o store.Order, machineType string) store.Line {
 func place(t *testing.T, engine *order.Engine, draft order.Draft) store.Order {
 	t.Helper()
 
-	placed, err := engine.Place(context.Background(), draft)
+	placed, err := engine.CreateOrder(context.Background(), draft)
 	if err != nil {
-		t.Fatalf("Place: %v", err)
+		t.Fatalf("CreateOrder: %v", err)
 	}
 
 	return placed
@@ -566,8 +566,8 @@ func newReconcileFixture(t *testing.T, driver dispenser.Dispenser, opts ...order
 	engine := order.New(st, map[machine.Kind]dispenser.Dispenser{"batidos": driver}, engineOpts...)
 	placed := place(t, engine, drinkOnlyDraft())
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	fixture := &reconcileFixture{engine: engine, store: st, clock: clock, placed: mustOrder(t, st, placed.ID)}
@@ -595,7 +595,7 @@ func (f *reconcileFixture) order(t *testing.T) store.Order {
 func (f *reconcileFixture) reconcileDue(t *testing.T) error {
 	t.Helper()
 
-	return f.engine.ReconcileDue(context.Background(), 10)
+	return f.engine.SyncOverdueLines(context.Background(), 10)
 }
 
 func acceptedDrinkMachine() *reconcileMachine {

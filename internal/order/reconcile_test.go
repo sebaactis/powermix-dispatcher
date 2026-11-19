@@ -15,7 +15,7 @@ import (
 	"compras-remotas/internal/store"
 )
 
-func TestEngineConfirmPaymentArmsTheReconcileWindow(t *testing.T) {
+func TestEngineMarkPaidArmsTheReconcileWindow(t *testing.T) {
 	cases := []struct {
 		name     string
 		opts     []order.Option
@@ -62,7 +62,7 @@ func TestEngineConfirmPaymentArmsTheReconcileWindow(t *testing.T) {
 	}
 }
 
-func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
+func TestEngineSyncOverdueLinesMarksADeliveredLineFromTheProvider(t *testing.T) {
 	machine := acceptedDrinkMachine()
 	machine.status = dispenser.Status{State: linestate.Delivered, ProviderOrderNo: "order-no-1"}
 
@@ -70,7 +70,7 @@ func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 	setup.clock.set(engineNow.Add(2 * time.Minute))
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if machine.reconcileCount() != 1 {
@@ -115,7 +115,7 @@ func TestEngineReconcileDueMarksADeliveredLineFromTheProvider(t *testing.T) {
 	}
 }
 
-func TestEngineReconcileDueMarksAFailedLineAndSettlesTheOrder(t *testing.T) {
+func TestEngineSyncOverdueLinesMarksAFailedLineAndSettlesTheOrder(t *testing.T) {
 	machine := acceptedDrinkMachine()
 	machine.status = dispenser.Status{State: linestate.Failed, Reason: "la máquina informó que no entregó"}
 
@@ -123,7 +123,7 @@ func TestEngineReconcileDueMarksAFailedLineAndSettlesTheOrder(t *testing.T) {
 	setup.clock.set(engineNow.Add(2 * time.Minute))
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if machine.dispatchCount() != 1 {
@@ -146,7 +146,7 @@ func TestEngineReconcileDueMarksAFailedLineAndSettlesTheOrder(t *testing.T) {
 	}
 }
 
-func TestEngineReconcileDueKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
+func TestEngineSyncOverdueLinesKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
 	cases := []struct {
 		name     string
 		opts     []order.Option
@@ -167,7 +167,7 @@ func TestEngineReconcileDueKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
 			setup.clock.set(engineNow.Add(2 * time.Minute))
 
 			if err := setup.reconcileDue(t); err != nil {
-				t.Fatalf("ReconcileDue: %v", err)
+				t.Fatalf("SyncOverdueLines: %v", err)
 			}
 
 			line := setup.line(t)
@@ -187,7 +187,7 @@ func TestEngineReconcileDueKeepsAskingWhileTheWindowIsOpen(t *testing.T) {
 	}
 }
 
-func TestEngineReconcileDueClampsTheLastScanToTheHardStop(t *testing.T) {
+func TestEngineSyncOverdueLinesClampsTheLastScanToTheHardStop(t *testing.T) {
 	machine := acceptedDrinkMachine()
 	machine.status = dispenser.Status{State: linestate.InDoubt, Reason: "el proveedor no informa el pedido"}
 
@@ -197,7 +197,7 @@ func TestEngineReconcileDueClampsTheLastScanToTheHardStop(t *testing.T) {
 	setup.clock.set(until.Add(-15 * time.Second))
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	line := setup.line(t)
@@ -209,7 +209,7 @@ func TestEngineReconcileDueClampsTheLastScanToTheHardStop(t *testing.T) {
 	}
 }
 
-func TestEngineReconcileDueClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
+func TestEngineSyncOverdueLinesClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
 	machine := acceptedDrinkMachine()
 	machine.status = dispenser.Status{State: linestate.InDoubt, Reason: "el proveedor no informa el pedido"}
 	notifier := &recordingNotifier{}
@@ -220,7 +220,7 @@ func TestEngineReconcileDueClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
 	setup.clock.set(until)
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	line := setup.line(t)
@@ -250,7 +250,7 @@ func TestEngineReconcileDueClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
 	}
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue sobre una línea ya cerrada: %v", err)
+		t.Fatalf("SyncOverdueLines sobre una línea ya cerrada: %v", err)
 	}
 	if machine.reconcileCount() != 1 {
 		t.Fatalf("la línea se volvió a consultar: %d consultas, se esperaba 1", machine.reconcileCount())
@@ -260,7 +260,7 @@ func TestEngineReconcileDueClosesTheLineInDoubtAtTheHardStop(t *testing.T) {
 	}
 }
 
-func TestEngineReconcileDueKeepsTheLineWhenTheProviderAnswersWithAnError(t *testing.T) {
+func TestEngineSyncOverdueLinesKeepsTheLineWhenTheProviderAnswersWithAnError(t *testing.T) {
 	machine := acceptedDrinkMachine()
 	machine.reconcileErr = errors.New("dial tcp 10.0.0.1:443: connect: connection refused")
 
@@ -269,7 +269,7 @@ func TestEngineReconcileDueKeepsTheLineWhenTheProviderAnswersWithAnError(t *test
 
 	err := setup.reconcileDue(t)
 	if err == nil {
-		t.Fatal("ReconcileDue devolvió nil con un error del proveedor")
+		t.Fatal("SyncOverdueLines devolvió nil con un error del proveedor")
 	}
 	if !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("el error devuelto %q, se esperaba el del proveedor", err.Error())
@@ -294,7 +294,7 @@ func TestEngineReconcileDueKeepsTheLineWhenTheProviderAnswersWithAnError(t *test
 	}
 }
 
-func TestEngineReconcileDueIgnoresALineThatIsNotDue(t *testing.T) {
+func TestEngineSyncOverdueLinesIgnoresALineThatIsNotDue(t *testing.T) {
 	machine := acceptedDrinkMachine()
 	machine.status = dispenser.Status{State: linestate.Delivered}
 
@@ -302,7 +302,7 @@ func TestEngineReconcileDueIgnoresALineThatIsNotDue(t *testing.T) {
 	before := setup.line(t)
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if machine.reconcileCount() != 0 {
@@ -358,7 +358,7 @@ func mustCreateStored(t *testing.T, st store.Store, stored store.Order) {
 	}
 }
 
-func TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching(t *testing.T) {
+func TestEngineSyncOverdueLinesReconcilesAClaimedPendingLineInsteadOfRedispatching(t *testing.T) {
 	cases := []struct {
 		name      string
 		until     time.Time
@@ -397,8 +397,8 @@ func TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching(t
 
 			engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
 
-			if err := engine.ReconcileDue(context.Background(), 10); err != nil {
-				t.Fatalf("ReconcileDue: %v", err)
+			if err := engine.SyncOverdueLines(context.Background(), 10); err != nil {
+				t.Fatalf("SyncOverdueLines: %v", err)
 			}
 
 			if driver.reconcileCount() != 1 {
@@ -422,7 +422,7 @@ func TestEngineReconcileDueReconcilesAClaimedPendingLineInsteadOfRedispatching(t
 	}
 }
 
-func TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt(t *testing.T) {
+func TestEngineSyncOverdueLinesResumesAStalledPendingLineWithTheNextAttempt(t *testing.T) {
 	ctx := context.Background()
 	st := newRecordingStore()
 
@@ -435,8 +435,8 @@ func TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt(t *testi
 
 	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
 
-	if err := engine.ReconcileDue(ctx, 10); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+	if err := engine.SyncOverdueLines(ctx, 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if driver.dispatchCount() != 1 {
@@ -466,7 +466,7 @@ func TestEngineReconcileDueResumesAStalledPendingLineWithTheNextAttempt(t *testi
 	}
 }
 
-func TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLines(t *testing.T) {
+func TestEngineSyncOverdueLinesMovesAPaidOrderToDispatchingAndDispatchesItsStalledLines(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()
 
@@ -480,8 +480,8 @@ func TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLi
 
 	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack})
 
-	if err := engine.ReconcileDue(ctx, 10); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+	if err := engine.SyncOverdueLines(ctx, 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if batido.dispatchCount() != 1 || snack.dispatchCount() != 1 {
@@ -502,7 +502,7 @@ func TestEngineReconcileDueMovesAPaidOrderToDispatchingAndDispatchesItsStalledLi
 	}
 }
 
-func TestEngineReconcileDueLeavesThePendingLinesThatWereNeverAbandoned(t *testing.T) {
+func TestEngineSyncOverdueLinesLeavesThePendingLinesThatWereNeverAbandoned(t *testing.T) {
 	cases := []struct {
 		name   string
 		status store.OrderStatus
@@ -544,8 +544,8 @@ func TestEngineReconcileDueLeavesThePendingLinesThatWereNeverAbandoned(t *testin
 
 			before := mustOrder(t, st, "order-1").Lines[0]
 
-			if err := engine.ReconcileDue(context.Background(), 10); err != nil {
-				t.Fatalf("ReconcileDue: %v", err)
+			if err := engine.SyncOverdueLines(context.Background(), 10); err != nil {
+				t.Fatalf("SyncOverdueLines: %v", err)
 			}
 
 			if driver.dispatchCount() != 0 || driver.reconcileCount() != 0 {

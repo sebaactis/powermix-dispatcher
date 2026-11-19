@@ -679,7 +679,7 @@ func TestRegisterWebhookOnlyAcceptsTheFirstEvent(t *testing.T) {
 	}
 }
 
-func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
+func TestOverdueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 	st, _ := newStore(t)
 	ctx := context.Background()
 
@@ -689,7 +689,7 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 	mustCreateOrder(t, st, orderWithDeadline("order-pronto", moment().Add(time.Minute)))
 	mustCreateOrder(t, st, orderWithDeadline("order-sin-plazo", time.Time{}))
 
-	due, err := st.DueLines(ctx, now, 10)
+	due, err := st.OverdueLines(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("no se pudo consultar las líneas vencidas: %v", err)
 	}
@@ -703,7 +703,7 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 		t.Fatalf("la línea vencida volvió incompleta: %+v", due[0])
 	}
 
-	limited, err := st.DueLines(ctx, now, 1)
+	limited, err := st.OverdueLines(ctx, now, 1)
 	if err != nil {
 		t.Fatalf("no se pudo consultar con tope: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestDueLinesSelectsAndOrdersByDeadline(t *testing.T) {
 		t.Fatalf("el tope no se respetó: %+v", limited)
 	}
 
-	none, err := st.DueLines(ctx, moment(), 10)
+	none, err := st.OverdueLines(ctx, moment(), 10)
 	if err != nil {
 		t.Fatalf("no se pudo consultar sin vencimientos: %v", err)
 	}
@@ -745,7 +745,7 @@ func orderWithLine(orderID string, status store.OrderStatus, paidAt time.Time, l
 	}
 }
 
-func TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T) {
+func TestOverdueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T) {
 	st, _ := newStore(t)
 	ctx := context.Background()
 
@@ -756,12 +756,12 @@ func TestDueLinesIncludesAClaimedPendingLineAndSkipsAnUnclaimedOne(t *testing.T)
 	mustCreateOrder(t, st, orderWithLine("order-sin-plazo", store.OrderDispatching, moment(),
 		storedLine("line-sin-plazo", 1, linestate.Pending, time.Time{})))
 
-	due, err := st.DueLines(ctx, now, 10)
+	due, err := st.OverdueLines(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("no se pudo consultar las líneas vencidas: %v", err)
 	}
 	if len(due) != 1 || due[0].ID != "line-reclamada" {
-		t.Fatalf("DueLines devolvió %d líneas, se esperaba sólo la pendiente con plazo vencido: %+v", len(due), due)
+		t.Fatalf("OverdueLines devolvió %d líneas, se esperaba sólo la pendiente con plazo vencido: %+v", len(due), due)
 	}
 	if due[0].State != linestate.Pending {
 		t.Fatalf("la línea reclamada volvió en %q, se esperaba %q", due[0].State, linestate.Pending)

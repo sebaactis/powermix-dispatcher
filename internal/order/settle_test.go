@@ -30,8 +30,8 @@ func newNotifyFixture(t *testing.T, notifier *recordingNotifier) *notifyFixture 
 
 	placed := place(t, engine, comboDraft())
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	return &notifyFixture{engine: engine, orders: orders, orderID: placed.ID}
@@ -40,7 +40,7 @@ func newNotifyFixture(t *testing.T, notifier *recordingNotifier) *notifyFixture 
 func (f *notifyFixture) failLine(t *testing.T, source, key, ref string) error {
 	t.Helper()
 
-	_, err := f.engine.CloseFromCallback(context.Background(), order.Callback{
+	_, err := f.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    source,
 		DedupeKey: key,
 		OrderID:   f.orderID,
@@ -55,7 +55,7 @@ func (f *notifyFixture) failLine(t *testing.T, source, key, ref string) error {
 func (f *notifyFixture) progressLine(t *testing.T, key, ref string) error {
 	t.Helper()
 
-	_, err := f.engine.CloseFromCallback(context.Background(), order.Callback{
+	_, err := f.engine.ApplyCallback(context.Background(), order.Callback{
 		Source:    "batidos",
 		DedupeKey: key,
 		OrderID:   f.orderID,
@@ -168,7 +168,7 @@ func TestEngineNotifiesTheDoubtAndLaterTheFailureOfTheSameOrder(t *testing.T) {
 	setup.clock.set(setup.line(t).ReconcileUntil)
 
 	if err := setup.reconcileDue(t); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if got := setup.order(t).Status; got != store.OrderInDoubt {
@@ -230,14 +230,14 @@ func TestEngineDoesNotNotifyWhenItCannotTellWhetherTheNoticeWentOut(t *testing.T
 
 	placed := place(t, engine, comboDraft())
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	broken.failure = errors.New("la base no respondió")
 
 	fail := func(source, key, ref string) error {
-		_, err := engine.CloseFromCallback(context.Background(), order.Callback{
+		_, err := engine.ApplyCallback(context.Background(), order.Callback{
 			Source:    source,
 			DedupeKey: key,
 			OrderID:   placed.ID,

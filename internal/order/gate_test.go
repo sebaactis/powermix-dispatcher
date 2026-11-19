@@ -49,17 +49,17 @@ func (g *stubGate) onlyCall(t *testing.T) order.Draft {
 	return g.calls[0]
 }
 
-func gatedEngine(st store.Store, g order.Gate) *order.Engine {
+func gatedEngine(st store.Store, g order.AvailabilityChecker) *order.Engine {
 	return order.New(
 		st,
 		map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
 		order.WithClock(frozenClock()),
 		order.WithIDGenerator(sequentialIDs()),
-		order.WithGate(g),
+		order.WithAvailabilityChecker(g),
 	)
 }
 
-func TestEnginePlaceAsksTheGateForANewOrder(t *testing.T) {
+func TestEngineCreateOrderAsksTheGateForANewOrder(t *testing.T) {
 	st := newRecordingStore()
 	gate := &stubGate{}
 	engine := gatedEngine(st, gate)
@@ -77,7 +77,7 @@ func TestEnginePlaceAsksTheGateForANewOrder(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceDoesNotAskTheGateForAnExistingClientKey(t *testing.T) {
+func TestEngineCreateOrderDoesNotAskTheGateForAnExistingClientKey(t *testing.T) {
 	st := newRecordingStore()
 	gate := &stubGate{}
 	engine := gatedEngine(st, gate)
@@ -96,12 +96,12 @@ func TestEnginePlaceDoesNotAskTheGateForAnExistingClientKey(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceCreatesNothingWhenTheGateRejects(t *testing.T) {
+func TestEngineCreateOrderCreatesNothingWhenTheGateRejects(t *testing.T) {
 	st := newRecordingStore()
 	gate := &stubGate{err: &order.NotSellableError{Reasons: []string{"batidos_device_offline"}}}
 	engine := gatedEngine(st, gate)
 
-	_, err := engine.Place(context.Background(), comboDraft())
+	_, err := engine.CreateOrder(context.Background(), comboDraft())
 	if err == nil {
 		t.Fatal("se esperaba un error de la puerta y llegó nil")
 	}
@@ -114,12 +114,12 @@ func TestEnginePlaceCreatesNothingWhenTheGateRejects(t *testing.T) {
 	}
 }
 
-func TestEnginePlacePropagatesAGateErrorWithoutCreatingAnOrder(t *testing.T) {
+func TestEngineCreateOrderPropagatesAGateErrorWithoutCreatingAnOrder(t *testing.T) {
 	st := newRecordingStore()
 	caido := errors.New("el proveedor de snacks no responde")
 	engine := gatedEngine(st, &stubGate{err: caido})
 
-	_, err := engine.Place(context.Background(), comboDraft())
+	_, err := engine.CreateOrder(context.Background(), comboDraft())
 	if !errors.Is(err, caido) {
 		t.Fatalf("se esperaba el error del proveedor y llegó %v", err)
 	}
@@ -131,7 +131,7 @@ func TestEnginePlacePropagatesAGateErrorWithoutCreatingAnOrder(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceWithANilGatePlacesTheOrder(t *testing.T) {
+func TestEngineCreateOrderWithANilCheckerCreatesTheOrder(t *testing.T) {
 	st := newRecordingStore()
 	engine := gatedEngine(st, nil)
 
@@ -174,7 +174,7 @@ func TestNotSellableErrorWithoutReasonsStillExplainsTheBlock(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceDoesNotAskTheGateForAnInvalidDraft(t *testing.T) {
+func TestEngineCreateOrderDoesNotAskTheGateForAnInvalidDraft(t *testing.T) {
 	st := newRecordingStore()
 	gate := &stubGate{}
 	engine := gatedEngine(st, gate)
@@ -182,7 +182,7 @@ func TestEnginePlaceDoesNotAskTheGateForAnInvalidDraft(t *testing.T) {
 	invalid := comboDraft()
 	invalid.Items = nil
 
-	if _, err := engine.Place(context.Background(), invalid); err == nil {
+	if _, err := engine.CreateOrder(context.Background(), invalid); err == nil {
 		t.Fatal("se esperaba el rechazo del draft y llegó nil")
 	}
 
@@ -191,7 +191,7 @@ func TestEnginePlaceDoesNotAskTheGateForAnInvalidDraft(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceDoesNotConsumeIDsWhenTheGateRejects(t *testing.T) {
+func TestEngineCreateOrderDoesNotConsumeIDsWhenTheGateRejects(t *testing.T) {
 	st := newRecordingStore()
 
 	generated := 0
@@ -203,10 +203,10 @@ func TestEnginePlaceDoesNotConsumeIDsWhenTheGateRejects(t *testing.T) {
 			generated++
 			return fmt.Sprintf("id-%d", generated)
 		}),
-		order.WithGate(&stubGate{err: &order.NotSellableError{Reasons: []string{"snacks_device_offline"}}}),
+		order.WithAvailabilityChecker(&stubGate{err: &order.NotSellableError{Reasons: []string{"snacks_device_offline"}}}),
 	)
 
-	if _, err := engine.Place(context.Background(), comboDraft()); !errors.Is(err, order.ErrNotSellable) {
+	if _, err := engine.CreateOrder(context.Background(), comboDraft()); !errors.Is(err, order.ErrNotSellable) {
 		t.Fatalf("se esperaba ErrNotSellable y llegó %v", err)
 	}
 

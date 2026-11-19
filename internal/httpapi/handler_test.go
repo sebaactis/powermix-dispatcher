@@ -20,11 +20,11 @@ func TestNewRejectsAnEmptyTopology(t *testing.T) {
 	memory := store.NewMemory()
 
 	if _, err := New(Deps{
-		Catalog:   comboCatalog,
-		Placer:    order.New(memory, testMachines()),
-		Confirmer: &fakeConfirmer{orders: memory},
-		Orders:    memory,
-		Env:       config.EnvSandbox,
+		Catalog:      comboCatalog,
+		OrderCreator: order.New(memory, testMachines()),
+		PaidMarker:   &fakeConfirmer{orders: memory},
+		Orders:       memory,
+		Env:          config.EnvSandbox,
 	}); err == nil {
 		t.Fatalf("sin muebles configurados el handler no debe construirse")
 	}
@@ -41,12 +41,12 @@ func TestNewRejectsADuplicateKiosk(t *testing.T) {
 	kiosks := []config.Kiosk{testKiosk("kiosco-centro"), testKiosk("kiosco-centro")}
 
 	if _, err := New(Deps{
-		Catalog:   comboCatalog,
-		Placer:    order.New(memory, testMachines()),
-		Confirmer: &fakeConfirmer{orders: memory},
-		Orders:    memory,
-		Kiosks:    kiosks,
-		Env:       config.EnvSandbox,
+		Catalog:      comboCatalog,
+		OrderCreator: order.New(memory, testMachines()),
+		PaidMarker:   &fakeConfirmer{orders: memory},
+		Orders:       memory,
+		Kiosks:       kiosks,
+		Env:          config.EnvSandbox,
 	}); err == nil {
 		t.Fatalf("un mueble repetido debe impedir construir el handler")
 	}

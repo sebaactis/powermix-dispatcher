@@ -33,8 +33,8 @@ func TestEngineDispatchKeepsTheProviderRefOfAnAttemptThatEndsInDoubt(t *testing.
 
 	placed := place(t, engine, drinkOnlyDraft())
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
@@ -47,8 +47,8 @@ func TestEngineDispatchKeepsTheProviderRefOfAnAttemptThatEndsInDoubt(t *testing.
 
 	clock.set(engineNow.Add(time.Minute))
 
-	if err := engine.ReconcileDue(ctx, 10); err != nil {
-		t.Fatalf("ReconcileDue: %v", err)
+	if err := engine.SyncOverdueLines(ctx, 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
 	}
 
 	if ref := driver.onlyReconcile(t).KnownRef; ref != "code-1" {
@@ -77,8 +77,8 @@ func TestEngineDispatchDoesNotKeepTheProviderRefOfAnEarlierRejectedAttempt(t *te
 
 	placed := place(t, engine, drinkOnlyDraft())
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if calls := driver.callCount(); calls != 2 {
@@ -112,7 +112,7 @@ func TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight
 	placed := place(t, engine, drinkOnlyDraft())
 
 	driver.onDispatch = func() {
-		duplicate, err := engine.CloseFromCallback(ctx, order.Callback{
+		duplicate, err := engine.ApplyCallback(ctx, order.Callback{
 			Source:      "batidos",
 			DedupeKey:   "batidos-1",
 			OrderID:     placed.ID,
@@ -127,7 +127,7 @@ func TestEngineDispatchDoesNotRevertTheLineThatACallbackClosedWhileItWasInFlight
 		}
 	}
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
 		t.Fatalf("una línea ya resuelta por el callback no debe volver al despacho: %v", err)
 	}
 
@@ -163,8 +163,8 @@ func TestEngineDispatchClaimsTheLineBeforeCallingTheMachine(t *testing.T) {
 
 	placed := place(t, engine, drinkOnlyDraft())
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	events := st.recordedEvents()
@@ -215,8 +215,8 @@ func TestEngineDispatchClearsTheClaimDeadlinesOnAFinalRejection(t *testing.T) {
 
 	placed := place(t, engine, drinkOnlyDraft())
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")

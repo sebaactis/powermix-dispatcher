@@ -163,7 +163,7 @@ func newChargeRig(t *testing.T, opts ...Option) *chargeRig {
 	base := []Option{
 		WithClock(func() time.Time { return rig.now }),
 		WithNotifier(rig.notifier),
-		WithPayments("mercadopago", rig.gateway),
+		WithQRPayments("mercadopago", rig.gateway),
 		WithBackground(func(task func()) { task() }),
 	}
 	rig.engine = New(rig.store, map[machine.Kind]dispenser.Dispenser{machine.Snacks: rig.machine}, append(base, opts...)...)
@@ -172,7 +172,7 @@ func newChargeRig(t *testing.T, opts ...Option) *chargeRig {
 
 func (rig *chargeRig) place(t *testing.T, key string) store.Order {
 	t.Helper()
-	placed, err := rig.engine.Place(context.Background(), Draft{
+	placed, err := rig.engine.CreateOrder(context.Background(), Draft{
 		KioskID: "k1", ComboID: "c1", ClientKey: key, AmountCents: 150050, Currency: "ARS",
 		Items: []Item{
 			{SKU: "s1", AmountCents: 100000, Machine: machine.Ref{KioskID: "k1", Kind: machine.Snacks, MID: "m1"}},
@@ -180,7 +180,7 @@ func (rig *chargeRig) place(t *testing.T, key string) store.Order {
 		},
 	})
 	if err != nil {
-		t.Fatalf("Place: %v", err)
+		t.Fatalf("CreateOrder: %v", err)
 	}
 	return placed
 }
@@ -240,10 +240,10 @@ func TestRequestQRWithoutGateway(t *testing.T) {
 	if _, err := engine.RequestQR(context.Background(), "x", "POS1"); !errors.Is(err, ErrPaymentsDisabled) {
 		t.Fatalf("err = %v", err)
 	}
-	if err := engine.ConfirmFromGateway(context.Background(), "ORD1"); !errors.Is(err, ErrPaymentsDisabled) {
+	if err := engine.SyncPayment(context.Background(), "ORD1"); !errors.Is(err, ErrPaymentsDisabled) {
 		t.Fatalf("err = %v", err)
 	}
-	if err := engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -251,8 +251,8 @@ func TestRequestQRWithoutGateway(t *testing.T) {
 func TestRequestQRRefusesAnOrderThatIsNotWaitingForPayment(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
-	if err := rig.engine.ConfirmPayment(context.Background(), placed.ID, rig.now); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := rig.engine.MarkPaid(context.Background(), placed.ID, rig.now); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 	if _, err := rig.engine.RequestQR(context.Background(), placed.ID, "POS1"); !errors.Is(err, ErrNotPayable) {
 		t.Fatalf("err = %v", err)
@@ -280,16 +280,16 @@ func TestRequestQRGatewayFailureStoresNothingAndRetries(t *testing.T) {
 	}
 }
 
-func TestConfirmFromGatewayPaysAndDispatchesOnce(t *testing.T) {
+func TestSyncPaymentPaysAndDispatchesOnce(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
 
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-		t.Fatalf("ConfirmFromGateway: %v", err)
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+		t.Fatalf("SyncPayment: %v", err)
 	}
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
 		t.Fatalf("webhook repetido: %v", err)
 	}
 
@@ -309,7 +309,7 @@ func TestConfirmFromGatewayPaysAndDispatchesOnce(t *testing.T) {
 	}
 }
 
-func TestConfirmFromGatewayWrongAmountDoesNotDispatchAndNotifiesOnce(t *testing.T) {
+func TestSyncPaymentWrongAmountDoesNotDispatchAndNotifiesOnce(t *testing.T) {
 	for _, paid := range []int64{150049, 150051} {
 		t.Run(fmt.Sprint(paid), func(t *testing.T) {
 			rig := newChargeRig(t)
@@ -318,8 +318,8 @@ func TestConfirmFromGatewayWrongAmountDoesNotDispatchAndNotifiesOnce(t *testing.
 			rig.gateway.set(intent.ProviderID, payments.ChargeApproved, paid)
 
 			for i := 0; i < 2; i++ {
-				if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-					t.Fatalf("ConfirmFromGateway: %v", err)
+				if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+					t.Fatalf("SyncPayment: %v", err)
 				}
 			}
 
@@ -347,7 +347,7 @@ func TestConfirmFromGatewayWrongAmountDoesNotDispatchAndNotifiesOnce(t *testing.
 	}
 }
 
-func TestConfirmFromGatewayExpiredOrCancelledCancelsTheOrder(t *testing.T) {
+func TestSyncPaymentExpiredOrCancelledCancelsTheOrder(t *testing.T) {
 	cases := map[payments.ChargeStatus]store.PaymentStatus{
 		payments.ChargeExpired:   store.PaymentExpired,
 		payments.ChargeCancelled: store.PaymentCancelled,
@@ -359,8 +359,8 @@ func TestConfirmFromGatewayExpiredOrCancelledCancelsTheOrder(t *testing.T) {
 			intent := rig.qr(t, placed.ID)
 			rig.gateway.set(intent.ProviderID, charge, 0)
 
-			if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-				t.Fatalf("ConfirmFromGateway: %v", err)
+			if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+				t.Fatalf("SyncPayment: %v", err)
 			}
 			if s := rig.order(t, placed.ID).Status; s != store.OrderCancelled {
 				t.Fatalf("orden = %s", s)
@@ -372,27 +372,27 @@ func TestConfirmFromGatewayExpiredOrCancelledCancelsTheOrder(t *testing.T) {
 	}
 }
 
-func TestConfirmFromGatewayPendingChangesNothing(t *testing.T) {
+func TestSyncPaymentPendingChangesNothing(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-		t.Fatalf("ConfirmFromGateway: %v", err)
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+		t.Fatalf("SyncPayment: %v", err)
 	}
 	if rig.order(t, placed.ID).Status != store.OrderPendingPayment || rig.intent(t, placed.ID).Status != store.PaymentPending {
 		t.Fatal("un cobro pendiente cambió algo")
 	}
 }
 
-func TestConfirmFromGatewayUnknownStatusNotifiesOnceAndTouchesNothing(t *testing.T) {
+func TestSyncPaymentUnknownStatusNotifiesOnceAndTouchesNothing(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 	rig.gateway.set(intent.ProviderID, payments.ChargeUnknown, 150050)
 
 	for i := 0; i < 2; i++ {
-		if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-			t.Fatalf("ConfirmFromGateway: %v", err)
+		if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+			t.Fatalf("SyncPayment: %v", err)
 		}
 	}
 	if k := rig.notifier.kinds(); len(k) != 1 || k[0] != notify.KindPaymentUnknown {
@@ -403,22 +403,22 @@ func TestConfirmFromGatewayUnknownStatusNotifiesOnceAndTouchesNothing(t *testing
 	}
 }
 
-func TestConfirmFromGatewayRejectsForeignCharges(t *testing.T) {
+func TestSyncPaymentRejectsForeignCharges(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 
-	if err := rig.engine.ConfirmFromGateway(context.Background(), "ORDNOEXISTE"); !errors.Is(err, ErrUnknownCharge) {
+	if err := rig.engine.SyncPayment(context.Background(), "ORDNOEXISTE"); !errors.Is(err, ErrUnknownCharge) {
 		t.Fatalf("cobro inexistente: %v", err)
 	}
 
 	rig.gateway.charges["ORDAJENA"] = payments.Charge{ProviderID: "ORDAJENA", ExternalRef: "otra-orden", Status: payments.ChargeApproved, PaidAmountCents: 150050, AmountCents: 150050}
-	if err := rig.engine.ConfirmFromGateway(context.Background(), "ORDAJENA"); !errors.Is(err, ErrUnknownCharge) {
+	if err := rig.engine.SyncPayment(context.Background(), "ORDAJENA"); !errors.Is(err, ErrUnknownCharge) {
 		t.Fatalf("cobro de otra orden: %v", err)
 	}
 
 	rig.gateway.charges["ORDDOBLE"] = payments.Charge{ProviderID: "ORDDOBLE", ExternalRef: placed.ID, Status: payments.ChargeApproved, PaidAmountCents: 150050, AmountCents: 150050}
-	if err := rig.engine.ConfirmFromGateway(context.Background(), "ORDDOBLE"); !errors.Is(err, ErrUnknownCharge) {
+	if err := rig.engine.SyncPayment(context.Background(), "ORDDOBLE"); !errors.Is(err, ErrUnknownCharge) {
 		t.Fatalf("segundo cobro de la misma orden: %v", err)
 	}
 
@@ -427,18 +427,18 @@ func TestConfirmFromGatewayRejectsForeignCharges(t *testing.T) {
 	}
 }
 
-func TestConfirmFromGatewayFinishesWhatACrashLeftHalfDone(t *testing.T) {
+func TestSyncPaymentFinishesWhatACrashLeftHalfDone(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 
-	if _, _, err := rig.engine.markPaid(context.Background(), placed.ID, rig.now); err != nil {
-		t.Fatalf("markPaid: %v", err)
+	if _, _, err := rig.engine.claimPaid(context.Background(), placed.ID, rig.now); err != nil {
+		t.Fatalf("claimPaid: %v", err)
 	}
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
 
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-		t.Fatalf("ConfirmFromGateway: %v", err)
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+		t.Fatalf("SyncPayment: %v", err)
 	}
 	if rig.machine.count() != 0 {
 		t.Fatal("se despachó dos veces: el despacho de una orden ya pagada es del barrido de líneas")
@@ -448,7 +448,7 @@ func TestConfirmFromGatewayFinishesWhatACrashLeftHalfDone(t *testing.T) {
 	}
 }
 
-func TestConfirmFromGatewayPaidAfterCancelNotifies(t *testing.T) {
+func TestSyncPaymentPaidAfterCancelNotifies(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
@@ -460,8 +460,8 @@ func TestConfirmFromGatewayPaidAfterCancelNotifies(t *testing.T) {
 	}
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
 
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-		t.Fatalf("ConfirmFromGateway: %v", err)
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+		t.Fatalf("SyncPayment: %v", err)
 	}
 	if rig.machine.count() != 0 || rig.order(t, placed.ID).Status != store.OrderCancelled {
 		t.Fatal("se reabrió una orden cancelada")
@@ -471,15 +471,15 @@ func TestConfirmFromGatewayPaidAfterCancelNotifies(t *testing.T) {
 	}
 }
 
-func TestConfirmFromGatewayAnswersBeforeTheDispatchEnds(t *testing.T) {
+func TestSyncPaymentAnswersBeforeTheDispatchEnds(t *testing.T) {
 	rig := newChargeRig(t, WithBackground(func(task func()) { go task() }))
 	rig.machine.release = make(chan struct{})
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
 
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
-		t.Fatalf("ConfirmFromGateway: %v", err)
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+		t.Fatalf("SyncPayment: %v", err)
 	}
 	if rig.machine.count() != 0 {
 		t.Fatal("el despacho terminó antes de responder")
@@ -511,14 +511,14 @@ func TestBackgroundErrorsAreReported(t *testing.T) {
 	}
 }
 
-func TestReconcilePaymentsSkipsYoungIntents(t *testing.T) {
+func TestSyncPendingPaymentsSkipsYoungIntents(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
 
 	rig.now = rig.now.Add(paymentReconcileAge - time.Millisecond)
-	if err := rig.engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := rig.engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	if rig.gateway.lookups != 0 {
@@ -526,7 +526,7 @@ func TestReconcilePaymentsSkipsYoungIntents(t *testing.T) {
 	}
 
 	rig.now = rig.now.Add(time.Millisecond)
-	if err := rig.engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := rig.engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	if rig.intent(t, placed.ID).Status != store.PaymentApproved || rig.machine.count() != 2 {
@@ -534,13 +534,13 @@ func TestReconcilePaymentsSkipsYoungIntents(t *testing.T) {
 	}
 }
 
-func TestReconcilePaymentsCancelsOnlyAfterTheGrace(t *testing.T) {
+func TestSyncPendingPaymentsCancelsOnlyAfterTheGrace(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	rig.qr(t, placed.ID)
 
 	rig.now = rig.now.Add(defaultQRExpiry + paymentCancelGrace)
-	if err := rig.engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := rig.engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	if rig.gateway.cancels != 0 || rig.order(t, placed.ID).Status != store.OrderPendingPayment {
@@ -548,7 +548,7 @@ func TestReconcilePaymentsCancelsOnlyAfterTheGrace(t *testing.T) {
 	}
 
 	rig.now = rig.now.Add(time.Millisecond)
-	if err := rig.engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := rig.engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	if rig.gateway.cancels != 1 {
@@ -559,7 +559,7 @@ func TestReconcilePaymentsCancelsOnlyAfterTheGrace(t *testing.T) {
 	}
 }
 
-func TestReconcilePaymentsObeysMercadoPagoWhenItRefusesToCancel(t *testing.T) {
+func TestSyncPendingPaymentsObeysMercadoPagoWhenItRefusesToCancel(t *testing.T) {
 	rig := newChargeRig(t)
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
@@ -567,7 +567,7 @@ func TestReconcilePaymentsObeysMercadoPagoWhenItRefusesToCancel(t *testing.T) {
 	rig.now = rig.now.Add(defaultQRExpiry + paymentCancelGrace + time.Second)
 	rig.gateway.cancelErr = fmt.Errorf("%w: no está en created", payments.ErrNotCancelable)
 
-	if err := rig.engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := rig.engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	if rig.order(t, placed.ID).Status != store.OrderPendingPayment {
@@ -575,7 +575,7 @@ func TestReconcilePaymentsObeysMercadoPagoWhenItRefusesToCancel(t *testing.T) {
 	}
 
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
-	if err := rig.engine.ReconcilePayments(context.Background(), 10); err != nil {
+	if err := rig.engine.SyncPendingPayments(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}
 	if rig.machine.count() != 2 || rig.intent(t, placed.ID).Status != store.PaymentApproved {
@@ -583,7 +583,7 @@ func TestReconcilePaymentsObeysMercadoPagoWhenItRefusesToCancel(t *testing.T) {
 	}
 }
 
-func TestReconcilePaymentsReportsGatewayErrorsAndContinues(t *testing.T) {
+func TestSyncPendingPaymentsReportsGatewayErrorsAndContinues(t *testing.T) {
 	rig := newChargeRig(t)
 	first := rig.place(t, "a")
 	second := rig.place(t, "b")
@@ -593,7 +593,7 @@ func TestReconcilePaymentsReportsGatewayErrorsAndContinues(t *testing.T) {
 	rig.gateway.set(healthy.ProviderID, payments.ChargeApproved, 150050)
 
 	rig.now = rig.now.Add(time.Minute)
-	err := rig.engine.ReconcilePayments(context.Background(), 10)
+	err := rig.engine.SyncPendingPayments(context.Background(), 10)
 	if !errors.Is(err, payments.ErrNotFound) {
 		t.Fatalf("err = %v", err)
 	}
@@ -607,12 +607,12 @@ func TestAClosedPaymentIgnoresLaterProviderStates(t *testing.T) {
 	placed := rig.place(t, "a")
 	intent := rig.qr(t, placed.ID)
 	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
 		t.Fatal(err)
 	}
 
 	rig.gateway.set(intent.ProviderID, payments.ChargeUnknown, 150050)
-	if err := rig.engine.ConfirmFromGateway(context.Background(), intent.ProviderID); err != nil {
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
 		t.Fatal(err)
 	}
 	if k := rig.notifier.kinds(); len(k) != 0 {

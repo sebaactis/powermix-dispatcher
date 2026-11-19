@@ -108,7 +108,7 @@ type fakeConfirmer struct {
 	saveAnyway bool
 }
 
-func (f *fakeConfirmer) ConfirmPayment(ctx context.Context, orderID string, at time.Time) error {
+func (f *fakeConfirmer) MarkPaid(ctx context.Context, orderID string, at time.Time) error {
 	f.calls = append(f.calls, orderID)
 
 	if f.err != nil && !f.saveAnyway {
@@ -159,12 +159,12 @@ func newFixture(t *testing.T, env string, kiosks []config.Kiosk, combos []catalo
 
 	handler, err := New(
 		Deps{
-			Catalog:   comboCatalog,
-			Placer:    engine,
-			Confirmer: confirmer,
-			Orders:    memory,
-			Kiosks:    kiosks,
-			Env:       env,
+			Catalog:      comboCatalog,
+			OrderCreator: engine,
+			PaidMarker:   confirmer,
+			Orders:       memory,
+			Kiosks:       kiosks,
+			Env:          env,
 		},
 		WithClock(func() time.Time { return fixedClock }),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
@@ -253,13 +253,13 @@ type fakeReceiver struct {
 	confirmErr error
 }
 
-func (f *fakeReceiver) CloseFromCallback(ctx context.Context, cb order.Callback) (bool, error) {
+func (f *fakeReceiver) ApplyCallback(ctx context.Context, cb order.Callback) (bool, error) {
 	f.closed = append(f.closed, cb)
 
 	return false, f.closeErr
 }
 
-func (f *fakeReceiver) ConfirmFromCallback(ctx context.Context, cb order.Callback) (bool, error) {
+func (f *fakeReceiver) SyncLineFromCallback(ctx context.Context, cb order.Callback) (bool, error) {
 	f.confirmed = append(f.confirmed, cb)
 
 	return false, f.confirmErr
@@ -309,12 +309,12 @@ func newLiveCallbackFixture(t *testing.T, combos []catalog.Combo, machines map[m
 
 	handler, err := New(
 		Deps{
-			Catalog:   comboCatalog,
-			Placer:    engine,
-			Confirmer: engine,
-			Orders:    memory,
-			Kiosks:    []config.Kiosk{testKiosk("kiosco-centro")},
-			Env:       config.EnvSandbox,
+			Catalog:      comboCatalog,
+			OrderCreator: engine,
+			PaidMarker:   engine,
+			Orders:       memory,
+			Kiosks:       []config.Kiosk{testKiosk("kiosco-centro")},
+			Env:          config.EnvSandbox,
 		},
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 	)

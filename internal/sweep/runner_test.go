@@ -30,7 +30,7 @@ func newFakeSweeper() *fakeSweeper {
 	return &fakeSweeper{limits: make(chan int, 64)}
 }
 
-func (f *fakeSweeper) ReconcileDue(ctx context.Context, limit int) error {
+func (f *fakeSweeper) SyncOverdueLines(ctx context.Context, limit int) error {
 	number := int(f.call.Add(1))
 	current := f.inFlight.Add(1)
 	defer f.inFlight.Add(-1)
@@ -61,7 +61,7 @@ func (f *fakeSweeper) ReconcileDue(ctx context.Context, limit int) error {
 	return nil
 }
 
-func startRunner(t *testing.T, sweeper sweep.Sweeper, logger *slog.Logger, opts ...sweep.Option) (context.CancelFunc, <-chan error) {
+func startRunner(t *testing.T, sweeper sweep.OverdueLineSyncer, logger *slog.Logger, opts ...sweep.Option) (context.CancelFunc, <-chan error) {
 	t.Helper()
 
 	runner := sweep.New(sweeper, logger, opts...)

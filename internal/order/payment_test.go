@@ -17,7 +17,7 @@ import (
 	"compras-remotas/internal/store"
 )
 
-func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
+func TestEngineMarkPaidDispatchesBothMachines(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -29,8 +29,8 @@ func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	got := mustOrder(t, st, placed.ID)
@@ -101,7 +101,7 @@ func TestEngineConfirmPaymentDispatchesBothMachines(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentDoesNotDispatchWhenAnotherWriterPaidTheOrder(t *testing.T) {
+func TestEngineMarkPaidDoesNotDispatchWhenAnotherWriterPaidTheOrder(t *testing.T) {
 	ctx := context.Background()
 	orders := &competingOrderStore{Memory: store.NewMemory()}
 
@@ -117,7 +117,7 @@ func TestEngineConfirmPaymentDoesNotDispatchWhenAnotherWriterPaidTheOrder(t *tes
 
 	orders.arm(1)
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
 		t.Fatalf("un segundo /pay pierde la carrera y no es un error: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestEngineConfirmPaymentDoesNotDispatchWhenAnotherWriterPaidTheOrder(t *tes
 	}
 }
 
-func TestEngineConfirmPaymentDoesNotDispatchWhenTheDispatchingSaveIsStale(t *testing.T) {
+func TestEngineMarkPaidDoesNotDispatchWhenTheDispatchingSaveIsStale(t *testing.T) {
 	ctx := context.Background()
 	orders := &competingOrderStore{Memory: store.NewMemory()}
 
@@ -150,7 +150,7 @@ func TestEngineConfirmPaymentDoesNotDispatchWhenTheDispatchingSaveIsStale(t *tes
 
 	orders.armFrom(2, 1)
 
-	err := engine.ConfirmPayment(ctx, placed.ID, engineNow)
+	err := engine.MarkPaid(ctx, placed.ID, engineNow)
 	if !errors.Is(err, store.ErrStale) {
 		t.Fatalf("un conflicto al pasar la orden a despacho tenía que devolver %v y devolvió: %v", store.ErrStale, err)
 	}
@@ -160,7 +160,7 @@ func TestEngineConfirmPaymentDoesNotDispatchWhenTheDispatchingSaveIsStale(t *tes
 	}
 }
 
-func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
+func TestEngineMarkPaidMarksARejectedLineFailed(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "nonce repetido"}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -172,8 +172,8 @@ func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	got := mustOrder(t, st, placed.ID)
@@ -205,7 +205,7 @@ func TestEngineConfirmPaymentMarksARejectedLineFailed(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.T) {
+func TestEngineMarkPaidDispatchesAfterARestartWithAFreshEngine(t *testing.T) {
 	st := store.NewMemory()
 
 	placingEngine := order.New(
@@ -229,8 +229,8 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 		order.WithIDGenerator(sequentialIDs()),
 	)
 
-	if err := afterRestart.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment en un motor nuevo: %v", err)
+	if err := afterRestart.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid en un motor nuevo: %v", err)
 	}
 
 	if batido.callCount() != 1 || snack.callCount() != 1 {
@@ -257,7 +257,7 @@ func TestEngineConfirmPaymentDispatchesAfterARestartWithAFreshEngine(t *testing.
 	}
 }
 
-func TestEngineConfirmPaymentKeepsAnUncertainLineInDoubt(t *testing.T) {
+func TestEngineMarkPaidKeepsAnUncertainLineInDoubt(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -280,8 +280,8 @@ func TestEngineConfirmPaymentKeepsAnUncertainLineInDoubt(t *testing.T) {
 			)
 
 			placed := place(t, engine, comboDraft())
-			if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-				t.Fatalf("ConfirmPayment: %v", err)
+			if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
 			}
 
 			got := mustOrder(t, st, placed.ID)
@@ -310,7 +310,7 @@ func TestEngineConfirmPaymentKeepsAnUncertainLineInDoubt(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentFailsTheOrderWhenBothMachinesReject(t *testing.T) {
+func TestEngineMarkPaidFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40004, Message: "firma inválida"}}
 	snack := &stubMachine{err: &dispenser.Rejection{Provider: "snacks", HTTPStatus: 401, Code: 40004, Message: "firma inválida"}}
@@ -322,8 +322,8 @@ func TestEngineConfirmPaymentFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	got := mustOrder(t, st, placed.ID)
@@ -338,7 +338,7 @@ func TestEngineConfirmPaymentFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentIsIdempotent(t *testing.T) {
+func TestEngineMarkPaidIsIdempotent(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -351,12 +351,12 @@ func TestEngineConfirmPaymentIsIdempotent(t *testing.T) {
 
 	placed := place(t, engine, comboDraft())
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 	repeatedAt := engineNow.Add(5 * time.Minute)
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, repeatedAt); err != nil {
-		t.Fatalf("ConfirmPayment repetido: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, repeatedAt); err != nil {
+		t.Fatalf("MarkPaid repetido: %v", err)
 	}
 
 	if batido.callCount() != 1 || snack.callCount() != 1 {
@@ -377,7 +377,7 @@ func TestEngineConfirmPaymentIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentDoesNotDispatchTwiceAfterARestart(t *testing.T) {
+func TestEngineMarkPaidDoesNotDispatchTwiceAfterARestart(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
@@ -402,8 +402,8 @@ func TestEngineConfirmPaymentDoesNotDispatchTwiceAfterARestart(t *testing.T) {
 		t.Fatalf("AppendAttempt del intento previo: %v", err)
 	}
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if batido.callCount() != 0 {
@@ -419,7 +419,7 @@ func TestEngineConfirmPaymentDoesNotDispatchTwiceAfterARestart(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
+func TestEngineMarkPaidHonoursTheLineDeadline(t *testing.T) {
 	cases := []struct {
 		name     string
 		deadline time.Duration
@@ -445,8 +445,8 @@ func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
 			)
 
 			placed := place(t, engine, comboDraft())
-			if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-				t.Fatalf("ConfirmPayment: %v", err)
+			if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
 			}
 
 			got := mustOrder(t, st, placed.ID)
@@ -462,7 +462,7 @@ func TestEngineConfirmPaymentHonoursTheLineDeadline(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed(t *testing.T) {
+func TestEngineMarkPaidKeepsARetriedLinePendingInsteadOfFailed(t *testing.T) {
 	st := newRecordingStore()
 	batido := &flakyMachine{rejections: 1, attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -474,8 +474,8 @@ func TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed(t *testing.
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
@@ -497,7 +497,7 @@ func TestEngineConfirmPaymentKeepsARetriedLinePendingInsteadOfFailed(t *testing.
 	}
 }
 
-func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
+func TestEngineMarkPaidRetriesARejectedLineWithAFreshKey(t *testing.T) {
 	st := newRecordingStore()
 	batido := &flakyMachine{rejections: 1, attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "order-no-1"}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -509,8 +509,8 @@ func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if batido.callCount() != 2 {
@@ -567,7 +567,7 @@ func TestEngineConfirmPaymentRetriesARejectedLineWithAFreshKey(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
+func TestEngineMarkPaidStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -580,8 +580,8 @@ func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if batido.callCount() != 2 {
@@ -605,7 +605,7 @@ func TestEngineConfirmPaymentStopsRetryingWhenTheAttemptsRunOut(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
+func TestEngineMarkPaidNeverRetriesAnUncertainLine(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: errors.New("dial tcp 10.0.0.1:443: connect: connection refused")}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -617,8 +617,8 @@ func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if batido.callCount() != 1 {
@@ -636,7 +636,7 @@ func TestEngineConfirmPaymentNeverRetriesAnUncertainLine(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
+func TestEngineMarkPaidWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40005, Message: "sin stock"}}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -649,8 +649,8 @@ func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 	)
 
 	placed := place(t, engine, comboDraft())
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if batido.callCount() != 1 {
@@ -668,7 +668,7 @@ func TestEngineConfirmPaymentWithMaxAttemptsOneDoesNotRetry(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
+func TestEngineMarkPaidSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
 	engine := order.New(
@@ -686,8 +686,8 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 		t.Fatalf("SaveLine: %v", err)
 	}
 
-	if err := engine.ConfirmPayment(context.Background(), placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if batido.callCount() != 0 {
@@ -703,7 +703,7 @@ func TestEngineConfirmPaymentSkipsALineThatExhaustedItsAttempts(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentDispatchesWithACancelledRequestContext(t *testing.T) {
+func TestEngineMarkPaidDispatchesWithACancelledRequestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -719,8 +719,8 @@ func TestEngineConfirmPaymentDispatchesWithACancelledRequestContext(t *testing.T
 
 	placed := place(t, engine, comboDraft())
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment con la tablet desconectada después de cobrar: %v", err)
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid con la tablet desconectada después de cobrar: %v", err)
 	}
 
 	probes := []struct {
@@ -750,7 +750,7 @@ func TestEngineConfirmPaymentDispatchesWithACancelledRequestContext(t *testing.T
 	}
 }
 
-func TestEngineConfirmPaymentKeepsTheRequestContextValues(t *testing.T) {
+func TestEngineMarkPaidKeepsTheRequestContextValues(t *testing.T) {
 	ctx := context.WithValue(context.Background(), requestValueKey{}, "kiosco-7")
 
 	st := newRecordingStore()
@@ -765,8 +765,8 @@ func TestEngineConfirmPaymentKeepsTheRequestContextValues(t *testing.T) {
 
 	placed := place(t, engine, comboDraft())
 
-	if err := engine.ConfirmPayment(ctx, placed.ID, engineNow); err != nil {
-		t.Fatalf("ConfirmPayment: %v", err)
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
 	}
 
 	if value := batido.onlyValue(t); value != "kiosco-7" {
@@ -774,7 +774,7 @@ func TestEngineConfirmPaymentKeepsTheRequestContextValues(t *testing.T) {
 	}
 }
 
-func TestEngineConfirmPaymentGivesALineTheClaimDeadline(t *testing.T) {
+func TestEngineMarkPaidGivesALineTheClaimDeadline(t *testing.T) {
 	st := newRecordingStore()
 	batido := &blockedMachine{}
 	snack := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}
@@ -791,16 +791,16 @@ func TestEngineConfirmPaymentGivesALineTheClaimDeadline(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- engine.ConfirmPayment(context.Background(), placed.ID, engineNow)
+		done <- engine.MarkPaid(context.Background(), placed.ID, engineNow)
 	}()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("ConfirmPayment: %v", err)
+			t.Fatalf("MarkPaid: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("ConfirmPayment no volvió: la línea quedó esperando a una máquina que no responde")
+		t.Fatal("MarkPaid no volvió: la línea quedó esperando a una máquina que no responde")
 	}
 
 	if err := batido.onlyContextError(t); !errors.Is(err, context.DeadlineExceeded) {

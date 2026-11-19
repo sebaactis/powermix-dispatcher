@@ -14,7 +14,7 @@ import (
 	"compras-remotas/internal/store"
 )
 
-func TestEnginePlaceCreatesOneLinePerMachine(t *testing.T) {
+func TestEngineCreateOrderCreatesOneLinePerMachine(t *testing.T) {
 	st := store.NewMemory()
 	engine := order.New(
 		st,
@@ -87,7 +87,7 @@ func TestEnginePlaceCreatesOneLinePerMachine(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
+func TestEngineCreateOrderRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 	cases := []struct {
 		name         string
 		mutate       func(*order.Draft)
@@ -145,12 +145,12 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 			draft := comboDraft()
 			tc.mutate(&draft)
 
-			placed, err := engine.Place(context.Background(), draft)
+			placed, err := engine.CreateOrder(context.Background(), draft)
 			if err == nil {
-				t.Fatalf("Place aceptó un borrador inválido y devolvió %+v", placed)
+				t.Fatalf("CreateOrder aceptó un borrador inválido y devolvió %+v", placed)
 			}
 			if !reflect.DeepEqual(placed, store.Order{}) {
-				t.Fatalf("Place devolvió %+v junto al error", placed)
+				t.Fatalf("CreateOrder devolvió %+v junto al error", placed)
 			}
 			if tc.wantPosition != "" && !strings.Contains(err.Error(), tc.wantPosition) {
 				t.Fatalf("el error %q no nombra %q", err.Error(), tc.wantPosition)
@@ -160,13 +160,13 @@ func TestEnginePlaceRejectsAnInvalidDraftAndCreatesNothing(t *testing.T) {
 			}
 
 			if created := st.createdIDs(); len(created) != 0 {
-				t.Fatalf("Place creó %v con un borrador inválido", created)
+				t.Fatalf("CreateOrder creó %v con un borrador inválido", created)
 			}
 		})
 	}
 }
 
-func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
+func TestEngineCreateOrderRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 	cases := []struct {
 		name         string
 		machineType  machine.Kind
@@ -189,25 +189,25 @@ func TestEnginePlaceRejectsAnItemWithoutAConfiguredMachineType(t *testing.T) {
 			draft := comboDraft()
 			draft.Items[0].Machine.Kind = tc.machineType
 
-			placed, err := engine.Place(context.Background(), draft)
+			placed, err := engine.CreateOrder(context.Background(), draft)
 			if err == nil {
-				t.Fatalf("Place aceptó un ítem con Machine.Kind=%q y devolvió %+v", tc.machineType, placed)
+				t.Fatalf("CreateOrder aceptó un ítem con Machine.Kind=%q y devolvió %+v", tc.machineType, placed)
 			}
 			if !reflect.DeepEqual(placed, store.Order{}) {
-				t.Fatalf("Place devolvió %+v junto al error", placed)
+				t.Fatalf("CreateOrder devolvió %+v junto al error", placed)
 			}
 			if !strings.Contains(err.Error(), tc.wantPosition) {
 				t.Fatalf("el error %q no nombra %q", err.Error(), tc.wantPosition)
 			}
 
 			if created := st.createdIDs(); len(created) != 0 {
-				t.Fatalf("Place creó %v con un ítem sin tipo de máquina válido", created)
+				t.Fatalf("CreateOrder creó %v con un ítem sin tipo de máquina válido", created)
 			}
 		})
 	}
 }
 
-func TestEnginePlaceRejectsAnItemWithOnlyTheIdentifierOfAnotherMachineType(t *testing.T) {
+func TestEngineCreateOrderRejectsAnItemWithOnlyTheIdentifierOfAnotherMachineType(t *testing.T) {
 	st := store.NewMemory()
 	engine := order.New(
 		st,
@@ -225,12 +225,12 @@ func TestEnginePlaceRejectsAnItemWithOnlyTheIdentifierOfAnotherMachineType(t *te
 		DeviceID: draft.Items[0].Machine.DeviceID,
 	}
 
-	placed, err := engine.Place(context.Background(), draft)
+	placed, err := engine.CreateOrder(context.Background(), draft)
 	if err == nil {
-		t.Fatalf("Place aceptó un ítem de snacks con el device_id de batidos y devolvió %+v", placed)
+		t.Fatalf("CreateOrder aceptó un ítem de snacks con el device_id de batidos y devolvió %+v", placed)
 	}
 	if !reflect.DeepEqual(placed, store.Order{}) {
-		t.Fatalf("Place devolvió %+v junto al error", placed)
+		t.Fatalf("CreateOrder devolvió %+v junto al error", placed)
 	}
 	if !strings.Contains(err.Error(), "ítem 2:") {
 		t.Fatalf("el error %q no nombra el ítem 2", err.Error())
@@ -244,7 +244,7 @@ func TestEnginePlaceRejectsAnItemWithOnlyTheIdentifierOfAnotherMachineType(t *te
 	}
 }
 
-func TestEnginePlaceTakesTheLineMachineTypeFromTheRef(t *testing.T) {
+func TestEngineCreateOrderTakesTheLineMachineTypeFromTheRef(t *testing.T) {
 	st := newRecordingStore()
 	machines := map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}}
 	engine := order.New(
@@ -277,7 +277,7 @@ func TestEnginePlaceTakesTheLineMachineTypeFromTheRef(t *testing.T) {
 	}
 }
 
-func TestEnginePlaceIsIdempotentByClientKey(t *testing.T) {
+func TestEngineCreateOrderIsIdempotentByClientKey(t *testing.T) {
 	st := newRecordingStore()
 	engine := order.New(
 		st,

@@ -32,12 +32,12 @@ type recordingConfirmer struct {
 	err   error
 }
 
-func (c *recordingConfirmer) ConfirmFromGateway(_ context.Context, providerID string) error {
+func (c *recordingConfirmer) SyncPayment(_ context.Context, providerID string) error {
 	c.calls = append(c.calls, providerID)
 	return c.err
 }
 
-func newMPMux(confirmer GatewayConfirmer) *http.ServeMux {
+func newMPMux(confirmer PaymentSyncer) *http.ServeMux {
 	mux := http.NewServeMux()
 	NewMercadoPagoWebhook(confirmer, MercadoPagoSecrets{Callback: mpCallbackSecret, Webhook: mpWebhookSecret},
 		WithMercadoPagoClock(func() time.Time { return mpClock }),
@@ -113,7 +113,7 @@ func TestMercadoPagoWebhookResponses(t *testing.T) {
 			}
 
 			if len(confirmer.calls) != tc.wantCalls {
-				t.Fatalf("ConfirmFromGateway se llamó %d veces, quería %d", len(confirmer.calls), tc.wantCalls)
+				t.Fatalf("SyncPayment se llamó %d veces, quería %d", len(confirmer.calls), tc.wantCalls)
 			}
 		})
 	}
@@ -161,7 +161,7 @@ type payOrders struct {
 	order store.Order
 }
 
-func (p *payOrders) Place(_ context.Context, draft order.Draft) (store.Order, error) {
+func (p *payOrders) CreateOrder(_ context.Context, draft order.Draft) (store.Order, error) {
 	p.order = store.Order{
 		ID:          "ord-1",
 		KioskID:     draft.KioskID,
@@ -182,7 +182,7 @@ func (p *payOrders) LoadOrder(_ context.Context, id string) (store.Order, error)
 	return p.order, nil
 }
 
-func (p *payOrders) ConfirmPayment(context.Context, string, time.Time) error {
+func (p *payOrders) MarkPaid(context.Context, string, time.Time) error {
 	return errors.New("el pago simulado no debería usarse con Mercado Pago")
 }
 
@@ -234,16 +234,16 @@ func newPayHandler(t *testing.T, env string, charger *payCharger) (*http.ServeMu
 
 	orders := &payOrders{}
 	deps := Deps{
-		Catalog:   payCatalog{},
-		Placer:    orders,
-		Confirmer: orders,
-		Orders:    orders,
-		Kiosks:    []config.Kiosk{payKiosk()},
-		Env:       env,
+		Catalog:      payCatalog{},
+		OrderCreator: orders,
+		PaidMarker:   orders,
+		Orders:       orders,
+		Kiosks:       []config.Kiosk{payKiosk()},
+		Env:          env,
 	}
 
 	if charger != nil {
-		deps.Charger = charger
+		deps.QRRequester = charger
 		deps.Payments = charger
 	}
 
@@ -411,15 +411,15 @@ func TestSimulatedPaymentIsOffWithMercadoPago(t *testing.T) {
 func TestHandlerRejectsHalfPaymentDeps(t *testing.T) {
 	orders := &payOrders{}
 	_, err := New(Deps{
-		Catalog:   payCatalog{},
-		Placer:    orders,
-		Confirmer: orders,
-		Orders:    orders,
-		Kiosks:    []config.Kiosk{payKiosk()},
-		Env:       config.EnvSandbox,
-		Charger:   &payCharger{},
+		Catalog:      payCatalog{},
+		OrderCreator: orders,
+		PaidMarker:   orders,
+		Orders:       orders,
+		Kiosks:       []config.Kiosk{payKiosk()},
+		Env:          config.EnvSandbox,
+		QRRequester:  &payCharger{},
 	})
 	if err == nil {
-		t.Fatal("New debería rechazar Charger sin Payments")
+		t.Fatal("New debería rechazar QRRequester sin Payments")
 	}
 }
