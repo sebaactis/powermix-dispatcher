@@ -29,3 +29,26 @@ func TestLogNotifierRecordsTheException(t *testing.T) {
 		}
 	}
 }
+
+func TestLogNotifierRecordsPartialOrderAlert(t *testing.T) {
+	var buf bytes.Buffer
+	notifier := NewLog(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	err := notifier.Notify(context.Background(), Event{
+		Kind:    KindOrderPartial,
+		OrderID: "order-2",
+		KioskID: "kiosk-1",
+		Detail:  "se entregó batidos/sku-batido, falló snacks/sku-snack: compensar al cliente por snacks/sku-snack ($10,00)",
+	})
+	if err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	logged := buf.String()
+	for _, want := range []string{"order_partial", "order-2", "kiosk-1", "compensar al cliente", "$10,00"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log %q is missing %q", logged, want)
+		}
+	}
+}
+

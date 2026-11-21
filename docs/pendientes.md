@@ -11,7 +11,7 @@ Para la visión de arquitectura y detalle técnico del sistema, consulta [arquit
 | # | Qué falta | Qué hay hoy | Estado |
 | --- | --- | --- | --- |
 | 1 | **Cobro real con QR de Mercado Pago** | Implementado el 2026-11-18 ([diseno-mercadopago.md](diseno-mercadopago.md)): QR en `POST /orders`, webhook firmado, barrido de pagos. Probado sólo contra el Mercado Pago falso | Falta validarlo contra el sandbox real (bloqueo externo: credenciales) |
-| 2 | **Avisos reales a soporte** cuando una orden queda en `failed` o `in_doubt`, o un pago queda con `payment_mismatch` / `payment_unknown` | Implementado el 2026-11-18 por Telegram (`internal/notify/telegram.go`): siempre deja el WARN en el log y después manda el mensaje al chat de soporte, con formato HTML (tipo, entorno, mueble, orden, hora, detalle y qué hacer); obligatorio en producción. Probado contra Telegram real el 2026-11-18 con el Mercado Pago falso | Hecho; falta configurar el bot en Render al desplegar |
+| 2 | **Avisos reales a soporte** cuando una orden queda en `failed`, `in_doubt` o `partial`, o un pago queda con `payment_mismatch` / `payment_unknown` | Implementado el 2026-11-18 por Telegram (`internal/notify/telegram.go`) y ampliado a entregas parciales (`order_partial`, con ítem entregado, fallido y monto en pesos a compensar) + despacho inicial: siempre deja el WARN en el log y después manda el mensaje al chat de soporte, con formato HTML (tipo, entorno, mueble, orden, hora, detalle y qué hacer); obligatorio en producción. Probado contra Telegram real el 2026-11-18 con el Mercado Pago falso | Hecho; falta configurar el bot en Render al desplegar |
 | 3 | **Prueba de punta a punta automatizada** | Probado a mano contra el servidor local `cmd/fakeapi` | Técnico |
 
 ### Fuera del MVP

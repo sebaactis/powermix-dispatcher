@@ -19,11 +19,11 @@ const (
 )
 
 func drinkItem() catalog.Item {
-	return catalog.Item{MachineType: "batidos", SKU: batidosSKU}
+	return catalog.Item{MachineType: "batidos", SKU: batidosSKU, PriceCents: 280000}
 }
 
 func snackItem() catalog.Item {
-	return catalog.Item{MachineType: "snacks", SKU: snacksSKU}
+	return catalog.Item{MachineType: "snacks", SKU: snacksSKU, PriceCents: 140000}
 }
 
 func testCombo(id, name string, active bool, items ...catalog.Item) catalog.Combo {
@@ -142,7 +142,7 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 			name: "id vacío",
 			combos: []catalog.Combo{
 				valid,
-				{Name: "Sin id", PriceCents: 100, Items: []catalog.Item{drinkItem()}},
+				{Name: "Sin id", PriceCents: 100, Items: []catalog.Item{{MachineType: "batidos", SKU: batidosSKU, PriceCents: 100}}},
 			},
 			wantInMsg: "posición 2",
 		},
@@ -171,7 +171,7 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 			name: "ítem sin tipo de máquina",
 			combos: []catalog.Combo{
 				testCombo("combo-sin-maquina", "Batido + Alfajor", true,
-					catalog.Item{MachineType: "", SKU: batidosSKU}, snackItem()),
+					catalog.Item{MachineType: "", SKU: batidosSKU, PriceCents: 280000}, snackItem()),
 			},
 			wantInMsg: "combo-sin-maquina",
 		},
@@ -179,9 +179,60 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 			name: "ítem sin sku",
 			combos: []catalog.Combo{
 				testCombo("combo-sin-sku", "Batido + Alfajor", true,
-					drinkItem(), catalog.Item{MachineType: "snacks", SKU: ""}),
+					drinkItem(), catalog.Item{MachineType: "snacks", SKU: "", PriceCents: 140000}),
 			},
 			wantInMsg: "combo-sin-sku",
+		},
+		{
+			name: "ítem con precio cero",
+			combos: []catalog.Combo{
+				{
+					ID:         "combo-item-precio-cero",
+					Name:       "Batido + Alfajor",
+					PriceCents: 140000,
+					Currency:   "ARS",
+					Active:     true,
+					Items: []catalog.Item{
+						{MachineType: "batidos", SKU: batidosSKU, PriceCents: 0},
+						snackItem(),
+					},
+				},
+			},
+			wantInMsg: "combo-item-precio-cero",
+		},
+		{
+			name: "ítem con precio negativo",
+			combos: []catalog.Combo{
+				{
+					ID:         "combo-item-precio-negativo",
+					Name:       "Batido + Alfajor",
+					PriceCents: 139900,
+					Currency:   "ARS",
+					Active:     true,
+					Items: []catalog.Item{
+						{MachineType: "batidos", SKU: batidosSKU, PriceCents: -100},
+						snackItem(),
+					},
+				},
+			},
+			wantInMsg: "combo-item-precio-negativo",
+		},
+		{
+			name: "suma de ítems distinta al precio del combo",
+			combos: []catalog.Combo{
+				{
+					ID:         "combo-suma-incorrecta",
+					Name:       "Batido + Alfajor",
+					PriceCents: 420000,
+					Currency:   "ARS",
+					Active:     true,
+					Items: []catalog.Item{
+						{MachineType: "batidos", SKU: batidosSKU, PriceCents: 200000},
+						{MachineType: "snacks", SKU: snacksSKU, PriceCents: 100000},
+					},
+				},
+			},
+			wantInMsg: "combo-suma-incorrecta",
 		},
 		{
 			name: "ids duplicados",
@@ -243,7 +294,7 @@ func TestMutatingTheInputSliceDoesNotChangeTheCatalog(t *testing.T) {
 
 	combos[0].Name = "nombre mutado"
 	combos[0].Items[0].SKU = "sku-mutado"
-	combos[0].Items = append(combos[0].Items, catalog.Item{MachineType: "snacks", SKU: "sku-agregado"})
+	combos[0].Items = append(combos[0].Items, catalog.Item{MachineType: "snacks", SKU: "sku-agregado", PriceCents: 100})
 
 	got := mustCombo(t, memory, "combo-1")
 
@@ -268,8 +319,8 @@ func TestLoadFileReadsValidCombos(t *testing.T) {
 			"currency": "ARS",
 			"active": true,
 			"items": [
-				{"machine_type": "batidos", "sku": "sku-batido-vainilla"},
-				{"machine_type": "snacks", "sku": "sku-snack-alfajor"}
+				{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": 280000},
+				{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 140000}
 			]
 		}
 	]`
@@ -315,6 +366,77 @@ func TestLoadFileRejectsInvalidCombos(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "combo-sin-items") {
 		t.Fatalf("el error %q no nombra el combo ofensor", err)
+	}
+}
+
+func TestLoadFileRejectsInvalidItemPrices(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		wantInMsg string
+	}{
+		{
+			name: "ítem con precio cero",
+			raw: `[{
+				"id": "combo-item-cero",
+				"name": "Batido + Alfajor",
+				"price_cents": 140000,
+				"currency": "ARS",
+				"active": true,
+				"items": [
+					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": 0},
+					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 140000}
+				]
+			}]`,
+			wantInMsg: "combo-item-cero",
+		},
+		{
+			name: "ítem con precio negativo",
+			raw: `[{
+				"id": "combo-item-negativo",
+				"name": "Batido + Alfajor",
+				"price_cents": 139900,
+				"currency": "ARS",
+				"active": true,
+				"items": [
+					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": -100},
+					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 140000}
+				]
+			}]`,
+			wantInMsg: "combo-item-negativo",
+		},
+		{
+			name: "suma de ítems distinta al precio del combo",
+			raw: `[{
+				"id": "combo-suma-distinta",
+				"name": "Batido + Alfajor",
+				"price_cents": 420000,
+				"currency": "ARS",
+				"active": true,
+				"items": [
+					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": 200000},
+					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 100000}
+				]
+			}]`,
+			wantInMsg: "combo-suma-distinta",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "combos.json")
+			if err := os.WriteFile(path, []byte(tc.raw), 0o600); err != nil {
+				t.Fatalf("no se pudo escribir el archivo de prueba: %v", err)
+			}
+
+			combos, err := catalog.LoadFile(path)
+			if err == nil {
+				t.Fatalf("LoadFile aceptó un catálogo inválido: %+v", combos)
+			}
+			if !strings.Contains(err.Error(), tc.wantInMsg) {
+				t.Fatalf("el error %q no nombra el combo ofensor (%q)", err, tc.wantInMsg)
+			}
+		})
 	}
 }
 

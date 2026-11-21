@@ -16,6 +16,7 @@ import (
 type Item struct {
 	MachineType machine.Kind `json:"machine_type"`
 	SKU         string       `json:"sku"`
+	PriceCents  int64        `json:"price_cents"`
 }
 
 type Combo struct {
@@ -79,6 +80,7 @@ func validate(combos []Combo) error {
 			problems = append(problems, fmt.Sprintf("el combo %s no tiene ítems", label))
 		}
 
+		var itemsTotal int64
 		for itemPosition, item := range combo.Items {
 			if item.MachineType == "" {
 				problems = append(problems, fmt.Sprintf("el combo %s tiene un ítem en la posición %d sin tipo de máquina", label, itemPosition+1))
@@ -86,6 +88,14 @@ func validate(combos []Combo) error {
 			if item.SKU == "" {
 				problems = append(problems, fmt.Sprintf("el combo %s tiene un ítem en la posición %d sin sku", label, itemPosition+1))
 			}
+			if item.PriceCents <= 0 {
+				problems = append(problems, fmt.Sprintf("el combo %s tiene un ítem en la posición %d con precio menor o igual a cero (%d)", label, itemPosition+1, item.PriceCents))
+			}
+			itemsTotal += item.PriceCents
+		}
+
+		if len(combo.Items) > 0 && combo.PriceCents >= 0 && itemsTotal != combo.PriceCents {
+			problems = append(problems, fmt.Sprintf("el combo %s tiene precio %d pero sus ítems suman %d", label, combo.PriceCents, itemsTotal))
 		}
 	}
 

@@ -135,6 +135,51 @@ func TestMemoryCreateAndReadOrderRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMemoryLineAmountCentsRoundTrip(t *testing.T) {
+	m := store.NewMemory()
+	ctx := context.Background()
+
+	order := fixtureOrder()
+	order.Lines[0].AmountCents = 280000
+	order.Lines[1].AmountCents = 140000
+	order.Lines[1].DeadlineAt = baseTime.Add(2 * time.Minute)
+	order.AmountCents = 420000
+	mustCreate(t, m, order)
+
+	loaded := mustOrder(t, m, order.ID)
+	if got := lineByID(t, loaded.Lines, drinkLineID).AmountCents; got != 280000 {
+		t.Fatalf("línea 1 AmountCents=%d, se esperaba 280000", got)
+	}
+	if got := lineByID(t, loaded.Lines, snackLineID).AmountCents; got != 140000 {
+		t.Fatalf("línea 2 AmountCents=%d, se esperaba 140000", got)
+	}
+
+	drink := lineByID(t, loaded.Lines, drinkLineID)
+	drink.AmountCents = 295000
+	saved := mustSaveLine(t, m, drink)
+	if saved.AmountCents != 295000 {
+		t.Fatalf("SaveLine devolvió AmountCents=%d, se esperaba 295000", saved.AmountCents)
+	}
+
+	reloaded := mustOrder(t, m, order.ID)
+	if got := lineByID(t, reloaded.Lines, drinkLineID).AmountCents; got != 295000 {
+		t.Fatalf("tras SaveLine AmountCents=%d, se esperaba 295000", got)
+	}
+
+	due := mustDue(t, m, baseTime.Add(5*time.Minute), 10)
+	if got := lineByID(t, due, snackLineID).AmountCents; got != 140000 {
+		t.Fatalf("OverdueLines devolvió AmountCents=%d, se esperaba 140000", got)
+	}
+
+	stalled, err := m.StalledLines(ctx, baseTime.Add(5*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("StalledLines: %v", err)
+	}
+	if got := lineByID(t, stalled, drinkLineID).AmountCents; got != 295000 {
+		t.Fatalf("StalledLines devolvió AmountCents=%d, se esperaba 295000", got)
+	}
+}
+
 func TestMemoryRejectsDuplicateOrderID(t *testing.T) {
 	m := store.NewMemory()
 	mustCreate(t, m, fixtureOrder())

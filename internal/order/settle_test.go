@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
+	"compras-remotas/internal/notify"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -35,6 +37,20 @@ func newNotifyFixture(t *testing.T, notifier *recordingNotifier) *notifyFixture 
 	}
 
 	return &notifyFixture{engine: engine, orders: orders, orderID: placed.ID}
+}
+
+func (f *notifyFixture) deliverLine(t *testing.T, source, key, ref string) error {
+	t.Helper()
+
+	_, err := f.engine.ApplyCallback(context.Background(), order.Callback{
+		Source:    source,
+		DedupeKey: key,
+		OrderID:   f.orderID,
+		Ref:       ref,
+		State:     order.CallbackDelivered,
+	})
+
+	return err
 }
 
 func (f *notifyFixture) failLine(t *testing.T, source, key, ref string) error {
@@ -259,5 +275,166 @@ func TestEngineDoesNotNotifyWhenItCannotTellWhetherTheNoticeWentOut(t *testing.T
 
 	if got := notifier.count(); got != 0 {
 		t.Fatalf("el notificador recibió %d avisos, se esperaba 0: sin respuesta del registro no se puede descartar un aviso repetido", got)
+	}
+}
+
+func TestEngineNotifiesPartialDeliveryWithLineDetailsAndFailedAmountOnce(t *testing.T) {
+	cases := []struct {
+		name              string
+		deliveredSource   string
+		deliveredRef      string
+		failedSource      string
+		failedRef         string
+		wantDeliveredPart string
+		wantFailedPart    string
+		wantAmount        string
+	}{
+		{
+			name:              "se entregó el batido y falló el snack",
+			deliveredSource:   "batidos",
+			deliveredRef:      "code-batidos",
+			failedSource:      "snacks",
+			failedRef:         "sub-snacks",
+			wantDeliveredPart: "batidos/sku-batido",
+			wantFailedPart:    "snacks/sku-snack",
+			wantAmount:        notify.Pesos(1000),
+		},
+		{
+			name:              "se entregó el snack y falló el batido",
+			deliveredSource:   "snacks",
+			deliveredRef:      "sub-snacks",
+			failedSource:      "batidos",
+			failedRef:         "code-batidos",
+			wantDeliveredPart: "snacks/sku-snack",
+			wantFailedPart:    "batidos/sku-batido",
+			wantAmount:        notify.Pesos(1500),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			notifier := &recordingNotifier{}
+			fx := newNotifyFixture(t, notifier)
+
+			if err := fx.deliverLine(t, tc.deliveredSource, "cb-1", tc.deliveredRef); err != nil {
+				t.Fatalf("callback entregado: %v", err)
+			}
+			if notifier.count() != 0 {
+				t.Fatalf("no debía avisar mientras queda una línea abierta: %+v", notifier.kinds())
+			}
+
+			if err := fx.failLine(t, tc.failedSource, "cb-2", tc.failedRef); err != nil {
+				t.Fatalf("callback fallido: %v", err)
+			}
+
+			if got := mustOrder(t, fx.orders, fx.orderID).Status; got != store.OrderPartial {
+				t.Fatalf("Status=%q, se esperaba %q", got, store.OrderPartial)
+			}
+
+			event := notifier.only(t)
+			if event.Kind != notify.KindOrderPartial {
+				t.Fatalf("Kind=%q, se esperaba %q", event.Kind, notify.KindOrderPartial)
+			}
+			if event.OrderID != fx.orderID || event.KioskID != "kiosk-1" {
+				t.Fatalf("evento=%+v, se esperaba order=%q kiosk=%q", event, fx.orderID, "kiosk-1")
+			}
+			for _, want := range []string{"se entregó", tc.wantDeliveredPart, "falló", tc.wantFailedPart, "compensar al cliente", tc.wantAmount} {
+				if !strings.Contains(event.Detail, want) {
+					t.Fatalf("el detalle %q no contiene %q", event.Detail, want)
+				}
+			}
+
+			if err := fx.failLine(t, tc.failedSource, "cb-3", tc.failedRef); err != nil {
+				t.Fatalf("callback repetido: %v", err)
+			}
+			if notifier.count() != 1 {
+				t.Fatalf("el notificador recibió %d avisos, se esperaba 1 (dedupe)", notifier.count())
+			}
+		})
+	}
+}
+
+func TestEngineNotifiesPartialDeliveryWithMultipleFailedLines(t *testing.T) {
+	notifier := &recordingNotifier{}
+	orders := store.NewMemory()
+	engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{
+		"batidos": &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-batidos"}},
+		"snacks":  &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}},
+	}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()), order.WithNotifier(notifier))
+
+	draft := order.Draft{
+		KioskID:     "kiosk-1",
+		ComboID:     "combo-triple",
+		AmountCents: 4000,
+		Currency:    "ARS",
+		Items: []order.Item{
+			{
+				SKU:         "sku-batido",
+				AmountCents: 1500,
+				Machine:     machine.Ref{KioskID: "kiosk-1", Kind: "batidos", DeviceID: "d1", DeviceNo: "1", DeviceTypeID: "2"},
+			},
+			{
+				SKU:         "sku-snack-1",
+				AmountCents: 1500,
+				Machine:     machine.Ref{KioskID: "kiosk-1", Kind: "snacks", MID: "m1"},
+			},
+			{
+				SKU:         "sku-snack-2",
+				AmountCents: 1000,
+				Machine:     machine.Ref{KioskID: "kiosk-1", Kind: "snacks", MID: "m1"},
+			},
+		},
+	}
+
+	placed := place(t, engine, draft)
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	loaded := mustOrder(t, orders, placed.ID)
+	if _, err := engine.ApplyCallback(context.Background(), order.Callback{
+		Source:      "batidos",
+		DedupeKey:   "b1",
+		OrderID:     placed.ID,
+		Ref:         "code-batidos",
+		MachineType: "batidos",
+		State:       order.CallbackDelivered,
+	}); err != nil {
+		t.Fatalf("ApplyCallback batido: %v", err)
+	}
+	if _, err := engine.ApplyCallback(context.Background(), order.Callback{
+		Source:       "snacks",
+		DedupeKey:    "s1",
+		OrderID:      placed.ID,
+		ThirdOrderNo: loaded.Lines[1].ID,
+		MachineType:  "snacks",
+		State:        order.CallbackFailed,
+	}); err != nil {
+		t.Fatalf("ApplyCallback snack 1: %v", err)
+	}
+	if _, err := engine.ApplyCallback(context.Background(), order.Callback{
+		Source:       "snacks",
+		DedupeKey:    "s2",
+		OrderID:      placed.ID,
+		ThirdOrderNo: loaded.Lines[2].ID,
+		MachineType:  "snacks",
+		State:        order.CallbackFailed,
+	}); err != nil {
+		t.Fatalf("ApplyCallback snack 2: %v", err)
+	}
+
+	ev := notifier.only(t)
+	if ev.Kind != notify.KindOrderPartial {
+		t.Fatalf("Kind=%q, se esperaba %q", ev.Kind, notify.KindOrderPartial)
+	}
+	for _, want := range []string{
+		"se entregó batidos/sku-batido",
+		"fallaron snacks/sku-snack-1, snacks/sku-snack-2",
+		"snacks/sku-snack-1 ($15,00)",
+		"snacks/sku-snack-2 ($10,00)",
+	} {
+		if !strings.Contains(ev.Detail, want) {
+			t.Fatalf("detalle=%q no contiene %q", ev.Detail, want)
+		}
 	}
 }

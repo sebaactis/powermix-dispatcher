@@ -1087,13 +1087,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 > `TelegramNotifier` (en `telegram.go`) además manda el mensaje a un chat de
 > soporte. El motor de órdenes sólo conoce la interfaz `Notifier`.
 
+### Kind
+
+> Tipos de aviso que conoce el sistema: `order_in_doubt`, `order_failed`, `order_partial`, `payment_mismatch` y `payment_unknown`.
+
 ### Event
 
 > Event es una excepción que merece la atención de una persona.
-
-### Event
-
-> por ejemplo "line_in_doubt", "line_failed", "partial_delivery"
 
 ### LogNotifier
 
@@ -1130,11 +1130,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 > con HTML alcanza con escapar `<`, `>` y `&` (`esc`), y todo lo que viene del
 > evento pasa por ahí.
 >
-> Formato acordado el 2026-11-18: icono y título según el tipo (`kindStyles`),
-> entorno en cursiva (🚨 PRODUCCIÓN se distingue a simple vista de 🧪 sandbox),
-> mueble con su nombre de la configuración, id de orden en `<code>` para
-> copiarlo con un toque, hora, detalle en `<blockquote>` y una línea de qué
-> hacer para soporte.
+> Formato acordado el 2026-11-18: icono y título según el tipo (`kindStyles`,
+> incluyendo `KindOrderPartial` como «Entrega parcial» con acción de compensar al
+> cliente por lo que falló), entorno en cursiva (🚨 PRODUCCIÓN se distingue a
+> simple vista de 🧪 sandbox), mueble con su nombre de la configuración, id de
+> orden en `<code>` para copiarlo con un toque, hora, detalle en `<blockquote>` y
+> una línea de qué hacer para soporte.
 >
 > La hora usa UTC−3 fijo y no la zona del servidor: en Render el proceso corre
 > en UTC, y Argentina no tiene horario de verano. Con `time.FixedZone` además no
@@ -1434,11 +1435,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Una sola llamada, no dos: snacks no tiene código que canjear (a diferencia de R2 en batidos), así que el despacho remoto es todo el disparo. `PaymentOrderId` es el id de la orden y `Mid` la máquina.
 >
+> `RetailPrice` se manda en `0` a propósito, ignorando el importe de la línea, hasta que se aclare con el proveedor si `retailPrice` descuenta saldo de la cuenta comercial (`docs/pendientes.md`, sección C).
+>
 > `DispatchResult.ProviderRef` es lo que el proveedor haya contestado, normalmente vacío porque la documentación responde `result: {}`. No se rellena con el id de la orden: un ProviderRef vacío dice la verdad —«el proveedor no dio un asa»— y es por eso que `Reconcile` cae al OrderID.
-
-### centsToUnits
-
-> Convierte centavos enteros al decimal que exige `retailPrice`. Es dinero de exhibición: float sólo para mandar y loguear, nunca para cuentas. Adentro del sistema todo importe sigue siendo int64 en centavos.
 
 ### Reconcile
 
@@ -1652,7 +1651,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Ese plazo por línea es igual al **plazo de reclamo** (`e.deadline`, 2 min por defecto), que es el número que `dispatchLine` escribe en `DeadlineAt` en cada vuelta. Que sean la misma constante y no dos parecidas no es estética: el barrido declara vencida una línea mirando `DeadlineAt`, así que un despacho autorizado a vivir más que su propio reclamo seguiría en vuelo cuando el barrido ya lo dio por abandonado. El `cancel` se difiere dentro de la goroutine de la línea, así que el temporizador se libera en cuanto esa línea termina. Si el plazo vence, `Dispatch` vuelve con `context.DeadlineExceeded`, `classifyDispatch` lo lee como «no sabemos» y la línea queda `in_doubt` para que la reconciliación pregunte —nunca `failed`, porque cobrar sin entregar no se arregla con un reintento a ciegas (invariante 8)—.
 >
-> Al final se **recarga** la orden con `refreshOrderStatus`, que deriva el estado con `AdvanceOrder` sobre las líneas leídas, y esa recarga también usa el contexto separado: el estado de una orden que ya se despachó tiene que persistirse aunque el cliente se haya ido. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
+> Al final `dispatchLines` **recarga y asienta** la orden con `settleOrder` (`refreshOrderStatus` + `notifyOrder`), que deriva el estado con `AdvanceOrder` sobre las líneas leídas y avisa si quedó `failed`, `in_doubt` o `partial` —con el mismo dedupe que callback y barrido—. Esa recarga también usa el contexto separado: el estado de una orden que ya se despachó tiene que persistirse y avisarse aunque el cliente se haya ido. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
 >
 > Sólo los errores de store vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
 
@@ -1824,11 +1823,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > La cabecera también compite —el callback de snacks, `MarkPaid` y el barrido escriben la misma orden—, así que el guardado lleva versión y `refreshOrderStatus` reintenta **una sola vez** ante `ErrStale`: recarga y vuelve a derivar. Un segundo `ErrStale` se devuelve como error, porque un tercer escritor significa que reintentar es una carrera sin final. El reintento es seguro acá, a diferencia de la línea: el estado no se inventa, se vuelve a derivar de las líneas frescas.
 >
-> `settleOrder` es `refreshOrderStatus` más el aviso; la cola de `MarkPaid` usa `refreshOrderStatus` a secas porque no avisa. Mismo cálculo, dos políticas.
+> `settleOrder` es `refreshOrderStatus` más el aviso; también la cola de `dispatchLines` en `payment.go` llama a `settleOrder`, para que una orden que termina `failed` o `in_doubt` en el despacho inicial avise igual que por callback o barrido y quede deduplicada si después llega un callback tardío.
 >
-> Un aviso por orden afectada, y sólo cuando el estado final es duda o fallo: es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
+> Un aviso por orden afectada, y sólo cuando el estado final es duda (`order_in_doubt`), fallo (`order_failed`) o entrega parcial (`order_partial`): es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
 >
-> Desde S9 ese aviso sale **una sola vez por `(orden, tipo)`**: `notifyOrder` pregunta a `NotificationSent`, avisa y recién después registra, que es la invariante 7 aplicada al aviso. Si `Notify` falla no se registra nada y la pasada siguiente reintenta —exactamente el reintento que antes daba la repetición—; una caída entre el aviso y el registro puede mandar el mismo aviso dos veces y se acepta. Descartada la alternativa de avisar sólo en la transición de estado: un `Notify` fallido habría perdido el aviso para siempre. `in_doubt` y `failed` son tipos distintos, así que una orden que pasa de duda a fallo avisa las dos cosas, en ese orden.
+> `partialOrderDetail` arma el texto por línea con `tipo/SKU` (separando lo entregado, lo fallido y eventuales líneas en duda) y lista cada ítem fallido con su importe en pesos (`notify.Pesos`) para que soporte sepa cuánto compensar al cliente sin tener que consultar la base ni el catálogo.
+>
+> Desde S9 ese aviso sale **una sola vez por `(orden, tipo)`**: `notifyOrder` pregunta a `NotificationSent`, avisa y recién después registra, que es la invariante 7 aplicada al aviso. Si `Notify` falla no se registra nada y la pasada siguiente reintenta —exactamente el reintento que antes daba la repetición—; una caída entre el aviso y el registro puede mandar el mismo aviso dos veces y se acepta. Descartada la alternativa de avisar sólo en la transición de estado: un `Notify` fallido habría perdido el aviso para siempre. `in_doubt`, `failed` y `partial` son tipos distintos, así que una orden que pasa de duda a parcial o a fallo avisa las dos cosas, en ese orden.
 
 ## migrations/0003_line_reconcile_until.sql
 
@@ -1870,7 +1871,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > De la configuración del mueble se arma el `machine.Ref` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
 >
-> El importe de cada línea queda en cero: el catálogo define un precio por combo, no por ítem, y repartirlo sería inventar un dato que nadie definió. El importe de la orden es el del combo.
+> `buildDraft` copia el `price_cents` de cada ítem del catálogo en su línea (`order.Item.AmountCents`), de modo que cada línea conozca su importe propio (por ejemplo, para calcular devoluciones o compensaciones ante entrega parcial). El importe total de la orden sale del `price_cents` del combo.
 
 ### decodeCreateOrder
 
@@ -2509,7 +2510,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### MarkPaid / claimPaid / dispatchLines
 
-> `MarkPaid` se partió en dos sin cambiar lo que hace: `claimPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
+> `MarkPaid` se partió en dos sin cambiar lo que hace: `claimPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos y cierre con `settleOrder` para avisar si la orden terminó `failed` o `in_doubt` en el despacho inicial. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
 
 ### WithQRPayments / WithQRExpiry
 
@@ -2618,3 +2619,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## cmd/api/main.go — Mercado Pago (unidad 4)
 
 > Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithQRPayments`), al handler (`QRRequester` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.
+
+## internal/catalog/catalog.go
+
+### Item
+
+> Cada ítem del combo declara su propio `price_cents` (`int64` en centavos, igual que el combo). Así el catálogo fija cuánto vale cada producto sin tener que repartir el total a ojo al construir una orden.
+
+### validate
+
+> Exige que cada ítem tenga `price_cents > 0` y que la suma de los `price_cents` de los ítems coincida exactamente con el `price_cents` del combo, nombrando el combo infractor si falla. Un catálogo inconsistente falla al arrancar y no frente a un cliente.

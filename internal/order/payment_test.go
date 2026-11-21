@@ -338,6 +338,102 @@ func TestEngineMarkPaidFailsTheOrderWhenBothMachinesReject(t *testing.T) {
 	}
 }
 
+func TestEngineMarkPaidNotifiesWhenInitialDispatchFailsAndDeduplicates(t *testing.T) {
+	st := newRecordingStore()
+	notifier := &recordingNotifier{}
+	batido := &stubMachine{err: &dispenser.Rejection{Provider: "batidos", HTTPStatus: 400, Code: 40004, Message: "firma inválida"}}
+	snack := &stubMachine{err: &dispenser.Rejection{Provider: "snacks", HTTPStatus: 401, Code: 40004, Message: "firma inválida"}}
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+		order.WithNotifier(notifier),
+	)
+
+	placed := place(t, engine, comboDraft())
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	if got := mustOrder(t, st, placed.ID).Status; got != store.OrderFailed {
+		t.Fatalf("Status=%q, se esperaba %q", got, store.OrderFailed)
+	}
+
+	ev := notifier.only(t)
+	if ev.Kind != "order_failed" || ev.OrderID != placed.ID || ev.KioskID != "kiosk-1" {
+		t.Fatalf("evento=%+v, se esperaba order_failed para %q", ev, placed.ID)
+	}
+
+	if _, err := engine.ApplyCallback(context.Background(), order.Callback{
+		Source:      "snacks",
+		DedupeKey:   "snacks-late",
+		OrderID:     placed.ID,
+		MachineType: "snacks",
+		State:       order.CallbackFailed,
+		Reason:      "tardío",
+	}); err != nil {
+		t.Fatalf("ApplyCallback tardío: %v", err)
+	}
+
+	if err := engine.SyncOverdueLines(context.Background(), 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
+	}
+
+	if notifier.count() != 1 {
+		t.Fatalf("el notificador recibió %d avisos, se esperaba 1", notifier.count())
+	}
+}
+
+func TestEngineMarkPaidNotifiesInDoubtAndLaterPartialWithoutDuplicates(t *testing.T) {
+	st := store.NewMemory()
+	clock := manualClockAt(engineNow)
+	notifier := &recordingNotifier{}
+	batido := &reconcileMachine{
+		dispatchErr: errors.New("dial tcp: connection refused"),
+		status:      dispenser.Status{State: linestate.Delivered},
+	}
+	snack := &stubMachine{err: &dispenser.Rejection{Provider: "snacks", HTTPStatus: 400, Code: 40005, Message: "sin stock"}}
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": batido, "snacks": snack},
+		order.WithClock(clock.clock()),
+		order.WithIDGenerator(sequentialIDs()),
+		order.WithNotifier(notifier),
+	)
+
+	placed := place(t, engine, comboDraft())
+	if err := engine.MarkPaid(context.Background(), placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	if got := mustOrder(t, st, placed.ID).Status; got != store.OrderInDoubt {
+		t.Fatalf("Status=%q, se esperaba %q", got, store.OrderInDoubt)
+	}
+	if want := []string{"order_in_doubt"}; !slices.Equal(notifier.kinds(), want) {
+		t.Fatalf("avisos tras despacho inicial=%v, se esperaba %v", notifier.kinds(), want)
+	}
+
+	clock.set(engineNow.Add(time.Minute))
+	if err := engine.SyncOverdueLines(context.Background(), 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
+	}
+
+	if got := mustOrder(t, st, placed.ID).Status; got != store.OrderPartial {
+		t.Fatalf("Status=%q, se esperaba %q", got, store.OrderPartial)
+	}
+	if want := []string{"order_in_doubt", "order_partial"}; !slices.Equal(notifier.kinds(), want) {
+		t.Fatalf("avisos tras reconciliar=%v, se esperaba %v", notifier.kinds(), want)
+	}
+
+	if err := engine.SyncOverdueLines(context.Background(), 10); err != nil {
+		t.Fatalf("segundo SyncOverdueLines: %v", err)
+	}
+	if notifier.count() != 2 {
+		t.Fatalf("el notificador recibió %d avisos, se esperaban 2", notifier.count())
+	}
+}
+
 func TestEngineMarkPaidIsIdempotent(t *testing.T) {
 	st := newRecordingStore()
 	batido := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true}}

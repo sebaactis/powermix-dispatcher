@@ -66,10 +66,16 @@ func TestCreateOrderBuildsTheDraftFromTheComboAndTheKiosk(t *testing.T) {
 	if batidos.KioskID != "kiosco-centro" || batidos.Kind != "batidos" || batidos.DeviceID != "batidos-device-kiosco-centro" || batidos.DeviceNo != "batidos-devno-kiosco-centro" {
 		t.Fatalf("la línea de batidos debe llevar la identidad de la máquina del mueble: %+v", batidos)
 	}
+	if stored.Lines[0].AmountCents != 300000 {
+		t.Fatalf("la línea de batidos debe copiar el monto del ítem (300000), quedó AmountCents=%d", stored.Lines[0].AmountCents)
+	}
 
 	snacks := stored.Lines[1].Machine
 	if snacks.KioskID != "kiosco-centro" || snacks.Kind != "snacks" || snacks.MID != "snacks-mid-kiosco-centro" {
 		t.Fatalf("la línea de snacks debe llevar el mid de la máquina del mueble: %+v", snacks)
+	}
+	if stored.Lines[1].AmountCents != 150000 {
+		t.Fatalf("la línea de snacks debe copiar el monto del ítem (150000), quedó AmountCents=%d", stored.Lines[1].AmountCents)
 	}
 }
 

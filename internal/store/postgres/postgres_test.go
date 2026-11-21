@@ -290,6 +290,62 @@ func TestCreateOrderStoresTheHeaderAndTheLines(t *testing.T) {
 	if snacks.LastError != "el proveedor no contestó" {
 		t.Fatalf("last_error volvió %q", snacks.LastError)
 	}
+	if snacks.AmountCents != 80000 {
+		t.Fatalf("amount_cents de snacks volvió %d, se esperaba 80000", snacks.AmountCents)
+	}
+}
+
+func TestLineAmountCentsRoundTrip(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	order := sampleOrder("order-amounts", "")
+	order.AmountCents = 420000
+	order.Status = store.OrderPaid
+	order.PaidAt = moment()
+	order.Lines[0].AmountCents = 280000
+	order.Lines[1].AmountCents = 140000
+	order.Lines[1].DeadlineAt = moment().Add(2 * time.Minute)
+	mustCreateOrder(t, st, order)
+
+	loaded := mustLoadOrder(t, st, "order-amounts")
+	if got := lineByID(t, loaded, "order-amounts-batidos").AmountCents; got != 280000 {
+		t.Fatalf("línea batidos AmountCents=%d, se esperaba 280000", got)
+	}
+	if got := lineByID(t, loaded, "order-amounts-snacks").AmountCents; got != 140000 {
+		t.Fatalf("línea snacks AmountCents=%d, se esperaba 140000", got)
+	}
+
+	batidos := lineByID(t, loaded, "order-amounts-batidos")
+	batidos.AmountCents = 295000
+	saved, err := st.SaveLine(ctx, batidos)
+	if err != nil {
+		t.Fatalf("SaveLine: %v", err)
+	}
+	if saved.AmountCents != 295000 {
+		t.Fatalf("SaveLine devolvió AmountCents=%d, se esperaba 295000", saved.AmountCents)
+	}
+
+	reloaded := mustLoadOrder(t, st, "order-amounts")
+	if got := lineByID(t, reloaded, "order-amounts-batidos").AmountCents; got != 295000 {
+		t.Fatalf("tras SaveLine AmountCents=%d, se esperaba 295000", got)
+	}
+
+	due, err := st.OverdueLines(ctx, moment().Add(5*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("OverdueLines: %v", err)
+	}
+	if len(due) != 1 || due[0].AmountCents != 140000 {
+		t.Fatalf("OverdueLines devolvió %+v, se esperaba una línea con AmountCents=140000", due)
+	}
+
+	stalled, err := st.StalledLines(ctx, moment().Add(5*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("StalledLines: %v", err)
+	}
+	if len(stalled) != 1 || stalled[0].AmountCents != 295000 {
+		t.Fatalf("StalledLines devolvió %+v, se esperaba una línea con AmountCents=295000", stalled)
+	}
 }
 
 func TestOrderByClientKeyFindsTheOrderAndNothingElse(t *testing.T) {

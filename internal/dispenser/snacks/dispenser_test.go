@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -176,7 +175,8 @@ func TestDispenserCheckReportsAnUnknownMachineAsNotAvailable(t *testing.T) {
 func TestDispenserDispatchShipsOneProductAndTheFakeRecordsIt(t *testing.T) {
 	d, fake := newDispenserWithFake(t)
 
-	attempt, err := d.Dispatch(context.Background(), newDispenserRequest())
+	req := newDispenserRequest()
+	attempt, err := d.Dispatch(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -200,11 +200,8 @@ func TestDispenserDispatchShipsOneProductAndTheFakeRecordsIt(t *testing.T) {
 	if len(prices) != 1 {
 		t.Fatalf("el despacho llevó %d precios, want 1", len(prices))
 	}
-	if prices[0] != 15.5 {
-		t.Fatalf("retailPrice = %v, want 15.5", prices[0])
-	}
-	if got := strconv.FormatFloat(prices[0], 'f', 2, 64); got != "15.50" {
-		t.Fatalf("1550 centavos se enviaron como %q, want \"15.50\"", got)
+	if prices[0] != 0 {
+		t.Fatalf("retailPrice = %v, want 0 aun con AmountCents=%d", prices[0], req.AmountCents)
 	}
 }
 

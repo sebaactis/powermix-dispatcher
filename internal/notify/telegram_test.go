@@ -289,11 +289,46 @@ func TestTelegramOmitsTheKioskWhenTheEventHasNone(t *testing.T) {
 }
 
 func TestEveryKindHasAStyle(t *testing.T) {
-	for _, kind := range []Kind{KindOrderFailed, KindOrderInDoubt, KindPaymentMismatch, KindPaymentUnknown} {
+	for _, kind := range []Kind{KindOrderFailed, KindOrderInDoubt, KindOrderPartial, KindPaymentMismatch, KindPaymentUnknown} {
 		style, ok := kindStyles[kind]
 		if !ok || style.icon == "" || style.title == "" || style.action == "" {
 			t.Fatalf("%s no tiene icono, título y qué hacer: %+v", kind, style)
 		}
+	}
+}
+
+func TestTelegramRendersPartialOrderAlert(t *testing.T) {
+	server, fake := telegramServer(t)
+	var logs bytes.Buffer
+
+	ev := Event{
+		Kind:    KindOrderPartial,
+		OrderID: "ord-partial-1",
+		KioskID: "kiosk-1",
+		Detail:  "se entregó batidos/DEMO-BATIDO-VAINILLA, falló snacks/DEMO-SNACK-ALFAJOR: compensar al cliente por snacks/DEMO-SNACK-ALFAJOR ($1.400,00)",
+	}
+
+	if err := newTestTelegram(server.URL, &logs).Notify(context.Background(), ev); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	text := fake.messages()[0].body.Text
+	for _, want := range []string{
+		"<b>Entrega parcial</b>",
+		"📍 Mueble Centro (kiosk-1)",
+		"🧾 Orden: <code>ord-partial-1</code>",
+		"<blockquote>Se entregó batidos/DEMO-BATIDO-VAINILLA, falló snacks/DEMO-SNACK-ALFAJOR: compensar al cliente por snacks/DEMO-SNACK-ALFAJOR ($1.400,00).</blockquote>",
+		"👉 ",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("el texto %q no contiene %q", text, want)
+		}
+	}
+	if strings.Contains(text, "⚠️ <b>order_partial</b>") {
+		t.Fatalf("el aviso usó el estilo de respaldo genérico: %q", text)
+	}
+	if !strings.Contains(logs.String(), "order_partial") {
+		t.Fatalf("el log no registró el aviso parcial: %s", logs.String())
 	}
 }
 
