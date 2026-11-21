@@ -1434,11 +1434,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Una sola llamada, no dos: snacks no tiene código que canjear (a diferencia de R2 en batidos), así que el despacho remoto es todo el disparo. `PaymentOrderId` es el id de la orden y `Mid` la máquina.
 >
+> `RetailPrice` se manda en `0` a propósito, ignorando el importe de la línea, hasta que se aclare con el proveedor si `retailPrice` descuenta saldo de la cuenta comercial (`docs/pendientes.md`, sección C).
+>
 > `DispatchResult.ProviderRef` es lo que el proveedor haya contestado, normalmente vacío porque la documentación responde `result: {}`. No se rellena con el id de la orden: un ProviderRef vacío dice la verdad —«el proveedor no dio un asa»— y es por eso que `Reconcile` cae al OrderID.
-
-### centsToUnits
-
-> Convierte centavos enteros al decimal que exige `retailPrice`. Es dinero de exhibición: float sólo para mandar y loguear, nunca para cuentas. Adentro del sistema todo importe sigue siendo int64 en centavos.
 
 ### Reconcile
 
@@ -1870,7 +1868,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > De la configuración del mueble se arma el `machine.Ref` completo —incluidos `device_id`, `device_no` y `mid`—, que es lo que después permite despachar sin volver a mirar la topología.
 >
-> El importe de cada línea queda en cero: el catálogo define un precio por combo, no por ítem, y repartirlo sería inventar un dato que nadie definió. El importe de la orden es el del combo.
+> `buildDraft` copia el `price_cents` de cada ítem del catálogo en su línea (`order.Item.AmountCents`), de modo que cada línea conozca su importe propio (por ejemplo, para calcular devoluciones o compensaciones ante entrega parcial). El importe total de la orden sale del `price_cents` del combo.
 
 ### decodeCreateOrder
 
@@ -2618,3 +2616,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## cmd/api/main.go — Mercado Pago (unidad 4)
 
 > Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithQRPayments`), al handler (`QRRequester` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.
+
+## internal/catalog/catalog.go
+
+### Item
+
+> Cada ítem del combo declara su propio `price_cents` (`int64` en centavos, igual que el combo). Así el catálogo fija cuánto vale cada producto sin tener que repartir el total a ojo al construir una orden.
+
+### validate
+
+> Exige que cada ítem tenga `price_cents > 0` y que la suma de los `price_cents` de los ítems coincida exactamente con el `price_cents` del combo, nombrando el combo infractor si falla. Un catálogo inconsistente falla al arrancar y no frente a un cliente.

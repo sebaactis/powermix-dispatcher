@@ -105,7 +105,7 @@ Reglas que no se rompen:
 
 Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 
-1. **El precio y el SKU salen del catálogo**, nunca del cliente. El cuerpo del pedido sólo trae `combo_id`, `client_key` y `kiosk_id`.
+1. **El precio y el SKU salen del catálogo**, nunca del cliente. El cuerpo del pedido sólo trae `combo_id`, `client_key` y `kiosk_id`. Cada ítem del catálogo (`combos.example.json`) lleva su `price_cents` (> 0) y la suma de sus ítems debe coincidir con el `price_cents` del combo.
 2. **Idempotencia de la creación** por `client_key`: la consulta rápida en memoria o base de datos es la vía rápida, la restricción de clave única del store es la verdad definitiva.
 3. **La línea lleva una sola familia de máquina** (`line.Machine.Kind`). En el struct `Line`, `MachineType` fue reemplazado por `Machine.Kind`; no obstante, el nombre `MachineType` se mantiene legítimamente en `internal/order/callback.go:33`, `internal/catalog/catalog.go:17` e `internal/httpapi/responses.go:27`.
 4. **El estado de la orden se deriva de las líneas** (`DeriveOrderStatus`), nunca se inventa; `settleOrder` lo recalcula después de cada cambio en cualquier línea.
@@ -251,7 +251,7 @@ TABLET
 httpapi/orders.go:10 createOrder
   ├─ decodeCreateOrder ...... httpapi/draft.go:23   (64 KB, sin campos extra)
   ├─ resolveKiosk ........... httpapi/draft.go:44
-  └─ buildDraft ............. httpapi/draft.go:66   (precio SIEMPRE del catálogo)
+  └─ buildDraft ............. httpapi/draft.go:66   (precio del combo y por ítem SIEMPRE del catálogo)
   ▼
 order/place.go:12 CreateOrder
   ├─ validateDraft :74 ──► machine.Ref.Validate (identificadores según Kind)

@@ -65,7 +65,7 @@ go vet ./...
 go build ./...
 
 cp config.example.json config.local.json     # topology only, no values
-cp combos.example.json combos.local.json     # the menu
+cp combos.example.json combos.local.json     # the menu: each item carries price_cents (> 0) and item prices must sum to combo price_cents
 
 go run ./cmd/api -config config.local.json -combos combos.local.json
 

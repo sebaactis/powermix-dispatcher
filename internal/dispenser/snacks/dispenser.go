@@ -92,7 +92,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 			{
 				OrderProductID: req.LineID,
 				ProductID:      req.SKU,
-				RetailPrice:    centsToUnits(req.AmountCents),
+				RetailPrice:    0,
 			},
 		},
 	})
@@ -136,10 +136,6 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 			order.OrderStatus, name,
 		),
 	}, nil
-}
-
-func centsToUnits(cents int64) float64 {
-	return float64(cents) / 100
 }
 
 func asPortRejection(err error) error {

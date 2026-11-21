@@ -86,7 +86,8 @@ func (h *Handler) buildDraft(kiosk config.Kiosk, combo catalog.Combo, clientKey 
 		}
 
 		draft.Items = append(draft.Items, order.Item{
-			SKU: item.SKU,
+			SKU:         item.SKU,
+			AmountCents: item.PriceCents,
 			Machine: machine.Ref{
 				KioskID:      kiosk.ID,
 				Kind:         machineConfig.Type,
