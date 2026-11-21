@@ -3,11 +3,16 @@ package order_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/dispenser/batidos"
 	"compras-remotas/internal/linestate"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
@@ -225,6 +230,116 @@ func TestEngineDispatchClearsTheClaimDeadlinesOnAFinalRejection(t *testing.T) {
 	}
 	if !line.DeadlineAt.IsZero() || !line.ReconcileUntil.IsZero() {
 		t.Fatalf("el rechazo final conservó los plazos del reclamo: deadline=%v until=%v, se esperaban los dos en cero", line.DeadlineAt, line.ReconcileUntil)
+	}
+}
+
+func TestEngineDispatchLeavesAmbiguousErrorInDoubtWithoutRetrying(t *testing.T) {
+	ctx := context.Background()
+	st := newRecordingStore()
+
+	driver := &reconcileMachine{
+		dispatchErr: fmt.Errorf("batidos: la API respondió code=500 (http 500): error interno"),
+	}
+
+	engine := order.New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{"batidos": driver},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, drinkOnlyDraft())
+
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	if calls := driver.dispatchCount(); calls != 1 {
+		t.Fatalf("Dispatch se llamó %d veces, se esperaba 1 (sin reintento ante error ambiguo)", calls)
+	}
+
+	line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
+	if line.State != linestate.InDoubt {
+		t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, linestate.InDoubt)
+	}
+	if line.Attempts != 1 {
+		t.Fatalf("Attempts = %d, se esperaba 1", line.Attempts)
+	}
+	if saved := st.savedFor(t, line.ID); saved.Outcome != store.OutcomeError {
+		t.Fatalf("Outcome = %q, se esperaba %q", saved.Outcome, store.OutcomeError)
+	}
+}
+
+func TestEngineDispatchCreatesOnlyOneCampaignWhenBatidosStep2Fails(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		body       string
+	}{
+		{
+			name:       "paso 2 falla con 400 y código",
+			httpStatus: http.StatusBadRequest,
+			body:       `{"code":40005,"success":false,"msg":"el canje falló","data":null}`,
+		},
+		{
+			name:       "paso 2 falla con 500",
+			httpStatus: http.StatusInternalServerError,
+			body:       `{"code":500,"success":false,"msg":"error interno","data":null}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var campaigns atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("/coffee/newThird/active/v2/submit", func(w http.ResponseWriter, _ *http.Request) {
+				n := campaigns.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"code":200,"success":true,"msg":"ok","data":{"exchangeCodes":["%06d"],"activeInfo":{"activeNo":"AD%06d","activeName":"combo","exchangeType":1}}}`, n, n)
+			})
+			mux.HandleFunc("/coffee/newThird/order/produceCoffee", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(tc.body))
+			})
+
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			ctx := context.Background()
+			st := newRecordingStore()
+			driver := batidos.NewDispenser(batidos.NewClient(srv.URL, "k", "s"))
+
+			engine := order.New(
+				st,
+				map[machine.Kind]dispenser.Dispenser{"batidos": driver},
+				order.WithClock(frozenClock()),
+				order.WithIDGenerator(sequentialIDs()),
+			)
+
+			placed := place(t, engine, drinkOnlyDraft())
+			if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
+			}
+
+			if got := campaigns.Load(); got != 1 {
+				t.Fatalf("se crearon %d campañas, se esperaba exactamente 1", got)
+			}
+
+			line := lineFor(t, mustOrder(t, st, placed.ID), "batidos")
+			if line.State != linestate.InDoubt {
+				t.Fatalf("la línea quedó en %q, se esperaba %q", line.State, linestate.InDoubt)
+			}
+			if line.Attempts != 1 {
+				t.Fatalf("Attempts = %d, se esperaba 1", line.Attempts)
+			}
+			if line.Ref != "000001" {
+				t.Fatalf("Ref = %q, se esperaba \"000001\"", line.Ref)
+			}
+			if saved := st.savedFor(t, line.ID); saved.Outcome != store.OutcomeError {
+				t.Fatalf("Outcome = %q, se esperaba %q", saved.Outcome, store.OutcomeError)
+			}
+		})
 	}
 }
 

@@ -256,8 +256,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### APIError
 
-> APIError es un rechazo informado por la API, ya sea porque el sobre trae un
+> APIError es un rechazo o fallo HTTP informado por la API, ya sea porque el sobre trae un
 > code distinto de 200 o porque el HTTP no fue 200. Se detecta con errors.As.
+> El campo interno `hasCode` marca cuándo la respuesta trajo un sobre JSON válido con
+> el campo `code` presente, para distinguirlo de JSON roto o respuestas sin `code`.
 
 ### CreateCampaign
 
@@ -671,9 +673,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El mensaje dice «la API rechazó la llamada» y no «el despacho», porque el tipo lo comparten el despacho y las dos lecturas del chequeo previo.
 
+### newAPIError
+
+> Construye el `*APIError` desde el cuerpo de respuesta en `Ship` y `get`. Registra
+> `hasCode = decodeErr == nil && env.Code != nil` para que `asPortRejection` distinga
+> un sobre JSON válido con campo `code` de un cuerpo no-JSON o sin campo `code`.
+
 ### isRejected
 
-> Decide si una respuesta es un rechazo del proveedor: status HTTP fuera de 2xx, `code` distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`docs/proveedores/snacks-api.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir.
+> Decide si una respuesta de la API debe tratarse como error (`*APIError`): status HTTP fuera de 2xx, `code` presente y distinto de 0 y de 200, o `success` presente y en `false`. Un `success` ausente no rechaza, porque la sección general de la documentación (`docs/proveedores/snacks-api.txt:351-363`) responde sin ese campo; sólo un `false` explícito cuenta. Sin esta última condición, `{"success":false,"code":0}` se tomaba como despacho encolado. Es una sola función para que `Ship` y `get` no puedan divergir. Que sea `*APIError` no implica automáticamente `*dispenser.Rejection`: esa clasificación vive en `asPortRejection`.
 
 ## internal/dispenser/snacks/client_test.go
 
@@ -831,8 +839,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > envelope es la respuesta del proveedor. El ejemplo de error del PDF devuelve
 > `code` y `message`; el de éxito repite `code: 200` con `result` vacío.
-> `Success` es un puntero porque el campo a veces no viene: `nil` significa
-> «no vino» y es distinto de `false`, que es un rechazo explícito.
+> `Success` y `Code` son punteros porque pueden faltar en respuestas parciales o de proxy:
+> `Code == nil` distingue «no vino el campo `code`» de `code: 0`, y `Success == nil`
+> distingue «no vino» de `false`.
 
 ### devicesResultBody / deviceItemBody / slotItemBody
 
@@ -1385,7 +1394,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `DispatchResult.ProviderRef` es el código de canje, no un número de pedido: produceCoffee no devuelve orderNo, y el código es exactamente lo que `Reconcile` necesita para preguntar qué pasó.
 >
-> Si la campaña falla no hay código, así que el DispatchResult queda vacío. Si la campaña se emitió y el canje falla, el DispatchResult conserva el código aunque `Accepted` sea falso: un `ProviderRef` no vacío junto al error es la señal de «esto es reconciliable, no lo reintentes a ciegas» (E4). Perder ese código sería perder la única forma de saber si el batido salió.
+> Si la campaña falla no hay código, así que el DispatchResult queda vacío y se aplica `asPortRejection`. Si la campaña se emitió y el canje (`ProduceCoffee`) falla, el DispatchResult conserva el código aunque `Accepted` sea falso y el error vuelve envuelto **sin** `asPortRejection`: aunque el paso 2 responda 4xx o 200 con código no exitoso, nunca debe convertirse en `*dispenser.Rejection`, porque reintentar emitiría una segunda campaña. Así la línea queda `in_doubt` con `Ref` = código de canje y `Reconcile` consulta `OrderInfo` con ese código.
 >
 > `notifyUrl` sólo se completa cuando `cmd/api` inyecta `WithNotifyURL`; el adaptador no inventa ninguna URL ni un valor por defecto.
 
@@ -1727,11 +1736,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `isProviderRejection` pregunta por el error del puerto y no por los tipos de cada proveedor. Ese era el punto: el motor no debe conocer que Batidos y Snacks existen, y con los dos imports cualquier proveedor nuevo obligaba a editar el motor para clasificar sus rechazos.
 
-## internal/dispenser/{batidos,snacks} — asPortRejection
+## internal/dispenser/{batidos,snacks} — asPortRejection / isClearBusinessRejection
 
-> Traduce el `*APIError` propio a `*dispenser.Rejection` en el borde: en `Dispatch` y en `Reconcile`, que son los dos lugares por donde sale una respuesta del proveedor hacia el motor. Se envuelve después con `%w` para no perder el contexto, y por eso `errors.As` sigue encontrando el rechazo.
+> Traduce el `*APIError` propio a `*dispenser.Rejection` en el borde (`Dispatch` en el paso 1 de batidos o en snacks, y `Reconcile` en ambos), pero **únicamente** cuando `isClearBusinessRejection` confirma un rechazo de negocio claro del proveedor: HTTP 4xx (excluyendo 408 y 429) con sobre JSON válido y campo `code` presente (`hasCode`), o HTTP 200 con código no exitoso del proveedor.
 >
-> Un error que no es del proveedor —red, JSON roto, contexto cortado— pasa intacto: no es un rechazo, y convertirlo en uno haría que una duda se declarara fallo.
+> Todo lo demás —5xx, 429, 408, JSON inválido, sobre sin campo `code`, errores de red o contexto cortado— vuelve intacto envolviendo el `*APIError` o causa original: no es un `*dispenser.Rejection`, para que `classifyDispatch` deje la línea en `in_doubt` (`OutcomeError`) y nunca reintente a ciegas.
 
 ## internal/order/payment_test.go — el test del reinicio
 

@@ -347,6 +347,31 @@ func TestDispenserReconcileReportsUnknownProviderStatusAsInDoubt(t *testing.T) {
 	}
 }
 
+func TestDispenserReconcileTreats5xxAsNonRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"code":500,"success":false,"msg":"error interno","data":null}`))
+	}))
+	defer srv.Close()
+
+	d := batidos.NewDispenser(batidos.NewClient(srv.URL, testKey, testSecret))
+	status, err := d.Reconcile(context.Background(), requestWithRef("000001"))
+	if err == nil {
+		t.Fatalf("se esperaba error, status = %+v", status)
+	}
+
+	var rejection *dispenser.Rejection
+	if errors.As(err, &rejection) {
+		t.Fatalf("un 500 en Reconcile no debe ser *dispenser.Rejection: %+v", rejection)
+	}
+
+	var apiErr *batidos.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("el error %v (%T) perdió *batidos.APIError", err, err)
+	}
+}
+
 type capturedCampaign struct {
 	ActiveName    string `json:"activeName"`
 	StartTime     string `json:"startTime"`
@@ -510,6 +535,207 @@ func TestDispenserDispatchSendsTheNotifyURLOfTheOrder(t *testing.T) {
 
 			if got := last().NotifyURL; got != tc.want {
 				t.Fatalf("notifyUrl = %q, se esperaba %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDispenserDispatchTreatsAmbiguousProviderResponsesAsNonRejection(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		body       string
+	}{
+		{
+			name:       "http 500 con sobre json",
+			httpStatus: http.StatusInternalServerError,
+			body:       `{"code":500,"success":false,"msg":"error interno","data":null}`,
+		},
+		{
+			name:       "http 502 con html no json",
+			httpStatus: http.StatusBadGateway,
+			body:       `<html>Bad Gateway</html>`,
+		},
+		{
+			name:       "http 429 con sobre json",
+			httpStatus: http.StatusTooManyRequests,
+			body:       `{"code":429,"success":false,"msg":"demasiadas solicitudes","data":null}`,
+		},
+		{
+			name:       "http 408 con sobre json",
+			httpStatus: http.StatusRequestTimeout,
+			body:       `{"code":408,"success":false,"msg":"timeout del proveedor","data":null}`,
+		},
+		{
+			name:       "http 200 con json inválido",
+			httpStatus: http.StatusOK,
+			body:       `{roto`,
+		},
+		{
+			name:       "http 400 con json inválido",
+			httpStatus: http.StatusBadRequest,
+			body:       `bad request`,
+		},
+		{
+			name:       "http 400 sin campo code",
+			httpStatus: http.StatusBadRequest,
+			body:       `{"success":false,"msg":"falta code"}`,
+		},
+		{
+			name:       "http 200 sin campo code",
+			httpStatus: http.StatusOK,
+			body:       `{"success":false,"msg":"falta code"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			d := batidos.NewDispenser(batidos.NewClient(srv.URL, testKey, testSecret))
+			attempt, err := d.Dispatch(context.Background(), newRequest())
+			if err == nil {
+				t.Fatalf("se esperaba error, attempt = %+v", attempt)
+			}
+
+			var rejection *dispenser.Rejection
+			if errors.As(err, &rejection) {
+				t.Fatalf("error ambiguo se clasificó como *dispenser.Rejection: %+v", rejection)
+			}
+
+			var apiErr *batidos.APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("el error %v (%T) perdió el *batidos.APIError subyacente", err, err)
+			}
+
+			var zero dispenser.DispatchResult
+			if attempt != zero {
+				t.Fatalf("attempt = %+v, se esperaba vacío", attempt)
+			}
+		})
+	}
+}
+
+func TestDispenserDispatchTreatsClear4xxWithProviderCodeAsRejection(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		body       string
+		wantCode   int
+	}{
+		{
+			name:       "http 400 con código",
+			httpStatus: http.StatusBadRequest,
+			body:       `{"code":40005,"success":false,"msg":"parámetro inválido","data":null}`,
+			wantCode:   40005,
+		},
+		{
+			name:       "http 422 con código",
+			httpStatus: http.StatusUnprocessableEntity,
+			body:       `{"code":42201,"success":false,"msg":"producto inválido","data":null}`,
+			wantCode:   42201,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			d := batidos.NewDispenser(batidos.NewClient(srv.URL, testKey, testSecret))
+			attempt, err := d.Dispatch(context.Background(), newRequest())
+			if err == nil {
+				t.Fatalf("se esperaba rechazo, attempt = %+v", attempt)
+			}
+
+			var rejection *dispenser.Rejection
+			if !errors.As(err, &rejection) {
+				t.Fatalf("err = %v, se esperaba *dispenser.Rejection", err)
+			}
+			if rejection.HTTPStatus != tc.httpStatus || rejection.Code != tc.wantCode {
+				t.Fatalf("Rejection = %+v, se esperaba HTTP=%d Code=%d", rejection, tc.httpStatus, tc.wantCode)
+			}
+
+			var apiErr *batidos.APIError
+			if errors.As(err, &apiErr) {
+				t.Fatalf("el adaptador dejó escapar *batidos.APIError: %v", err)
+			}
+
+			var zero dispenser.DispatchResult
+			if attempt != zero {
+				t.Fatalf("attempt = %+v, se esperaba vacío", attempt)
+			}
+		})
+	}
+}
+
+func TestDispenserDispatchReturnsNonRejectionWithRefWhenProduceCoffeeFails(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		body       string
+	}{
+		{
+			name:       "paso 2 falla con 500",
+			httpStatus: http.StatusInternalServerError,
+			body:       `{"code":500,"success":false,"msg":"error interno","data":null}`,
+		},
+		{
+			name:       "paso 2 falla con 400 y código del proveedor",
+			httpStatus: http.StatusBadRequest,
+			body:       `{"code":40005,"success":false,"msg":"código inválido","data":null}`,
+		},
+		{
+			name:       "paso 2 falla con 200 y código no exitoso",
+			httpStatus: http.StatusOK,
+			body:       `{"code":40005,"success":false,"msg":"ya canjeado","data":null}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc(campaignPath, func(w http.ResponseWriter, _ *http.Request) {
+				writeEnvelope(w, `{"exchangeCodes":["000001"],"activeInfo":{"activeNo":"AD000001","activeName":"combo","exchangeType":1}}`)
+			})
+			mux.HandleFunc(produceCoffeePath, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(tc.body))
+			})
+
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			d := batidos.NewDispenser(batidos.NewClient(srv.URL, testKey, testSecret))
+			attempt, err := d.Dispatch(context.Background(), newRequest())
+			if err == nil {
+				t.Fatalf("se esperaba error en paso 2, attempt = %+v", attempt)
+			}
+
+			var rejection *dispenser.Rejection
+			if errors.As(err, &rejection) {
+				t.Fatalf("un error en paso 2 nunca debe devolver *dispenser.Rejection: %+v", rejection)
+			}
+
+			var apiErr *batidos.APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("el error %v (%T) perdió el *batidos.APIError subyacente", err, err)
+			}
+			if attempt.Accepted {
+				t.Fatalf("Accepted = true, se esperaba false")
+			}
+			if attempt.ProviderRef != "000001" {
+				t.Fatalf("ProviderRef = %q, se esperaba \"000001\"", attempt.ProviderRef)
 			}
 		})
 	}

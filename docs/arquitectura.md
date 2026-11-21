@@ -112,7 +112,7 @@ Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 5. **Una línea cerrada no se reabre** (`delivered` y `failed` son terminales).
 6. **La línea y la orden se escriben con versión** (`SaveLine` y `SaveOrder`, ambos condicionales, retornan `ErrStale` si la versión en memoria es vieja). El worker de barrido, los callbacks y dos peticiones `/pay` concurrentes no se pisan.
 7. **El dedupe se registra después del efecto durable.** Un fallo transitorio no quema la clave. Excepción: lo que nunca va a poder aplicarse se registra antes, para evitar reintentos eternos.
-8. **Reintento sólo ante rechazo explícito.** Un timeout o una respuesta ilegible van a «en duda» (`in_doubt`) y se reconcilian; nunca se reintentan a ciegas.
+8. **Reintento sólo ante rechazo de negocio claro.** Sólo un HTTP 4xx (salvo 408 y 429) con sobre y `code` del proveedor, o un HTTP 200 con código no exitoso, devuelve `*dispenser.Rejection` y se reintenta (salvo en el paso 2 de batidos: tras emitir el código de canje, cualquier fallo de `ProduceCoffee` queda `in_doubt` con ese código para reconciliar y nunca crea una segunda campaña). Cualquier 5xx, 429, 408, timeout, error de red, JSON inválido o respuesta sin `code` va a «en duda» (`in_doubt`) y se reconcilia; nunca se reintenta a ciegas.
 9. **El callback de batidos no cierra nada por sí solo**: confirma la entrega consultando directamente al proveedor (R6).
 10. **Los secretos de callback viajan en la ruta del path** y se comparan en tiempo constante; sin secreto configurado se responde 404 igual que una ruta inexistente. El path se redacta en los logs.
 11. **El pago simulado sólo existe en `sandbox` y sin Mercado Pago.** O se cobra simulado o con Mercado Pago completo; cualquier otro caso lo rechaza antes de tocar el motor de órdenes.
@@ -309,14 +309,15 @@ for line.Attempts < maxAttempts:
   ├─ 3. machine.Dispatch(...)  ──►  batidos/dispenser.go:95  o  snacks/dispenser.go:87
   │
   ├─ 4. classifyDispatch (:133)
-  │       ┌──────────────────────────┬───────────┬────────────────┐
-  │       │ qué pasó                 │ outcome   │ estado destino │
-  │       ├──────────────────────────┼───────────┼────────────────┤
-  │       │ rechazo explícito        │ rejected  │ failed         │
-  │       │ error de red / timeout   │ error     │ in_doubt       │
-  │       │ Accepted = true          │ accepted  │ sent           │
-  │       │ no confirmó              │ error     │ in_doubt       │
-  │       └──────────────────────────┴───────────┴────────────────┘
+  │       ┌────────────────────────────────────┬───────────┬────────────────┐
+  │       │ qué pasó                           │ outcome   │ estado destino │
+  │       ├────────────────────────────────────┼───────────┼────────────────┤
+  │       │ rechazo de negocio (*Rejection)    │ rejected  │ failed         │
+  │       │ red / timeout / 5xx / 429 / 408 /  │           │                │
+  │       │ JSON inválido / sin code / paso 2  │ error     │ in_doubt       │
+  │       │ Accepted = true                    │ accepted  │ sent           │
+  │       │ no confirmó                        │ error     │ in_doubt       │
+  │       └────────────────────────────────────┴───────────┴────────────────┘
   │
   ├─ 5. SaveAttempt (cierra el intento)
   │
@@ -333,7 +334,7 @@ for line.Attempts < maxAttempts:
   └─ 8. SaveLine ── ErrStale → return
 ```
 
-Regla clave: sólo se reintenta un **rechazo explícito**. Un error de red o timeout nunca se reintenta directamente, porque la petición pudo haber llegado a la máquina; despachar dos veces causaría duplicaciones físicas. Esa línea queda `in_doubt` y la resuelve la reconciliación.
+Regla clave: sólo se reintenta un **rechazo de negocio claro** (`*dispenser.Rejection`: HTTP 4xx salvo 408 y 429 con sobre y `code` del proveedor, o HTTP 200 con código no exitoso, y nunca tras emitir el código de canje en batidos). Un error de red, timeout, 5xx, 429, 408, respuesta ilegible/sin `code` o fallo en el paso 2 de batidos nunca se reintenta directamente, porque la petición pudo haber llegado a la máquina o el código ya haberse emitido; despachar dos veces causaría duplicaciones físicas. Esa línea queda `in_doubt` (con `Ref` si ya hubo código) y la resuelve la reconciliación.
 
 ### Quién mueve una línea `pending`
 

@@ -381,3 +381,182 @@ func TestDispenserReconcilePropagatesAProviderError(t *testing.T) {
 		t.Fatalf("no debe inventar un estado: %+v", status)
 	}
 }
+
+func TestDispenserReconcileTreats5xxAsNonRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"success":false,"code":500,"message":"error interno","result":null}`))
+	}))
+	defer srv.Close()
+
+	d := snacks.NewDispenser(snacks.NewClient(srv.URL, testAccessKey, testAppSecret))
+	status, err := d.Reconcile(context.Background(), requestWithRef("order-1"))
+	if err == nil {
+		t.Fatalf("se esperaba error, status = %+v", status)
+	}
+
+	var rejection *dispenser.Rejection
+	if errors.As(err, &rejection) {
+		t.Fatalf("un 500 en Reconcile no debe ser *dispenser.Rejection: %+v", rejection)
+	}
+
+	var apiErr *snacks.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("el error %v (%T) perdió *snacks.APIError", err, err)
+	}
+}
+
+func TestDispenserDispatchTreatsAmbiguousProviderResponsesAsNonRejection(t *testing.T) {
+	cases := []struct {
+		name         string
+		httpStatus   int
+		body         string
+		wantAPIError bool
+	}{
+		{
+			name:         "http 500 con sobre json",
+			httpStatus:   http.StatusInternalServerError,
+			body:         `{"success":false,"code":500,"message":"error interno","result":null}`,
+			wantAPIError: true,
+		},
+		{
+			name:         "http 502 con html no json",
+			httpStatus:   http.StatusBadGateway,
+			body:         `<html>Bad Gateway</html>`,
+			wantAPIError: true,
+		},
+		{
+			name:         "http 429 con sobre json",
+			httpStatus:   http.StatusTooManyRequests,
+			body:         `{"success":false,"code":429,"message":"rate limit","result":null}`,
+			wantAPIError: true,
+		},
+		{
+			name:         "http 408 con sobre json",
+			httpStatus:   http.StatusRequestTimeout,
+			body:         `{"success":false,"code":408,"message":"timeout","result":null}`,
+			wantAPIError: true,
+		},
+		{
+			name:       "http 200 con json inválido",
+			httpStatus: http.StatusOK,
+			body:       `{roto`,
+		},
+		{
+			name:         "http 400 con json inválido",
+			httpStatus:   http.StatusBadRequest,
+			body:         `bad request`,
+			wantAPIError: true,
+		},
+		{
+			name:         "http 400 sin campo code",
+			httpStatus:   http.StatusBadRequest,
+			body:         `{"success":false,"message":"falta code","result":null}`,
+			wantAPIError: true,
+		},
+		{
+			name:         "http 200 sin campo code",
+			httpStatus:   http.StatusOK,
+			body:         `{"success":false,"message":"falta code","result":null}`,
+			wantAPIError: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			d := snacks.NewDispenser(snacks.NewClient(srv.URL, testAccessKey, testAppSecret))
+			attempt, err := d.Dispatch(context.Background(), newDispenserRequest())
+			if err == nil {
+				t.Fatalf("se esperaba error, attempt = %+v", attempt)
+			}
+
+			var rejection *dispenser.Rejection
+			if errors.As(err, &rejection) {
+				t.Fatalf("error ambiguo se clasificó como *dispenser.Rejection: %+v", rejection)
+			}
+
+			if tc.wantAPIError {
+				var apiErr *snacks.APIError
+				if !errors.As(err, &apiErr) {
+					t.Fatalf("el error %v (%T) perdió el *snacks.APIError subyacente", err, err)
+				}
+			}
+
+			var zero dispenser.DispatchResult
+			if attempt != zero {
+				t.Fatalf("attempt = %+v, se esperaba vacío", attempt)
+			}
+		})
+	}
+}
+
+func TestDispenserDispatchTreatsClearBusinessErrorsAsRejection(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		body       string
+		wantCode   int
+	}{
+		{
+			name:       "http 422 con código",
+			httpStatus: http.StatusUnprocessableEntity,
+			body:       `{"success":false,"code":42201,"message":"canal inválido","result":null}`,
+			wantCode:   42201,
+		},
+		{
+			name:       "http 200 con código no exitoso",
+			httpStatus: http.StatusOK,
+			body:       `{"success":false,"code":40010,"message":"sin stock","result":null}`,
+			wantCode:   40010,
+		},
+		{
+			name:       "http 200 con success false y code 0",
+			httpStatus: http.StatusOK,
+			body:       `{"success":false,"code":0,"message":"device busy","result":{}}`,
+			wantCode:   0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.httpStatus)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			d := snacks.NewDispenser(snacks.NewClient(srv.URL, testAccessKey, testAppSecret))
+			attempt, err := d.Dispatch(context.Background(), newDispenserRequest())
+			if err == nil {
+				t.Fatalf("se esperaba rechazo, attempt = %+v", attempt)
+			}
+
+			var rejection *dispenser.Rejection
+			if !errors.As(err, &rejection) {
+				t.Fatalf("err = %v, se esperaba *dispenser.Rejection", err)
+			}
+			if rejection.HTTPStatus != tc.httpStatus || rejection.Code != tc.wantCode {
+				t.Fatalf("Rejection = %+v, se esperaba HTTP=%d Code=%d", rejection, tc.httpStatus, tc.wantCode)
+			}
+
+			var apiErr *snacks.APIError
+			if errors.As(err, &apiErr) {
+				t.Fatalf("el adaptador dejó escapar *snacks.APIError: %v", err)
+			}
+
+			var zero dispenser.DispatchResult
+			if attempt != zero {
+				t.Fatalf("attempt = %+v, se esperaba vacío", attempt)
+			}
+		})
+	}
+}
