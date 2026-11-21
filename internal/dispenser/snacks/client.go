@@ -192,6 +192,7 @@ type APIError struct {
 	HTTPStatus int
 	Code       int
 	Message    string
+	hasCode    bool
 }
 
 func (e *APIError) Error() string {
@@ -274,15 +275,7 @@ func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Dispa
 	decodeErr := json.Unmarshal(payload, &env)
 
 	if isRejected(resp.StatusCode, env) {
-		message := env.Message
-		if message == "" {
-			message = strings.TrimSpace(string(payload))
-		}
-		return dispenser.DispatchResult{}, &APIError{
-			HTTPStatus: resp.StatusCode,
-			Code:       env.Code,
-			Message:    message,
-		}
+		return dispenser.DispatchResult{}, newAPIError(resp.StatusCode, payload, env, decodeErr)
 	}
 	if decodeErr != nil {
 		return dispenser.DispatchResult{}, fmt.Errorf("snacks: la respuesta del despacho no es el JSON esperado: %w", decodeErr)
@@ -434,15 +427,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	decodeErr := json.Unmarshal(payload, &env)
 
 	if isRejected(resp.StatusCode, env) {
-		message := env.Message
-		if message == "" {
-			message = strings.TrimSpace(string(payload))
-		}
-		return &APIError{
-			HTTPStatus: resp.StatusCode,
-			Code:       env.Code,
-			Message:    message,
-		}
+		return newAPIError(resp.StatusCode, payload, env, decodeErr)
 	}
 	if decodeErr != nil {
 		return fmt.Errorf("snacks: la respuesta de %s no es el JSON esperado: %w", path, decodeErr)
@@ -456,11 +441,29 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	return nil
 }
 
+func newAPIError(httpStatus int, payload []byte, env envelope, decodeErr error) *APIError {
+	message := env.Message
+	if message == "" {
+		message = strings.TrimSpace(string(payload))
+	}
+	code := 0
+	hasCode := decodeErr == nil && env.Code != nil
+	if hasCode {
+		code = *env.Code
+	}
+	return &APIError{
+		HTTPStatus: httpStatus,
+		Code:       code,
+		Message:    message,
+		hasCode:    hasCode,
+	}
+}
+
 func isRejected(httpStatus int, env envelope) bool {
 	if httpStatus < 200 || httpStatus >= 300 {
 		return true
 	}
-	if env.Code != 0 && env.Code != 200 {
+	if env.Code != nil && *env.Code != 0 && *env.Code != 200 {
 		return true
 	}
 	return env.Success != nil && !*env.Success

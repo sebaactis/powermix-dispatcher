@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -128,7 +129,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 		}
 
 		return dispenser.DispatchResult{Accepted: brewed.Accepted, ProviderRef: code, Detail: detail},
-			fmt.Errorf("no se pudo disparar el batido: %w", asPortRejection(err))
+			fmt.Errorf("no se pudo disparar el batido: %w", err)
 	}
 
 	return dispenser.DispatchResult{Accepted: true, ProviderRef: code, Detail: brewed.Detail}, nil
@@ -158,7 +159,7 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 
 func asPortRejection(err error) error {
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
+	if !errors.As(err, &apiErr) || !isClearBusinessRejection(apiErr) {
 		return err
 	}
 
@@ -168,4 +169,17 @@ func asPortRejection(err error) error {
 		Code:       apiErr.Code,
 		Message:    apiErr.Message,
 	}
+}
+
+func isClearBusinessRejection(apiErr *APIError) bool {
+	if !apiErr.hasCode {
+		return false
+	}
+	if apiErr.HTTPStatus == http.StatusOK {
+		return true
+	}
+	return apiErr.HTTPStatus >= http.StatusBadRequest &&
+		apiErr.HTTPStatus < http.StatusInternalServerError &&
+		apiErr.HTTPStatus != http.StatusRequestTimeout &&
+		apiErr.HTTPStatus != http.StatusTooManyRequests
 }
