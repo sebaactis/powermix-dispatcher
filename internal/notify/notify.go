@@ -10,6 +10,7 @@ type Kind string
 const (
 	KindOrderInDoubt    Kind = "order_in_doubt"
 	KindOrderFailed     Kind = "order_failed"
+	KindOrderPartial    Kind = "order_partial"
 	KindPaymentMismatch Kind = "payment_mismatch"
 	KindPaymentUnknown  Kind = "payment_unknown"
 )

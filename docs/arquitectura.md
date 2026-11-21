@@ -131,7 +131,7 @@ Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 | `store.AttemptOutcome` | `internal/store` | `ambiguous`, `accepted`, `rejected`, `error` |
 | `store.PaymentStatus` | `internal/store` | `pending`, `approved`, `expired`, `cancelled`, `amount_mismatch` |
 | `payments.ChargeStatus` | `internal/payments` | `pending`, `approved`, `expired`, `cancelled`, `unknown` |
-| `notify.Kind` | `internal/notify` | `order_in_doubt`, `order_failed`, `payment_mismatch`, `payment_unknown` |
+| `notify.Kind` | `internal/notify` | `order_in_doubt`, `order_failed`, `order_partial`, `payment_mismatch`, `payment_unknown` |
 | `preflight.Reason` | `internal/preflight` | `batidos_device_offline`, `snacks_sku_out_of_stock`, … |
 
 ## Glosario de verbos
@@ -292,7 +292,7 @@ order/payment.go:12 MarkPaid = claimPaid (:21) + dispatchLines (:58)
   ├─ detached := context.WithoutCancel(ctx) (:47)  ← sobrevive al corte del cliente
   ├─ una goroutine por línea → dispatchWithinDeadline (order/dispatch.go:23)
   │                            con context.WithTimeout de 2 min
-  └─ wg.Wait → refreshOrderStatus (order/settle.go:23)
+  └─ wg.Wait → settleOrder (order/settle.go:16)
 ```
 
 ## 4. El corazón: `dispatchLine` (`internal/order/dispatch.go:30`)
@@ -362,7 +362,7 @@ Regla clave: sólo se reintenta un **rechazo explícito**. Un error de red o tim
        → markBrewing :222 + reconcileLine
          (no se confía en el aviso: se pregunta a la API)
    ▼
- settleOrder (order/settle.go:14)
+ settleOrder (order/settle.go:16)
 ```
 
 Quién cierra una línea y cómo:
@@ -372,11 +372,11 @@ Quién cierra una línea y cómo:
 ## 6. Asentar la orden y avisar (`internal/order/settle.go`)
 
 ```
-settleOrder :14
- ├─ refreshOrderStatus :23  → AdvanceOrder (status.go:92) → SaveOrder
+settleOrder :16
+ ├─ refreshOrderStatus :25  → AdvanceOrder (status.go:92) → SaveOrder
  │                            ErrStale → recarga y reintenta UNA vez
- └─ notifyOrder :52   ¿quedó in_doubt o failed?
-       └ NotificationSent? (:70) ── ya salió → nada
+ └─ notifyOrder :54   ¿quedó in_doubt, failed o partial?
+       └ NotificationSent? (:78) ── ya salió → nada
                                 └─ no → Notify (notify/notify.go:34) → RecordNotification
                                         (primero el aviso, después el registro)
                                         Con Telegram (notify/telegram.go): log + hasta 3
@@ -424,7 +424,7 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49   (se deriva con DeriveOrderSt
 | Firmas de los proveedores | `batidos/sign.go:31` (MD5), `snacks/sign.go:47` (HMAC-SHA256) |
 | Qué hace el barrido periódico | `internal/order/reconcile.go:20` |
 | Qué estados son válidos | `internal/order/status.go:49`, `:72` |
-| Por qué un aviso de excepción no llegó o llegó una sola vez | `internal/order/settle.go:52` (`notifyOrder`) y la tabla `notification_sent` (`migrations/0006`) |
+| Por qué un aviso de excepción no llegó o llegó una sola vez | `internal/order/settle.go:54` (`notifyOrder`) y la tabla `notification_sent` (`migrations/0006`) |
 | El mapeo de una columna SQL | `internal/store/postgres/postgres.go` y `migrations/` |
 | Qué rechaza el store antes de llegar a la base de datos | `internal/store/memory.go` (`validateOrder`, `validateLine`) y el check 23514 de `internal/store/postgres/postgres.go` |
 | Qué versión del esquema está aplicada | `internal/migrate` (`versions`, `missing`) y `migrations/embed.go` |

@@ -73,7 +73,7 @@ func (e *Engine) dispatchLines(ctx context.Context, orderID string, lines []stor
 
 	joined := errors.Join(failures...)
 
-	if _, err := e.refreshOrderStatus(ctx, orderID); err != nil {
+	if err := e.settleOrder(ctx, orderID); err != nil {
 		return errors.Join(joined, err)
 	}
 
