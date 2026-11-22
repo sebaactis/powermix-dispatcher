@@ -45,6 +45,11 @@ func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error
 		return
 	}
 
+	if errors.Is(err, order.ErrClientKeyConflict) {
+		writeError(w, http.StatusConflict, order.ErrClientKeyConflict.Error())
+		return
+	}
+
 	if errors.Is(err, order.ErrQRUnavailable) {
 		logger.ErrorContext(r.Context(), "el proveedor de pagos no pudo crear el QR",
 			"method", r.Method,
