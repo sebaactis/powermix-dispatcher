@@ -16,7 +16,7 @@ Fuera de alcance (F7b, fix aparte): guardar el código de campaña de batidos an
 
 ## Tasks
 
-- [ ] T1 — S1-S6 — writer `gentle-ai-worker` — commit: pendiente.
+- [x] T1 — S1-S6 — writer `gentle-ai-worker` — commit: 3f42c8c (código, compose y docs); tests en `archive/tests` 34936f2.
 
 ## Log
 
@@ -25,3 +25,4 @@ Fuera de alcance (F7b, fix aparte): guardar el código de campaña de batidos an
 - **L3** — Dónde corre producción: «Todavía no lo sé» → se configura docker-compose y se documenta el requisito.
 - **L4** — Mapa verificado: el plazo de línea se guarda antes de llamar a la máquina (`internal/order/dispatch.go:36-39`), así que un corte no causa doble despacho: `OverdueLines` reconcilia la línea. `docker-compose.yml` y `Dockerfile` no definen período de gracia.
 - **L5** — La verificación independiente dio S1, S2, S4 y S5 PASS y S3 PARTIAL, sin bloqueantes. Hallazgo real en producción: si `server.Shutdown` vence con un webhook de Mercado Pago activo, `spawn` puede llamar `inFlight.Add` en paralelo con `Engine.Wait()` y hacer panic (ya pasaba antes del cambio). `MarkPaid` dentro del handler corre sólo en sandbox (`internal/httpapi/orders.go:79-82`), así que es menor. Decisión del usuario: «Sí, agregarlo a F7» → S6.
+- **L6** — Evidencia S6: RED, se despachaban 2 líneas después de `Wait()`; GREEN; `go test -count=5` en `internal/order`, `cmd/api` y `internal/sweep` pasa; la suite de `archive/tests` da exit 0. No verificado: `-race` (no hay cgo en esta máquina), apagado de punta a punta con Docker, Postgres real. Riesgos menores que quedan: varios `WithoutCancel` dependen del timeout de cada cliente HTTP, porque no tienen deadline propio; un despacho que el barrido empezó puede tardar hasta 2 min, más que el drenaje de 60 s (en ese caso se loguea y la línea se reconcilia al reiniciar).
