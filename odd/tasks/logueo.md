@@ -16,11 +16,13 @@ Hoy el nivel está fijo en Info y el formato es texto (`cmd/api/main.go:48`, `in
 
 ## Tasks
 
-- [ ] T1 — S1-S7 — writer `gentle-ai-worker` — commit: pendiente.
-- [ ] T2 — S8 — writer `gentle-ai-worker` (después de T1, comparte `internal/httpapi`) — commit: pendiente.
+- [x] T1 — S1-S7 — writer `gentle-ai-worker` — commit: bd6c573.
+- [x] T2 — S8 — writer `gentle-ai-worker` — commit: 8c6952b. Tests de T1 y T2 en `archive/tests` a26eaa4 + 978f1ac.
 
 ## Log
 
 - **L1** — «Dale» a publicar F8 y arrancar F9 (2026-11-22).
 - **L2** — Decisiones: request_id «Lo genera siempre el servidor (recomendado)»; formato «JSON siempre»; access log «Todos; 4xx en warn, 5xx en error (recomendado)»; order_id «request_id automático, order_id a mano (recomendado)».
 - **L3** — Mapa: los callbacks llevan el secreto en la ruta (`/callbacks/{batidos,snacks,mercadopago}/{secret}`); `redactCallbackPath` está en `internal/httpapi/callback_url.go:17-30`. Hoy los routers se registran directo sobre `mux` en `cmd/api/main.go:188-221`.
+- **L4** — Verificación independiente de T1: S1-S4, S6 y S7 PASS; S5 PARTIAL con un **bloqueante**: rutas no canónicas (`//callbacks/mercadopago/<secreto>`, `/x/../callbacks/...`, `/Callbacks/...`) se logueaban sin tapar. Corregido: el access log usa el patrón de la ruta (`r.Pattern`) y, sin coincidencia, `redactCallbackPath` desescapa, aplica `path.Clean` y tapa todo lo que sigue a un segmento `callbacks` sin distinguir mayúsculas. Un panic después de los headers ahora aborta la conexión y se loguea como ERROR con `aborted`. `LOG_LEVEL` vive en `internal/logging`, porque `migrate` y `fakeapi` no cargan config. El test de `internal/sweep/runner_test.go` se adaptó a JSON con autorización del padre.
+- **L5** — T2: `order_id` agregado en errores HTTP, callbacks y webhook de Mercado Pago (`SyncPayment` envuelve el error con la orden, `OrderIDFromError`, `Unwrap` conserva `errors.Is`). Sin cambios en el barrido (errores agregados de varias órdenes; cada uno ya nombra su orden) ni en el chequeo previo (corre antes de que exista la orden). Suite de `archive/tests` con exit 0. Cambio de salida: `redactCallbackPath` ahora deja `/callbacks/***` (ya no muestra la fuente). No verificado: los binarios saliendo con un `LOG_LEVEL` inválido (sólo se probó `NewFromEnv`), `-race`, Postgres real.
