@@ -22,7 +22,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ### Críticos
 - [x] F1 — Avisos de pedidos cobrados sin entrega completa: `partial` no avisaba, y un `failed` en el despacho inicial tampoco. Hecho: `odd/tasks/avisos-entrega-parcial.md`, commits 8931cb3, ab28962, 509e7fc.
 - [x] F2 — Errores 5xx/429/ilegibles del proveedor reintentados como rechazo (riesgo de doble despacho). Hecho: `odd/tasks/despacho-errores-ambiguos.md`, commits 9996d4e, 3ca699c; verificación independiente aprobada.
-- [ ] F3 — **Próximo.** Sin `recover()` en goroutines de fondo: un panic tira el servidor (`internal/order/engine.go:171-180` `spawn`, `internal/order/payment.go:65-70` `dispatchLines`, `internal/preflight/checker.go:104-111`). Decisión de negocio pendiente: qué estado queda en un pedido cuyo despacho se interrumpe por un panic (propuesta: línea `in_doubt` + aviso a soporte).
+- [ ] F3 — **En curso (`odd/tasks/recuperar-panics.md`).** Sin `recover()` en goroutines de fondo: un panic tira el servidor (`internal/order/engine.go:171-180` `spawn`, `internal/order/payment.go:65-70` `dispatchLines`, `internal/preflight/checker.go:104-111`). Decisión: «in_doubt + aviso a soporte (recomendado)».
 - [ ] F4 — `Reconcile` de snacks siempre devuelve `InDoubt` y busca sólo en la página 1 sin filtro (`internal/dispenser/snacks/dispenser.go:106-139`). Puede ser deliberado (la API no informa el resultado del despacho). Confirmar con el proveedor antes de decidir.
 
 ### Importantes
@@ -58,3 +58,4 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - **L2** — «Planifiquemos cada fix pero abordemoslos juntos para ver si corresponde o no el fix segun el negocio. Vamos 1 por 1.»
 - **L3** — «para el catalogo, pone el price_cents porque son datos mockeados, por ahora no son los datos reales.» Hecho en `combos.local.json` (50 + 50 = 100; archivo fuera de Git).
 - **L4** — «Me tengo que ir. Frenemos aca, actrualizá los docs para que sepamos de donde retomar despues. Es edecir, el plan, y lo que queda pendiente de ese plan.» Pausa el 2026-11-21 antes de F3.
+- **L5** — Decisión sobre F3: «in_doubt + aviso a soporte (recomendado)» — "No sabemos si la máquina entregó. La línea entra en el circuito de reconciliación que ya existe y soporte recibe un aviso por Telegram." En curso en `odd/tasks/recuperar-panics.md`.
