@@ -1,9 +1,11 @@
 package order
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -617,5 +619,293 @@ func TestAClosedPaymentIgnoresLaterProviderStates(t *testing.T) {
 	}
 	if k := rig.notifier.kinds(); len(k) != 0 {
 		t.Fatalf("un reembolso manual posterior generó avisos: %v", k)
+	}
+}
+
+type hookGateway struct {
+	*fakeGateway
+	onLookup func(id string)
+}
+
+func (g *hookGateway) Lookup(ctx context.Context, id string) (payments.Charge, error) {
+	if g.onLookup != nil {
+		g.onLookup(id)
+	}
+
+	return g.fakeGateway.Lookup(ctx, id)
+}
+
+type ctxGuardStore struct {
+	*store.Memory
+}
+
+func (s *ctxGuardStore) LoadOrder(ctx context.Context, orderID string) (store.Order, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Order{}, err
+	}
+
+	return s.Memory.LoadOrder(ctx, orderID)
+}
+
+func (s *ctxGuardStore) SaveOrder(ctx context.Context, o store.Order) (store.Order, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Order{}, err
+	}
+
+	return s.Memory.SaveOrder(ctx, o)
+}
+
+func (s *ctxGuardStore) SavePaymentIntent(ctx context.Context, intent store.PaymentIntent) (store.PaymentIntent, error) {
+	if err := ctx.Err(); err != nil {
+		return store.PaymentIntent{}, err
+	}
+
+	return s.Memory.SavePaymentIntent(ctx, intent)
+}
+
+func TestSyncPendingPaymentsStopsTakingNewIntentsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	baseGateway := newFakeGateway()
+	gw := &hookGateway{fakeGateway: baseGateway}
+	st := &ctxGuardStore{Memory: store.NewMemory()}
+	disp := &countingDispenser{}
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+
+	engine := New(
+		st,
+		map[machine.Kind]dispenser.Dispenser{machine.Snacks: disp},
+		WithClock(func() time.Time { return now }),
+		WithQRPayments("mercadopago", gw),
+		WithBackground(func(task func()) { task() }),
+	)
+
+	placeAndQR := func(key string) (store.Order, store.PaymentIntent) {
+		placed, err := engine.CreateOrder(context.Background(), Draft{
+			KioskID: "k1", ComboID: "c1", ClientKey: key, AmountCents: 150050, Currency: "ARS",
+			Items: []Item{
+				{SKU: "s1", AmountCents: 100000, Machine: machine.Ref{KioskID: "k1", Kind: machine.Snacks, MID: "m1"}},
+				{SKU: "s2", AmountCents: 50050, Machine: machine.Ref{KioskID: "k1", Kind: machine.Snacks, MID: "m1"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateOrder(%s): %v", key, err)
+		}
+		intent, err := engine.RequestQR(context.Background(), placed.ID, "POS1")
+		if err != nil {
+			t.Fatalf("RequestQR(%s): %v", key, err)
+		}
+		return placed, intent
+	}
+
+	first, firstIntent := placeAndQR("a")
+	second, secondIntent := placeAndQR("b")
+	baseGateway.set(firstIntent.ProviderID, payments.ChargeApproved, 150050)
+	baseGateway.set(secondIntent.ProviderID, payments.ChargeApproved, 150050)
+
+	var lookedUp string
+	gw.onLookup = func(id string) {
+		lookedUp = id
+		cancel()
+	}
+
+	now = now.Add(time.Minute)
+	if err := engine.SyncPendingPayments(ctx, 10); err != nil {
+		t.Fatalf("SyncPendingPayments: %v", err)
+	}
+
+	if baseGateway.lookups != 1 {
+		t.Fatalf("lookups = %d, se esperaba 1: tras cancelar ctx no debe tomar el segundo pago", baseGateway.lookups)
+	}
+
+	ordersByProvider := map[string]string{
+		firstIntent.ProviderID:  first.ID,
+		secondIntent.ProviderID: second.ID,
+	}
+	otherID := second.ID
+	if lookedUp == secondIntent.ProviderID {
+		otherID = first.ID
+	}
+
+	savedProcessed, err := st.Memory.PaymentIntentByOrder(context.Background(), ordersByProvider[lookedUp])
+	if err != nil {
+		t.Fatalf("PaymentIntentByOrder(processed): %v", err)
+	}
+	if savedProcessed.Status != store.PaymentApproved {
+		t.Fatalf("pago consultado quedó en %q, se esperaba %q", savedProcessed.Status, store.PaymentApproved)
+	}
+
+	savedSkipped, err := st.Memory.PaymentIntentByOrder(context.Background(), otherID)
+	if err != nil {
+		t.Fatalf("PaymentIntentByOrder(skipped): %v", err)
+	}
+	if savedSkipped.Status != store.PaymentPending {
+		t.Fatalf("segundo pago quedó en %q, se esperaba %q sin tocar", savedSkipped.Status, store.PaymentPending)
+	}
+}
+
+func TestEngineAcceptPaymentAfterWaitLeavesLinesStalledForSweep(t *testing.T) {
+	var logs bytes.Buffer
+	var bgMu sync.Mutex
+	var bgErrors []error
+
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rig := newChargeRig(t,
+		WithLogger(logger),
+		WithBackground(func(task func()) { go task() }),
+		WithBackgroundErrors(func(_ string, err error) {
+			bgMu.Lock()
+			bgErrors = append(bgErrors, err)
+			bgMu.Unlock()
+		}),
+	)
+
+	placed := rig.place(t, "after-wait")
+	intent := rig.qr(t, placed.ID)
+	rig.gateway.set(intent.ProviderID, payments.ChargeApproved, 150050)
+
+	rig.engine.Wait()
+
+	if err := rig.engine.SyncPayment(context.Background(), intent.ProviderID); err != nil {
+		t.Fatalf("SyncPayment: %v", err)
+	}
+	rig.engine.Wait()
+
+	if got := rig.machine.count(); got != 0 {
+		t.Fatalf("despachos = %d, se esperaban 0 tras Wait()", got)
+	}
+
+	loaded := rig.order(t, placed.ID)
+	if loaded.Status != store.OrderDispatching {
+		t.Fatalf("Status = %q, se esperaba %q", loaded.Status, store.OrderDispatching)
+	}
+	for _, line := range loaded.Lines {
+		if line.State != linestate.Pending || !line.DeadlineAt.IsZero() {
+			t.Fatalf("línea %s quedó en state=%q deadline=%v; se esperaba pending sin plazo", line.ID, line.State, line.DeadlineAt)
+		}
+	}
+
+	if gotIntent := rig.intent(t, placed.ID); gotIntent.Status != store.PaymentApproved {
+		t.Fatalf("PaymentIntent.Status = %q, se esperaba %q", gotIntent.Status, store.PaymentApproved)
+	}
+
+	bgMu.Lock()
+	errCount := len(bgErrors)
+	bgMu.Unlock()
+	if errCount != 0 {
+		t.Fatalf("backgroundErrors recibió %d errores (%v); rechazar spawn al apagar no es un error de tarea", errCount, bgErrors)
+	}
+
+	output := logs.String()
+	if !strings.Contains(output, "level=WARN") || !strings.Contains(output, placed.ID) {
+		t.Fatalf("falta log WARN con order_id=%q al rechazar despacho tras cierre: %s", placed.ID, output)
+	}
+
+	stalled, err := rig.store.StalledLines(context.Background(), rig.now.Add(defaultLineDeadline+time.Second), 10)
+	if err != nil {
+		t.Fatalf("StalledLines: %v", err)
+	}
+	if len(stalled) != len(loaded.Lines) {
+		t.Fatalf("StalledLines devolvió %d líneas, se esperaban %d", len(stalled), len(loaded.Lines))
+	}
+
+	restarted := New(
+		rig.store,
+		map[machine.Kind]dispenser.Dispenser{machine.Snacks: rig.machine},
+		WithClock(func() time.Time { return rig.now.Add(defaultLineDeadline + time.Second) }),
+		WithQRPayments("mercadopago", rig.gateway),
+	)
+	if err := restarted.SyncOverdueLines(context.Background(), 10); err != nil {
+		t.Fatalf("SyncOverdueLines tras reinicio: %v", err)
+	}
+	if got := rig.machine.count(); got != len(loaded.Lines) {
+		t.Fatalf("tras reinicio se despacharon %d líneas, se esperaban %d", got, len(loaded.Lines))
+	}
+}
+
+func TestEngineConcurrentWaitAndSyncPaymentDoNotRace(t *testing.T) {
+	const iterations = 40
+	const workers = 6
+
+	for iter := 0; iter < iterations; iter++ {
+		st := store.NewMemory()
+		gw := newFakeGateway()
+		disp := &countingDispenser{}
+		now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+
+		engine := New(
+			st,
+			map[machine.Kind]dispenser.Dispenser{machine.Snacks: disp},
+			WithClock(func() time.Time { return now }),
+			WithQRPayments("mercadopago", gw),
+			WithLogger(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))),
+		)
+
+		type target struct {
+			orderID    string
+			providerID string
+		}
+		targets := make([]target, 0, workers)
+		for w := 0; w < workers; w++ {
+			placed, err := engine.CreateOrder(context.Background(), Draft{
+				KioskID: "k1", ComboID: "c1", ClientKey: fmt.Sprintf("k-%d-%d", iter, w), AmountCents: 1000, Currency: "ARS",
+				Items: []Item{
+					{SKU: "s1", AmountCents: 1000, Machine: machine.Ref{KioskID: "k1", Kind: machine.Snacks, MID: "m1"}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateOrder: %v", err)
+			}
+			intent, err := engine.RequestQR(context.Background(), placed.ID, "POS1")
+			if err != nil {
+				t.Fatalf("RequestQR: %v", err)
+			}
+			gw.set(intent.ProviderID, payments.ChargeApproved, 1000)
+			targets = append(targets, target{orderID: placed.ID, providerID: intent.ProviderID})
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(workers + 1)
+
+		for _, tgt := range targets {
+			go func(providerID string) {
+				defer wg.Done()
+				<-start
+				if err := engine.SyncPayment(context.Background(), providerID); err != nil {
+					t.Errorf("SyncPayment(%s): %v", providerID, err)
+				}
+			}(tgt.providerID)
+		}
+
+		go func() {
+			defer wg.Done()
+			<-start
+			engine.Wait()
+		}()
+
+		close(start)
+		wg.Wait()
+
+		for _, tgt := range targets {
+			loaded, err := st.LoadOrder(context.Background(), tgt.orderID)
+			if err != nil {
+				t.Fatalf("LoadOrder(%s): %v", tgt.orderID, err)
+			}
+			line := loaded.Lines[0]
+			switch loaded.Status {
+			case store.OrderDelivered:
+				if line.State != linestate.Delivered {
+					t.Fatalf("orden delivered con línea %q", line.State)
+				}
+			case store.OrderDispatching:
+				if line.State != linestate.Sent && (line.State != linestate.Pending || !line.DeadlineAt.IsZero()) {
+					t.Fatalf("orden dispatching con línea inesperada: %+v", line)
+				}
+			default:
+				t.Fatalf("estado inesperado tras Wait/SyncPayment concurrente: %q", loaded.Status)
+			}
+		}
 	}
 }

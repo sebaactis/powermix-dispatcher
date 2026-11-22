@@ -134,3 +134,64 @@ func TestRunnerLineErrorDoesNotStopPayments(t *testing.T) {
 		t.Fatalf("faltan los logs de los dos errores:\n%s", output)
 	}
 }
+
+type cancellingLineSweeper struct {
+	countingSweeper
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (c *cancellingLineSweeper) SyncOverdueLines(ctx context.Context, limit int) error {
+	_ = c.countingSweeper.SyncOverdueLines(ctx, limit)
+	c.cancel()
+
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+
+	return nil
+}
+
+func TestRunnerSkipsPendingPaymentsWhenCancelledDuringLineSync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sweeper := &cancellingLineSweeper{
+		cancel: cancel,
+		done:   make(chan struct{}, 1),
+	}
+
+	runner := sweep.New(sweeper, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		sweep.WithInterval(5*time.Millisecond),
+		sweep.WithPaymentSync(sweeper),
+	)
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- runner.Run(ctx)
+	}()
+
+	select {
+	case <-sweeper.done:
+	case <-time.After(waitTimeout):
+		t.Fatal("el barrido de líneas nunca corrió")
+	}
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run devolvió %v, se esperaba nil", err)
+		}
+	case <-time.After(waitTimeout):
+		t.Fatal("Run no terminó al cancelar el contexto")
+	}
+
+	lines, payments, _ := sweeper.snapshot()
+	if lines != 1 {
+		t.Fatalf("SyncOverdueLines corrió %d veces, se esperaba 1", lines)
+	}
+	if payments != 0 {
+		t.Fatalf("SyncPendingPayments corrió %d veces tras cancelar ctx, se esperaban 0", payments)
+	}
+}

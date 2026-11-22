@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -561,4 +562,281 @@ func TestEngineSyncOverdueLinesLeavesThePendingLinesThatWereNeverAbandoned(t *te
 			}
 		})
 	}
+}
+
+type ctxCheckingStore struct {
+	*store.Memory
+}
+
+func (s *ctxCheckingStore) LoadOrder(ctx context.Context, orderID string) (store.Order, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Order{}, err
+	}
+
+	return s.Memory.LoadOrder(ctx, orderID)
+}
+
+func (s *ctxCheckingStore) SaveOrder(ctx context.Context, o store.Order) (store.Order, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Order{}, err
+	}
+
+	return s.Memory.SaveOrder(ctx, o)
+}
+
+func (s *ctxCheckingStore) SaveLine(ctx context.Context, line store.Line) (store.Line, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Line{}, err
+	}
+
+	return s.Memory.SaveLine(ctx, line)
+}
+
+func (s *ctxCheckingStore) AppendAttempt(ctx context.Context, attempt store.Attempt) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return s.Memory.AppendAttempt(ctx, attempt)
+}
+
+func (s *ctxCheckingStore) SaveAttempt(ctx context.Context, attempt store.Attempt) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return s.Memory.SaveAttempt(ctx, attempt)
+}
+
+type cancellingSweepMachine struct {
+	mu           sync.Mutex
+	onDispatch   func(ctx context.Context)
+	onReconcile  func(ctx context.Context)
+	dispatched   int
+	reconciled   int
+	dispatchErrs []error
+	hasDeadline  []bool
+	attempt      dispenser.DispatchResult
+	status       dispenser.Status
+}
+
+func (m *cancellingSweepMachine) Check(context.Context, machine.Ref) (dispenser.Availability, error) {
+	return dispenser.Availability{Available: true}, nil
+}
+
+func (m *cancellingSweepMachine) Dispatch(ctx context.Context, _ dispenser.Request) (dispenser.DispatchResult, error) {
+	m.mu.Lock()
+	m.dispatched++
+	onDispatch := m.onDispatch
+	m.mu.Unlock()
+
+	if onDispatch != nil {
+		onDispatch(ctx)
+	}
+
+	_, ok := ctx.Deadline()
+
+	m.mu.Lock()
+	m.dispatchErrs = append(m.dispatchErrs, ctx.Err())
+	m.hasDeadline = append(m.hasDeadline, ok)
+	m.mu.Unlock()
+
+	return m.attempt, nil
+}
+
+func (m *cancellingSweepMachine) Reconcile(ctx context.Context, _ dispenser.Request) (dispenser.Status, error) {
+	m.mu.Lock()
+	m.reconciled++
+	onReconcile := m.onReconcile
+	m.mu.Unlock()
+
+	if onReconcile != nil {
+		onReconcile(ctx)
+	}
+
+	return m.status, nil
+}
+
+func (m *cancellingSweepMachine) counts() (dispatched, reconciled int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.dispatched, m.reconciled
+}
+
+func TestEngineSyncOverdueLinesStopsTakingNewDueAndStalledItemsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st := &ctxCheckingStore{Memory: store.NewMemory()}
+	driver := &cancellingSweepMachine{
+		status: dispenser.Status{State: linestate.Delivered},
+		onReconcile: func(context.Context) {
+			cancel()
+		},
+	}
+
+	due1 := pendingLine("line-due-1", "order-due-1", 1, "batidos", 1500, "sku-batido")
+	due1.State = linestate.Sent
+	due1.Attempts = 1
+	due1.DeadlineAt = engineNow.Add(-2 * time.Minute)
+	due1.ReconcileUntil = engineNow.Add(time.Minute)
+
+	due2 := pendingLine("line-due-2", "order-due-2", 1, "batidos", 1500, "sku-batido")
+	due2.State = linestate.Sent
+	due2.Attempts = 1
+	due2.DeadlineAt = engineNow.Add(-time.Minute)
+	due2.ReconcileUntil = engineNow.Add(time.Minute)
+
+	stalled := pendingLine("line-stalled", "order-stalled", 1, "batidos", 1500, "sku-batido")
+
+	mustCreateStored(t, st, storedOrder("order-due-1", store.OrderDispatching, engineNow.Add(-3*time.Minute), due1))
+	mustCreateStored(t, st, storedOrder("order-due-2", store.OrderDispatching, engineNow.Add(-3*time.Minute), due2))
+	mustCreateStored(t, st, storedOrder("order-stalled", store.OrderPaid, engineNow.Add(-3*time.Minute), stalled))
+
+	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
+
+	if err := engine.SyncOverdueLines(ctx, 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
+	}
+
+	dispatched, reconciled := driver.counts()
+	if reconciled != 1 {
+		t.Fatalf("reconciled = %d, se esperaba 1: tras cancelar ctx no debe tomar la segunda línea vencida", reconciled)
+	}
+	if dispatched != 0 {
+		t.Fatalf("dispatched = %d, se esperaba 0: tras cancelar ctx no debe tomar líneas trabadas", dispatched)
+	}
+
+	if got := mustOrder(t, st.Memory, "order-due-1"); got.Status != store.OrderDelivered {
+		t.Fatalf("order-due-1 Status = %q, se esperaba %q tras cerrar su línea antes de cancelar", got.Status, store.OrderDelivered)
+	}
+	if got := mustOrder(t, st.Memory, "order-due-2"); got.Lines[0].State != linestate.Sent {
+		t.Fatalf("order-due-2 quedó en %q, se esperaba %q sin tocar", got.Lines[0].State, linestate.Sent)
+	}
+}
+
+func TestEngineSyncOverdueLinesStopsTakingNewStalledLinesWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st := &ctxCheckingStore{Memory: store.NewMemory()}
+	driver := &cancellingSweepMachine{
+		attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-1"},
+		onDispatch: func(context.Context) {
+			cancel()
+		},
+	}
+
+	stalled1 := pendingLine("line-stalled-1", "order-stalled-1", 1, "batidos", 1500, "sku-batido")
+	stalled2 := pendingLine("line-stalled-2", "order-stalled-2", 1, "batidos", 1500, "sku-batido")
+
+	mustCreateStored(t, st, storedOrder("order-stalled-1", store.OrderPaid, engineNow.Add(-4*time.Minute), stalled1))
+	mustCreateStored(t, st, storedOrder("order-stalled-2", store.OrderPaid, engineNow.Add(-3*time.Minute), stalled2))
+
+	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
+
+	if err := engine.SyncOverdueLines(ctx, 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
+	}
+
+	dispatched, _ := driver.counts()
+	if dispatched != 1 {
+		t.Fatalf("dispatched = %d, se esperaba 1: tras cancelar ctx no debe tomar la segunda línea trabada", dispatched)
+	}
+
+	if got := mustOrder(t, st.Memory, "order-stalled-2"); got.Lines[0].State != linestate.Pending || got.Lines[0].Attempts != 0 {
+		t.Fatalf("order-stalled-2 cambió tras cancelación: %+v", got.Lines[0])
+	}
+}
+
+func TestEngineSyncOverdueLinesFinishesStartedStalledDispatchWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st := &ctxCheckingStore{Memory: store.NewMemory()}
+	driver := &cancellingSweepMachine{
+		attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "exchange-code-2"},
+		onDispatch: func(context.Context) {
+			cancel()
+		},
+	}
+
+	line := pendingLine("line-batido", "order-1", 1, "batidos", 1500, "sku-batido")
+	line.Attempts = 1
+
+	mustCreateStored(t, st, storedOrder("order-1", store.OrderDispatching, engineNow.Add(-3*time.Minute), line))
+
+	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": driver})
+
+	if err := engine.SyncOverdueLines(ctx, 10); err != nil {
+		t.Fatalf("SyncOverdueLines: %v", err)
+	}
+
+	driver.mu.Lock()
+	errs := append([]error(nil), driver.dispatchErrs...)
+	deadlines := append([]bool(nil), driver.hasDeadline...)
+	driver.mu.Unlock()
+
+	if len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("Dispatch recibió ctx.Err()=%v, se esperaba nil aunque el contexto del barrido se haya cancelado", errs)
+	}
+	if len(deadlines) != 1 || !deadlines[0] {
+		t.Fatalf("Dispatch perdió el deadline propio de la línea: %v", deadlines)
+	}
+
+	got := mustOrder(t, st.Memory, "order-1")
+	if got.Lines[0].State != linestate.Sent || got.Lines[0].Attempts != 2 || got.Lines[0].Ref != "exchange-code-2" {
+		t.Fatalf("la línea no persistió el resultado del despacho ya iniciado: %+v", got.Lines[0])
+	}
+}
+
+func TestEngineSyncOverdueLinesDoesNotMarkInDoubtWhenReconcileIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st := &ctxCheckingStore{Memory: store.NewMemory()}
+	driver := &reconcileMachine{reconcileErr: context.Canceled}
+
+	line := pendingLine("line-batido", "order-1", 1, "batidos", 1500, "sku-batido")
+	line.State = linestate.Sent
+	line.Attempts = 1
+	line.DeadlineAt = engineNow.Add(-time.Minute)
+	line.ReconcileUntil = engineNow
+
+	mustCreateStored(t, st, storedOrder("order-1", store.OrderDispatching, engineNow.Add(-5*time.Minute), line))
+
+	cancelAfterReconcile := &reconcileCancelWrapper{
+		inner:  driver,
+		cancel: cancel,
+	}
+	engine := newEngineFor(t, st, map[machine.Kind]dispenser.Dispenser{"batidos": cancelAfterReconcile})
+
+	err := engine.SyncOverdueLines(ctx, 10)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SyncOverdueLines err = %v, se esperaba context.Canceled", err)
+	}
+
+	got := mustOrder(t, st.Memory, "order-1")
+	if got.Lines[0].State != linestate.Sent {
+		t.Fatalf("una cancelación en Reconcile dejó la línea en %q, se esperaba %q sin marcar duda", got.Lines[0].State, linestate.Sent)
+	}
+}
+
+type reconcileCancelWrapper struct {
+	inner  dispenser.Dispenser
+	cancel context.CancelFunc
+}
+
+func (w *reconcileCancelWrapper) Check(ctx context.Context, m machine.Ref) (dispenser.Availability, error) {
+	return w.inner.Check(ctx, m)
+}
+
+func (w *reconcileCancelWrapper) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
+	return w.inner.Dispatch(ctx, req)
+}
+
+func (w *reconcileCancelWrapper) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
+	w.cancel()
+	return w.inner.Reconcile(ctx, req)
 }
