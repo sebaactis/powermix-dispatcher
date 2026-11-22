@@ -11,7 +11,7 @@ Fix F5 de `odd/tasks/revision-produccion.md`. La clave la genera nuestra app del
 
 ## Tasks
 
-- [ ] T1 — S1-S4 — writer `gentle-ai-worker` — commit: pendiente.
+- [x] T1 — S1-S4 — writer `gentle-ai-worker` — commit: e8724a9 (código y docs); tests en `archive/tests` ab7ae89.
 
 ## Log
 
@@ -19,3 +19,4 @@ Fix F5 de `odd/tasks/revision-produccion.md`. La clave la genera nuestra app del
 - **L2** — Contexto del usuario: «No puede haber una clave con otro combo. El que va a crear esa key (el cliente = kiosk) es una app nuestra tambien. Asi que la idea seria que se cree una vez confirmado el epdido. Si el usuario arranca y cancela no deberia crearla.»
 - **L3** — Decisión: «Sí, así» sobre la propuesta «409 si cambia combo o mueble + 400 si la clave supera 128 caracteres + contrato del kiosco documentado». Sin migración (se descartó el índice único por `(kiosk_id, client_key)`).
 - **L4** — Los 3 tests de F3 se movieron a `archive/tests` (commit de retiro en la rama + merge `-s ours` en `archive/tests`); la suite de `archive/tests` pasa.
+- **L5** — Evidencia T1: RED `go test ./internal/order/ ./internal/httpapi/` falló por `undefined: order.ErrClientKeyConflict`; GREEN en los dos paquetes; `go build`, `go vet` y `go test ./...` en `archive/tests` con exit 0. Límite medido en runas (`utf8.RuneCountInString`) después de `TrimSpace`. El cuerpo del 409 es genérico; el detalle (combos y muebles) queda en el `warn`. No verificado: carrera `ErrAlreadyExists` contra Postgres real (cubierta con un store falso).

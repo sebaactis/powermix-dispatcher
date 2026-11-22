@@ -6,8 +6,8 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. **Próximo: F4**, bloqueado hasta confirmar con el proveedor de snacks si su API informa el resultado del despacho (pregunta pendiente para el usuario). Trabajarlo en una rama nueva desde `main` una vez resuelta `fix/partial-order-alerts`. Mientras tanto se puede avanzar con **F5** (`client_key` reutilizado con otro combo / sin largo máximo) o **F6** (códigos HTTP); el usuario elige cuál.
-3. **Decisión de entrega pendiente:** la rama `fix/partial-order-alerts` tiene 8 commits y ~1526 líneas desde `main` (mayoría tests); falta decidir si se publica como un PR o se parte en PRs encadenados. Nada fue pusheado (push y merge de `fix/partial-order-alerts` y de `archive/tests` los decide el usuario).
+2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). Trabajarlo en una rama nueva desde `main` una vez resuelta `fix/partial-order-alerts`. **Próximo disponible: F6** (códigos HTTP) u otro que elija el usuario.
+3. **Entrega decidida:** `fix/partial-order-alerts` se publica como **un solo PR** (decisión del 2026-11-22; los tests viven en `archive/tests`, fuera del PR). Nada fue pusheado: push y merge de `fix/partial-order-alerts` y de `archive/tests` los decide el usuario.
 4. **Correlación de avisos:** se usa `order_id`; el `request_id` por pedido HTTP queda para **F9**.
 5. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
 
@@ -27,7 +27,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - [ ] F4 — **Próximo.** `Reconcile` de snacks siempre devuelve `InDoubt` y busca sólo en la página 1 sin filtro (`internal/dispenser/snacks/dispenser.go:106-139`). Puede ser deliberado (la API no informa el resultado del despacho). Confirmar con el proveedor antes de decidir.
 
 ### Importantes
-- [ ] F5 — `client_key` reutilizado con otro combo devuelve el pedido viejo sin avisar, y no tiene largo máximo (`internal/order/place.go:17-25`, `internal/httpapi/draft.go:20,70`).
+- [x] F5 — Hecho: 409 si la clave llega con otro combo o mueble, 400 si supera 128 caracteres, contrato del kiosco documentado (`odd/tasks/client-key-conflicto.md`, commit e8724a9). Original: `client_key` reutilizado con otro combo devuelve el pedido viejo sin avisar, y no tiene largo máximo (`internal/order/place.go:17-25`, `internal/httpapi/draft.go:20,70`).
 - [ ] F6 — Códigos HTTP: caída del proveedor en el chequeo previo devuelve 500 en vez de 502/503 (`internal/preflight/checker.go:114-116`, `internal/gate/gate.go:76-81`); cuerpo grande devuelve 400 en vez de 413 (`draft.go:29-31`); `combo_id` no se recorta antes de buscarlo (`draft.go:37-41`).
 - [ ] F7 — Apagado: el plazo de 10 s (`cmd/api/main.go:245`) puede vencer con despachos de hasta 2 min en curso y `closeStore()` cierra Postgres debajo de ellos.
 - [ ] F8 — El callback de batidos usa una versión vieja de la línea después de `markBrewing` y la extensión del plazo se pierde sin error (`internal/order/callback.go:65-78`, `internal/order/reconcile.go:223-226`).
@@ -64,3 +64,5 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - **L4** — «Me tengo que ir. Frenemos aca, actrualizá los docs para que sepamos de donde retomar despues. Es edecir, el plan, y lo que queda pendiente de ese plan.» Pausa el 2026-11-21 antes de F3.
 - **L5** — Decisión sobre F3: «in_doubt + aviso a soporte (recomendado)» — "No sabemos si la máquina entregó. La línea entra en el circuito de reconciliación que ya existe y soporte recibe un aviso por Telegram." En curso en `odd/tasks/recuperar-panics.md`.
 - **L6** — «Cerramos por hoy. Guardá todo en la doc.» Pausa el 2026-11-21 después de cerrar F3 (commits 1915a23, 58b3984).
+- **L7** — 2026-11-22. F4: el proveedor «Todavía no» respondió. Entrega: «Uno solo. si la mayoria son test acordate que tiene su rama aparte.» Los 3 tests de F3 que habían quedado en la rama se movieron a `archive/tests` (commit 36bc607 en la rama + merge `-s ours` en `archive/tests`); la rama queda en ~600 líneas contra `main`.
+- **L8** — F5: «No puede haber una clave con otro combo. El que va a crear esa key (el cliente = kiosk) es una app nuestra tambien. Asi que la idea seria que se cree una vez confirmado el epdido. Si el usuario arranca y cancela no deberia crearla.» Decisión «Sí, así». Detalle en `odd/tasks/client-key-conflicto.md`.
