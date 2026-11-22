@@ -101,7 +101,6 @@ func main() {
 		logger.Error("no se pudo preparar el store", "store", cfg.Store, "error", err)
 		os.Exit(1)
 	}
-	defer closeStore()
 
 	availability := gate.New(preflight.New(batidosClient, snacksClient, preflight.WithLogger(logger)))
 
@@ -169,6 +168,7 @@ func main() {
 	tabletAPI, err := httpapi.New(apiDeps, httpapi.WithLogger(logger))
 	if err != nil {
 		logger.Error("no se pudo construir la API de la tablet", "error", err)
+		closeStore()
 		os.Exit(1)
 	}
 
@@ -243,33 +243,15 @@ func main() {
 
 	<-ctx.Done()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("no se pudo cerrar de forma ordenada", "error", err)
-	}
-
-	select {
-	case <-sweepDone:
-		logger.Info("barrido de reconciliación detenido")
-	case <-shutdownCtx.Done():
-		logger.Error("el barrido de reconciliación no se detuvo a tiempo")
-	}
-
-	dispatchDone := make(chan struct{})
-
-	go func() {
-		engine.Wait()
-		close(dispatchDone)
-	}()
-
-	select {
-	case <-dispatchDone:
-		logger.Info("despachos en segundo plano terminados")
-	case <-shutdownCtx.Done():
-		logger.Error("quedaron despachos en curso al apagar: el barrido los retoma al volver a arrancar")
-	}
+	shutdown(shutdownDeps{
+		shutdownHTTP:   server.Shutdown,
+		sweepDone:      sweepDone,
+		waitDispatches: engine.Wait,
+		closeStore:     closeStore,
+		httpTimeout:    httpShutdownTimeout,
+		drainTimeout:   drainTimeout,
+		logger:         logger,
+	})
 }
 
 func openStore(cfg *config.Config, combos []catalog.Combo, logger *slog.Logger) (store.Store, func(), error) {

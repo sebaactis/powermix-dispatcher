@@ -19,6 +19,10 @@ func (e *Engine) SyncPendingPayments(ctx context.Context, limit int) error {
 		return nil
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	now := e.now()
 
 	pending, err := e.store.PendingPaymentIntents(ctx, now.Add(-paymentReconcileAge), limit)
@@ -29,6 +33,10 @@ func (e *Engine) SyncPendingPayments(ctx context.Context, limit int) error {
 	failures := make([]error, 0)
 
 	for _, intent := range pending {
+		if ctx.Err() != nil {
+			break
+		}
+
 		if err := e.reconcilePayment(ctx, intent, now); err != nil {
 			failures = append(failures, fmt.Errorf("pago de la orden %s: %w", intent.OrderID, err))
 		}
@@ -49,6 +57,10 @@ func (e *Engine) reconcilePayment(ctx context.Context, intent store.PaymentInten
 
 	overdue := !intent.ExpiresAt.IsZero() && now.After(intent.ExpiresAt.Add(paymentCancelGrace))
 	if charge.Status == payments.ChargePending && overdue {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		charge, err = e.cancelCharge(ctx, intent.ProviderID)
 		if err != nil {
 			return err
@@ -59,7 +71,7 @@ func (e *Engine) reconcilePayment(ctx context.Context, intent store.PaymentInten
 		return fmt.Errorf("%w: el cobro %s responde por la orden %q", ErrUnknownCharge, intent.ProviderID, charge.ExternalRef)
 	}
 
-	return e.applyCharge(ctx, intent, charge)
+	return e.applyCharge(context.WithoutCancel(ctx), intent, charge)
 }
 
 func (e *Engine) cancelCharge(ctx context.Context, providerID string) (payments.Charge, error) {

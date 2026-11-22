@@ -54,6 +54,8 @@ type Engine struct {
 	logger            *slog.Logger
 
 	idMu     sync.Mutex
+	bgMu     sync.Mutex
+	closed   bool
 	inFlight sync.WaitGroup
 }
 
@@ -186,11 +188,23 @@ func (e *Engine) log() *slog.Logger {
 }
 
 func (e *Engine) Wait() {
+	e.bgMu.Lock()
+	e.closed = true
+	e.bgMu.Unlock()
+
 	e.inFlight.Wait()
 }
 
 func (e *Engine) spawn(orderID string, task func() error) {
+	e.bgMu.Lock()
+	if e.closed {
+		e.bgMu.Unlock()
+		e.log().Warn("motor cerrado al apagar: no se inicia el despacho y el barrido lo retoma al reiniciar", "order_id", orderID)
+		return
+	}
 	e.inFlight.Add(1)
+	e.bgMu.Unlock()
+
 	e.background(func() {
 		defer e.inFlight.Done()
 		defer func() {
