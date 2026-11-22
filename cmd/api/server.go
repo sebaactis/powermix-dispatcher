@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -13,7 +15,12 @@ const (
 	maxHeaderBytes    = 64 << 10
 )
 
-func newServer(addr string, handler http.Handler) *http.Server {
+func newServer(addr string, handler http.Handler, logger *slog.Logger) *http.Server {
+	var errorLog *log.Logger
+	if logger != nil {
+		errorLog = slog.NewLogLogger(logger.Handler(), slog.LevelError)
+	}
+
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -22,5 +29,6 @@ func newServer(addr string, handler http.Handler) *http.Server {
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
+		ErrorLog:          errorLog,
 	}
 }

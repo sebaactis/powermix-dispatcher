@@ -25,7 +25,7 @@ type shutdownDeps struct {
 func shutdown(deps shutdownDeps) {
 	logger := deps.logger
 	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
 
 	if deps.shutdownHTTP != nil {

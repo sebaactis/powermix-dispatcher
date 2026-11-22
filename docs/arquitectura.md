@@ -73,12 +73,12 @@ docker compose down -v                 # una vez si el volumen es anterior al ru
 | `internal/order` | **El dominio**: crear, cobrar, despachar, reconciliar, cerrar | `Engine`, `Draft`, `CreateOrder`, `RequestQR`, `SyncPayment`, `SyncPendingPayments`, `MarkPaid`, `SyncOverdueLines`, `ApplyCallback`, `SyncLineFromCallback`, `AvailabilityChecker`, `NotSellableError`, `DeriveOrderStatus` |
 | `internal/gate` | Adaptador `order.AvailabilityChecker` sobre `preflight` | `New`, `Check` |
 | `internal/preflight` | La regla de disponibilidad (consulta las dos máquinas y sus productos) | `Checker`, `Request`, `Result`, `Reason` |
-| `internal/httpapi` | El borde: **tres contratos separados** (tablet, callbacks de máquinas y webhook de Mercado Pago) | `Handler`, `Callbacks`, `MercadoPagoWebhook`, `Deps`, `BatidosCallbackURL` |
+| `internal/httpapi` | El borde: **tres contratos separados** (tablet, callbacks de máquinas y webhook de Mercado Pago) + middleware (`request_id`, access log, recover) | `Handler`, `Callbacks`, `MercadoPagoWebhook`, `Deps`, `BatidosCallbackURL`, `Wrap` |
 | `internal/payments` | **El puerto** de cobro (`Gateway`: crear QR, consultar, cancelar). También el puerto de devoluciones con su mock, que sigue sin conectar (fuera del MVP) | `Gateway`, `Charge`, `ChargeStatus`, `QRRequest`, `Refunder`, `MockRefunder` |
 | `internal/payments/mercadopago` | Adaptador de la Orders API de Mercado Pago (`net/http`, sin SDK) + validación de la firma del webhook | `Client`, `VerifySignature`, `SignatureHeader` |
 | `internal/notify` | Puerto de avisos + transportes por log y por Telegram | `Notifier`, `Kind`, `Event`, `LogNotifier`, `TelegramNotifier` |
 | `internal/sweep` | Barrido periódico que dispara `SyncOverdueLines` y, con Mercado Pago, `SyncPendingPayments` | `Runner`, `New`, `WithPaymentSync` |
-| `internal/logging` | `slog` con mensajes capitalizados en el borde | `New`, `Capitalize` |
+| `internal/logging` | `slog` JSON con mensajes capitalizados, `LOG_LEVEL` y `request_id` automático desde el contexto | `New`, `NewFromEnv`, `ParseLevel`, `WithRequestID`, `Capitalize` |
 | `internal/fakeapi` | Implementación de los proveedores falsos (batidos, snacks, Mercado Pago) + administración | `NewBatidos`, `NewSnacks`, `NewMercadoPago`, `NewAdmin` |
 
 ## Dirección de las dependencias
@@ -226,21 +226,22 @@ main (:41)
  ├─ order.New(store, machines, notifier, gate, pagos) .. order/engine.go:61
  ├─ sweep.New(engine) (30 s, lote 10; + pagos con MP) .. sweep/runner.go:57
  ├─ httpapi.New (+ QRRequester/Payments con MP) ...... main.go:168
- ├─ rutas en el mux (+ webhook de MP) ............ main.go:208, :215
- ├─ newServer (timeouts) .......................... cmd/api/server.go:16
- ├─ go sweep.Run ........ :228        go ListenAndServe ........ :236
+ ├─ rutas en el mux (+ webhook de MP) ............ main.go:212, :219
+ ├─ httpapi.Wrap (request_id, access log, recover) .. main.go:224
+ ├─ newServer (timeouts + ErrorLog JSON) ............ cmd/api/server.go:18
+ ├─ go sweep.Run ........ :231        go ListenAndServe ........ :239
  └─ SIGINT/SIGTERM → shutdown (cmd/api/shutdown.go): 10 s HTTP,
     60 s drenaje (barrido y luego engine.Wait, que cierra el motor
-    para que spawn no arranque trabajo nuevo), y closeStore después .. :244-254
+    para que spawn no arranque trabajo nuevo), y closeStore después .. :249-257
 ```
 
-Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` levanta máquinas falsas (puertos 9401 batidos, 9402 snacks, 9403 administración local, 9404 Mercado Pago).
+Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` levanta máquinas falsas (puertos 9401 batidos, 9402 snacks, 9403 administración local, 9404 Mercado Pago). Los tres binarios leen `LOG_LEVEL` (`debug`, `info`, `warn`, `error`; por defecto `info`) y emiten JSON en salida estándar.
 
 ## 2. Rutas HTTP
 
 | Ruta | Handler | Llama a |
 | --- | --- | --- |
-| `GET /healthz` | `cmd/api/main.go:137` | Retorna 200 OK |
+| `GET /healthz` | `cmd/api/main.go:194` | Retorna 200 OK |
 | `GET /combos` | `httpapi/combos.go:7 listCombos` | `catalog/memory.go:40 Combos` |
 | `POST /orders` | `httpapi/orders.go:10 createOrder` | `order/place.go:12 CreateOrder` + (con MP) `order/qr.go:21 RequestQR` |
 | `GET /orders/{id}` | `httpapi/orders.go:56 readOrder` | `store.LoadOrder` + (con MP) `store.PaymentIntentByOrder` |
@@ -248,6 +249,8 @@ Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migr
 | `POST /callbacks/mercadopago/{secret}` | `httpapi/mercadopago.go:77 receive` | `order/charge.go:15 SyncPayment` |
 | `POST /callbacks/batidos/{secret}/{orderId}` | `httpapi/callbacks.go:116` | `order/callback.go:55 SyncLineFromCallback` |
 | `POST /callbacks/snacks/{secret}` | `httpapi/callbacks.go:155` | `order/callback.go:38 ApplyCallback` |
+
+Todas las rutas pasan por `httpapi.Wrap` (`internal/httpapi/middleware.go`): genera un `X-Request-Id` por pedido (ignorando el header entrante), lo propaga en el contexto (`request_id`), recupera panics con `500` JSON (o aborta con `http.ErrAbortHandler` si ya se enviaron cabeceras) y registra un access log por pedido (`info` en 2xx/3xx, `warn` en 4xx, `error` en 5xx o abortados) sin query string ni headers, registrando el patrón de ruta (`path`/`route`) o la ruta limpia y redactada (`/callbacks/***`) vía `redactCallbackPath`.
 
 ## 3. Flujo de una compra, de punta a punta
 

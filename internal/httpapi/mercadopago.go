@@ -100,7 +100,7 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		m.logger.WarnContext(r.Context(), "webhook de Mercado Pago rechazado por la firma",
 			"provider_id", providerID,
-			"request_id", r.Header.Get("X-Request-Id"),
+			"mp_request_id", r.Header.Get("X-Request-Id"),
 			"error", err,
 		)
 
