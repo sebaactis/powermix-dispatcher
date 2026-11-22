@@ -166,8 +166,14 @@ Los nombres del motor y de sus puertos siguen un vocabulario fijo (revisión de 
 | Tiempo de escritura del servidor HTTP (`WriteTimeout`) | 60 s | `cmd/api/server.go:11` |
 | Conexión ociosa (`IdleTimeout`) | 60 s | `cmd/api/server.go:12` |
 | Encabezados máximos (`MaxHeaderBytes`) | 64 KB | `cmd/api/server.go:13` |
+| Cierre HTTP en apagado (`httpShutdownTimeout`) | 10 s | `cmd/api/shutdown.go` |
+| Drenaje de barrido y despachos (`drainTimeout`) | 60 s | `cmd/api/shutdown.go` |
 | Cuerpo máximo aceptado (`maxBodyBytes`) | 64 KB | `httpapi/respond.go` |
 | Presupuesto del chequeo previo | 8 s | `preflight/checker.go` |
+
+### Apagado ordenado (producción)
+
+En cualquier orquestador o supervisor debe configurarse un margen mínimo de **75 s** entre `SIGTERM` y `SIGKILL` (en `docker-compose.yml` se fija `stop_grace_period: 75s`; en Kubernetes equivale a `terminationGracePeriodSeconds: 75` y en systemd a `TimeoutStopSec=75`): **10 s** para `server.Shutdown` más **60 s** de drenaje (primero el barrido, luego `engine.Wait`) y **5 s** de margen antes de cerrar la base. Si vence el drenaje, se registra el trabajo pendiente y se cierra el store igual. F7b no está cubierto: un corte abrupto (`SIGKILL`) durante batidos deja la línea en `in_doubt` porque el código de campaña no se guarda antes de `ProduceCoffee`.
 
 ## Convenciones
 
@@ -206,25 +212,26 @@ Un **puerto** es una interfaz que `order` usa sin saber quién la implementa (`s
 
 ```
 main (:41)
- ├─ flags -config / -combos ............................... :41
+ ├─ flags -config / -combos ............................... :42
  ├─ config.Load ........................ internal/config/config.go:115
  ├─ catalog.LoadFile → catalog.NewMemory  catalog/catalog.go:37, memory.go:14
  ├─ batidos.NewClient / snacks.NewClient  dispenser/batidos/client.go:59
  │                                        dispenser/snacks/client.go:227
- ├─ batidos.NewDispenser / snacks.NewDispenser ............ main.go:91
- ├─ openStore (:201) ── "postgres"? ─ sí → postgres.Open (postgres/postgres.go:41)
+ ├─ batidos.NewDispenser / snacks.NewDispenser ............ main.go:94
+ ├─ openStore (:257) ─ "postgres"? ─ sí → postgres.Open (postgres/postgres.go:41)
  │                                │        + Seed (postgres/seed.go:12)
  │                                └ no → store.NewMemory (store/memory.go:45)
  ├─ gate.New(preflight.New) ............ gate/gate.go:23, preflight/checker.go:68
- ├─ ¿Mercado Pago? → mercadopago.NewClient + order.WithQRPayments ... main.go:117
- ├─ order.New(store, machines, notifier, gate, pagos) .. order/engine.go:55
+ ├─ ¿Mercado Pago? → mercadopago.NewClient + order.WithQRPayments ... main.go:134
+ ├─ order.New(store, machines, notifier, gate, pagos) .. order/engine.go:61
  ├─ sweep.New(engine) (30 s, lote 10; + pagos con MP) .. sweep/runner.go:57
- ├─ httpapi.New (+ QRRequester/Payments con MP) ...... main.go:150
- ├─ rutas en el mux (+ webhook de MP) ............ main.go:189, :196
+ ├─ httpapi.New (+ QRRequester/Payments con MP) ...... main.go:168
+ ├─ rutas en el mux (+ webhook de MP) ............ main.go:208, :215
  ├─ newServer (timeouts) .......................... cmd/api/server.go:16
- ├─ go sweep.Run ........ :209        go ListenAndServe ........ :217
- └─ SIGINT/SIGTERM → Shutdown 10 s, espera al barrido y a los despachos
-    en segundo plano (engine.Wait) ................................ :225
+ ├─ go sweep.Run ........ :228        go ListenAndServe ........ :236
+ └─ SIGINT/SIGTERM → shutdown (cmd/api/shutdown.go): 10 s HTTP,
+    60 s drenaje (barrido y luego engine.Wait, que cierra el motor
+    para que spawn no arranque trabajo nuevo), y closeStore después .. :244-254
 ```
 
 Aparte: `cmd/migrate/main.go:35 run` → `migrate.Apply` (`internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` levanta máquinas falsas (puertos 9401 batidos, 9402 snacks, 9403 administración local, 9404 Mercado Pago).

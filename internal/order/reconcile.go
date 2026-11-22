@@ -18,6 +18,10 @@ const defaultReconcileWindow = 2 * time.Minute
 const defaultReconcileInterval = 30 * time.Second
 
 func (e *Engine) SyncOverdueLines(ctx context.Context, limit int) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	now := e.now()
 
 	due, err := e.store.OverdueLines(ctx, now, limit)
@@ -39,6 +43,10 @@ func (e *Engine) SyncOverdueLines(ctx context.Context, limit int) error {
 	}
 
 	for _, line := range due {
+		if ctx.Err() != nil {
+			break
+		}
+
 		closed, lineErr := e.reconcileLine(ctx, line)
 		if lineErr != nil {
 			failures = append(failures, lineErr)
@@ -51,21 +59,27 @@ func (e *Engine) SyncOverdueLines(ctx context.Context, limit int) error {
 		touch(line.OrderID)
 	}
 
-	stalled, err := e.store.StalledLines(ctx, now.Add(-e.deadline), limit)
-	if err != nil {
-		failures = append(failures, err)
-	} else {
-		for _, line := range stalled {
-			if lineErr := e.resumeStalledLine(ctx, line); lineErr != nil {
-				failures = append(failures, lineErr)
-			}
+	if ctx.Err() == nil {
+		stalled, err := e.store.StalledLines(ctx, now.Add(-e.deadline), limit)
+		if err != nil {
+			failures = append(failures, err)
+		} else {
+			for _, line := range stalled {
+				if ctx.Err() != nil {
+					break
+				}
 
-			touch(line.OrderID)
+				if lineErr := e.resumeStalledLine(ctx, line); lineErr != nil {
+					failures = append(failures, lineErr)
+				}
+
+				touch(line.OrderID)
+			}
 		}
 	}
 
 	for _, orderID := range touched {
-		if err := e.settleOrder(ctx, orderID); err != nil {
+		if err := e.settleOrder(context.WithoutCancel(ctx), orderID); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -90,7 +104,11 @@ func (e *Engine) resumeStalledLine(ctx context.Context, line store.Line) error {
 		return nil
 	}
 
-	return e.dispatchWithinDeadline(ctx, line.OrderID, fresh)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	return e.dispatchWithinDeadline(context.WithoutCancel(ctx), line.OrderID, fresh)
 }
 
 func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, error) {
@@ -113,18 +131,23 @@ func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, erro
 	})
 
 	if reconcileErr != nil {
-		closed, scheduleErr := e.extendReconcile(ctx, line, reconcileErr.Error())
+		if ctx.Err() != nil && errors.Is(reconcileErr, ctx.Err()) {
+			return false, reconcileErr
+		}
+
+		closed, scheduleErr := e.extendReconcile(context.WithoutCancel(ctx), line, reconcileErr.Error())
 
 		return closed, errors.Join(reconcileErr, scheduleErr)
 	}
 
+	persistCtx := context.WithoutCancel(ctx)
 	switch status.State {
 	case linestate.Delivered:
-		return true, e.closeLine(ctx, line, linestate.Delivered, "")
+		return true, e.closeLine(persistCtx, line, linestate.Delivered, "")
 	case linestate.Failed:
-		return true, e.closeLine(ctx, line, linestate.Failed, status.Reason)
+		return true, e.closeLine(persistCtx, line, linestate.Failed, status.Reason)
 	default:
-		return e.extendReconcile(ctx, line, status.Reason)
+		return e.extendReconcile(persistCtx, line, status.Reason)
 	}
 }
 

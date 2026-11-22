@@ -182,6 +182,16 @@ surface outside loopback, and a process bound to `127.0.0.1` inside a container
 cannot be reached through a published port. The two provider ports are published
 on loopback only, so the fakes are never reachable from another machine.
 
+### Apagado ordenado (producción)
+
+`docker-compose.yml` configura `stop_grace_period: 75s` en el servicio `api`. Cualquier orquestador o supervisor en producción debe dar al menos **75 s** entre `SIGTERM` y `SIGKILL` (por ejemplo `terminationGracePeriodSeconds: 75` en Kubernetes o `TimeoutStopSec=75` en systemd):
+
+- **10 s** para `server.Shutdown` (cerrar conexiones HTTP entrantes).
+- **60 s** de drenaje para esperar que termine el barrido y los despachos en curso (`engine.Wait`), antes de cerrar la base de datos.
+- **5 s** de margen para el cierre del store.
+
+Alcance (F7b no cubierto): si el proceso recibe un corte abrupto (`SIGKILL` o caída eléctrica) durante el despacho de batidos, la línea queda en `in_doubt` porque el código de campaña no se guarda antes de `ProduceCoffee`.
+
 ## Secrets
 
 Credentials never live in a tracked file. They come from environment

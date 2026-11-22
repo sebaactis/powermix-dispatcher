@@ -90,11 +90,15 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) tick(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	if err := r.sweeper.SyncOverdueLines(ctx, r.limit); err != nil {
 		r.logger.Error("falló el barrido de reconciliación", "error", err, "limit", r.limit)
 	}
 
-	if r.payments == nil {
+	if r.payments == nil || ctx.Err() != nil {
 		return
 	}
 

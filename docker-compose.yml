@@ -48,6 +48,7 @@ services:
       - ./combos.example.json:/app/combos.example.json:ro
     ports:
       - "18080:8080"
+    stop_grace_period: 75s
     restart: unless-stopped
 
   fakeapi:
