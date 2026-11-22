@@ -6,7 +6,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). F6 publicado en `main`. F7 publicado en `main`. F8 hecho en la rama `fix/batidos-callback-stale-line` (sin mergear ni pushear). Orden recomendado y aceptado: **F9** (logueo), después F7b y los menores; P2 y P4 al final. Cada fix nuevo va en una rama desde `main`.
+2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). F6 publicado en `main`. F7 publicado en `main`. F8 publicado en `main`. F9 hecho en la rama `fix/logging` (sin mergear ni pushear). Orden recomendado y aceptado: después **F7b** y los menores; P2 y P4 al final. Cada fix nuevo va en una rama desde `main`.
 3. **Publicado (2026-11-22):** `fix/partial-order-alerts` (F1-F5 y los 8 commits de Telegram que estaban sólo en local) se mergeó a `main` (4afadaf) y se pusheó; `archive/tests` se sincronizó con `main` (b873113) y se pusheó. Regla de entrega: en `main` va todo lo que es de la app; los tests van sólo en `archive/tests`.
 4. **Correlación de avisos:** se usa `order_id`; el `request_id` por pedido HTTP queda para **F9**.
 5. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
@@ -33,7 +33,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - [ ] F7b — Si el proceso muere de golpe a mitad de un despacho de batidos, el código de campaña no queda guardado (`internal/dispenser/batidos/dispenser.go:112-135`, se guarda recién en `internal/order/dispatch.go:99,119`) y la línea termina `in_doubt` aunque la máquina haya entregado. Cambia el contrato de `Dispatch`.
 - Original F7 — Apagado: el plazo de 10 s (`cmd/api/main.go:245`) puede vencer con despachos de hasta 2 min en curso y `closeStore()` cierra Postgres debajo de ellos.
 - [x] F8 — Hecho: `markBrewing` devuelve la línea guardada y, ante stale, recarga y reintenta (`odd/tasks/callback-version-vieja.md`, commit 6bef9cd; verificación independiente sin bloqueantes). Original: El callback de batidos usa una versión vieja de la línea después de `markBrewing` y la extensión del plazo se pierde sin error (`internal/order/callback.go:65-78`, `internal/order/reconcile.go:223-226`).
-- [ ] F9 — Logueo: falta middleware de access log y de recover HTTP, `request_id`/`order_id` en el contexto, nivel configurable (`cmd/api/main.go:48` fijo en Info) y `http.Server.ErrorLog` estructurado (`cmd/api/server.go:16-25`).
+- [x] F9 — Hecho: JSON, `LOG_LEVEL`, `X-Request-Id`, access log sin secretos, recover HTTP, `ErrorLog` estructurado y `order_id` donde se conoce (`odd/tasks/logueo.md`, commits bd6c573 y 8c6952b; verificación independiente con un bloqueante corregido). Original: Logueo: falta middleware de access log y de recover HTTP, `request_id`/`order_id` en el contexto, nivel configurable (`cmd/api/main.go:48` fijo en Info) y `http.Server.ErrorLog` estructurado (`cmd/api/server.go:16-25`).
 - [ ] F10 — Qué precio se manda a Snacks como `RetailPrice` (hoy 0 fijo, `internal/dispenser/snacks/dispenser.go`), pendiente de la duda del proveedor en `docs/pendientes.md` sección C.
 
 ### Menores
