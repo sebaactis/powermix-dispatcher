@@ -1,8 +1,12 @@
 package order_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1301,5 +1305,431 @@ func TestApplyCallbackDoesNotMatchAThirdOrderNoWithoutTheMachineType(t *testing.
 	batidos := lineFor(t, mustOrder(t, fx.orders, fx.orderID), "batidos")
 	if batidos.State == linestate.Delivered || batidos.State == linestate.Failed {
 		t.Fatalf("un callback de snacks no debe cerrar la línea de batidos: %+v", batidos)
+	}
+}
+
+func TestSyncLineFromCallbackUpdatesDeadlineAndLastErrorOnNonTerminalReconcile(t *testing.T) {
+	cases := []struct {
+		name           string
+		atOffset       time.Duration
+		reconcileState linestate.State
+		reconcileMsg   string
+		wantState      linestate.State
+		wantDeadline   time.Duration
+		wantUntilZero  bool
+		wantOrder      store.OrderStatus
+	}{
+		{
+			name:           "ventana abierta: programa el próximo chequeo al intervalo de reconciliación",
+			atOffset:       time.Minute,
+			reconcileState: linestate.Brewing,
+			reconcileMsg:   "todavía preparando",
+			wantState:      linestate.Brewing,
+			wantDeadline:   time.Minute + 30*time.Second,
+			wantOrder:      store.OrderDispatching,
+		},
+		{
+			name:           "ventana por vencer: recorta el próximo chequeo al tope ReconcileUntil",
+			atOffset:       3*time.Minute + 45*time.Second,
+			reconcileState: linestate.Brewing,
+			reconcileMsg:   "casi listo",
+			wantState:      linestate.Brewing,
+			wantDeadline:   4 * time.Minute,
+			wantOrder:      store.OrderDispatching,
+		},
+		{
+			name:           "ventana vencida: pasa la línea a in_doubt en el acto",
+			atOffset:       4 * time.Minute,
+			reconcileState: linestate.Brewing,
+			reconcileMsg:   "sin respuesta final",
+			wantState:      linestate.InDoubt,
+			wantUntilZero:  true,
+			wantOrder:      store.OrderInDoubt,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := acceptedDrinkMachine()
+			driver.status = dispenser.Status{State: tc.reconcileState, Reason: tc.reconcileMsg}
+
+			setup := newReconcileFixture(t, driver)
+			setup.clock.set(engineNow.Add(tc.atOffset))
+
+			duplicate, err := setup.engine.SyncLineFromCallback(context.Background(), order.Callback{
+				Source:    "batidos",
+				DedupeKey: "batidos-progress-1",
+				OrderID:   setup.placed.ID,
+				Ref:       "exchange-code-1",
+				State:     order.CallbackProgress,
+			})
+			if err != nil {
+				t.Fatalf("SyncLineFromCallback: %v", err)
+			}
+			if duplicate {
+				t.Fatalf("el primer callback no es un duplicado")
+			}
+
+			line := setup.line(t)
+			if line.State != tc.wantState {
+				t.Fatalf("State = %q, se esperaba %q", line.State, tc.wantState)
+			}
+			if line.LastError != tc.reconcileMsg {
+				t.Fatalf("LastError = %q, se esperaba %q", line.LastError, tc.reconcileMsg)
+			}
+
+			if tc.wantUntilZero {
+				if !line.DeadlineAt.IsZero() || !line.ReconcileUntil.IsZero() {
+					t.Fatalf("una línea en duda no debe conservar plazos: deadline=%v until=%v", line.DeadlineAt, line.ReconcileUntil)
+				}
+			} else {
+				wantDeadline := engineNow.Add(tc.wantDeadline)
+				if !line.DeadlineAt.Equal(wantDeadline) {
+					t.Fatalf("DeadlineAt = %v, se esperaba %v", line.DeadlineAt, wantDeadline)
+				}
+				wantUntil := engineNow.Add(4 * time.Minute)
+				if !line.ReconcileUntil.Equal(wantUntil) {
+					t.Fatalf("ReconcileUntil = %v, se esperaba %v", line.ReconcileUntil, wantUntil)
+				}
+			}
+
+			if got := setup.order(t); got.Status != tc.wantOrder {
+				t.Fatalf("order Status = %q, se esperaba %q", got.Status, tc.wantOrder)
+			}
+		})
+	}
+}
+
+func TestSyncLineFromCallbackWithProgressStillClosesOnTerminalReconcile(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    dispenser.Status
+		wantState linestate.State
+		wantError string
+		wantOrder store.OrderStatus
+	}{
+		{
+			name:      "entregada tras progreso",
+			status:    dispenser.Status{State: linestate.Delivered},
+			wantState: linestate.Delivered,
+			wantOrder: store.OrderDelivered,
+		},
+		{
+			name:      "fallida tras progreso",
+			status:    dispenser.Status{State: linestate.Failed, Reason: "la máquina abortó"},
+			wantState: linestate.Failed,
+			wantError: "la máquina abortó",
+			wantOrder: store.OrderFailed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driver := acceptedDrinkMachine()
+			driver.status = tc.status
+
+			setup := newReconcileFixture(t, driver)
+
+			duplicate, err := setup.engine.SyncLineFromCallback(context.Background(), order.Callback{
+				Source:    "batidos",
+				DedupeKey: "batidos-progress-close",
+				OrderID:   setup.placed.ID,
+				Ref:       "exchange-code-1",
+				State:     order.CallbackProgress,
+			})
+			if err != nil {
+				t.Fatalf("SyncLineFromCallback: %v", err)
+			}
+			if duplicate {
+				t.Fatalf("el primer callback no es un duplicado")
+			}
+
+			line := setup.line(t)
+			if line.State != tc.wantState {
+				t.Fatalf("State = %q, se esperaba %q", line.State, tc.wantState)
+			}
+			if line.LastError != tc.wantError {
+				t.Fatalf("LastError = %q, se esperaba %q", line.LastError, tc.wantError)
+			}
+			if !line.DeadlineAt.IsZero() || !line.ReconcileUntil.IsZero() {
+				t.Fatalf("una línea cerrada no debe conservar plazos: deadline=%v until=%v", line.DeadlineAt, line.ReconcileUntil)
+			}
+			if got := setup.order(t); got.Status != tc.wantOrder {
+				t.Fatalf("order Status = %q, se esperaba %q", got.Status, tc.wantOrder)
+			}
+		})
+	}
+}
+
+func TestSyncLineFromCallbackDoesNotLoseLaterSaveWhenMarkBrewingIsStale(t *testing.T) {
+	cases := []struct {
+		name      string
+		competing int
+		wantState linestate.State
+		wantWarn  bool
+	}{
+		{
+			name:      "un escritor adelantado: recarga, marca elaboración y extiende la reconciliación",
+			competing: 1,
+			wantState: linestate.Brewing,
+		},
+		{
+			name:      "dos escritores adelantados: recarga la última versión y extiende la reconciliación sin perder el guardado",
+			competing: 2,
+			wantState: linestate.Sent,
+			wantWarn:  true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			orders := &competingWriteStore{Memory: store.NewMemory()}
+
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			driver := acceptedDrinkMachine()
+			driver.status = dispenser.Status{State: linestate.Brewing, Reason: "preparando batido"}
+
+			engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{"batidos": driver},
+				order.WithClock(frozenClock()),
+				order.WithIDGenerator(sequentialIDs()),
+				order.WithLogger(logger),
+			)
+
+			placed := place(t, engine, drinkOnlyDraft())
+			if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+				t.Fatalf("MarkPaid: %v", err)
+			}
+
+			orders.arm(tc.competing)
+
+			duplicate, err := engine.SyncLineFromCallback(ctx, order.Callback{
+				Source:    "batidos",
+				DedupeKey: "batidos-stale-1",
+				OrderID:   placed.ID,
+				Ref:       "exchange-code-1",
+				State:     order.CallbackProgress,
+			})
+			if err != nil {
+				t.Fatalf("SyncLineFromCallback: %v", err)
+			}
+			if duplicate {
+				t.Fatalf("el primer callback no es un duplicado")
+			}
+
+			line := lineFor(t, mustOrder(t, orders, placed.ID), "batidos")
+			if line.State != tc.wantState {
+				t.Fatalf("State = %q, se esperaba %q", line.State, tc.wantState)
+			}
+			if wantDeadline := engineNow.Add(30 * time.Second); !line.DeadlineAt.Equal(wantDeadline) {
+				t.Fatalf("DeadlineAt = %v, se esperaba %v: el guardado posterior de extendReconcile no debe perderse", line.DeadlineAt, wantDeadline)
+			}
+			if line.LastError != "preparando batido" {
+				t.Fatalf("LastError = %q, se esperaba %q", line.LastError, "preparando batido")
+			}
+
+			if tc.wantWarn {
+				assertMarkBrewingStaleWarnLog(t, logBuf.String(), placed.ID, line.ID, string(tc.wantState))
+			} else if strings.TrimSpace(logBuf.String()) != "" {
+				t.Fatalf("no se esperaba log WARN cuando el reintento entra, salida:\n%s", logBuf.String())
+			}
+		})
+	}
+}
+
+func assertMarkBrewingStaleWarnLog(t *testing.T, raw, orderID, lineID, state string) {
+	t.Helper()
+
+	var found bool
+	for _, entry := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(entry), &rec); err != nil {
+			t.Fatalf("línea de log JSON inválida %q: %v", entry, err)
+		}
+		if rec["level"] == "WARN" &&
+			rec["order_id"] == orderID &&
+			rec["line_id"] == lineID &&
+			rec["state"] == state {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatalf("faltó el log WARN con order_id=%q, line_id=%q, state=%q; salida:\n%s", orderID, lineID, state, raw)
+	}
+}
+
+type closingBeforeSaveStore struct {
+	*store.Memory
+
+	mu     sync.Mutex
+	armed  bool
+	closed bool
+}
+
+func (s *closingBeforeSaveStore) SaveLine(ctx context.Context, line store.Line) (store.Line, error) {
+	s.mu.Lock()
+	shouldClose := s.armed && !s.closed
+	if shouldClose {
+		s.closed = true
+	}
+	s.mu.Unlock()
+
+	if shouldClose {
+		loaded, err := s.Memory.LoadOrder(ctx, line.OrderID)
+		if err != nil {
+			return store.Line{}, err
+		}
+		for _, candidate := range loaded.Lines {
+			if candidate.ID != line.ID {
+				continue
+			}
+			candidate.State = linestate.Delivered
+			candidate.DeadlineAt = time.Time{}
+			candidate.ReconcileUntil = time.Time{}
+			candidate.LastError = ""
+			if _, err := s.Memory.SaveLine(ctx, candidate); err != nil {
+				return store.Line{}, err
+			}
+			break
+		}
+	}
+
+	return s.Memory.SaveLine(ctx, line)
+}
+
+func TestSyncLineFromCallbackSkipsReconcileIfClosedConcurrentlyBeforeMarkBrewing(t *testing.T) {
+	ctx := context.Background()
+	orders := &closingBeforeSaveStore{Memory: store.NewMemory()}
+
+	driver := acceptedDrinkMachine()
+	driver.status = dispenser.Status{State: linestate.Brewing, Reason: "no debería consultarse"}
+
+	engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{"batidos": driver},
+		order.WithClock(frozenClock()),
+		order.WithIDGenerator(sequentialIDs()),
+	)
+
+	placed := place(t, engine, drinkOnlyDraft())
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	orders.mu.Lock()
+	orders.armed = true
+	orders.mu.Unlock()
+
+	duplicate, err := engine.SyncLineFromCallback(ctx, order.Callback{
+		Source:    "batidos",
+		DedupeKey: "batidos-closed-race",
+		OrderID:   placed.ID,
+		Ref:       "exchange-code-1",
+		State:     order.CallbackProgress,
+	})
+	if err != nil {
+		t.Fatalf("SyncLineFromCallback: %v", err)
+	}
+	if duplicate {
+		t.Fatalf("el primer callback no es un duplicado")
+	}
+
+	if driver.reconcileCount() != 0 {
+		t.Fatalf("una línea cerrada concurrentemente no debe reconciliarse y hubo %d consultas", driver.reconcileCount())
+	}
+
+	stored := mustOrder(t, orders, placed.ID)
+	line := lineFor(t, stored, "batidos")
+	if line.State != linestate.Delivered || line.LastError != "" || !line.DeadlineAt.IsZero() {
+		t.Fatalf("la línea entregada no debe alterarse: %+v", line)
+	}
+	if stored.Status != store.OrderDelivered {
+		t.Fatalf("order Status = %q, se esperaba %q", stored.Status, store.OrderDelivered)
+	}
+}
+
+func TestSyncLineFromCallbackPreservesAdoptedRefAcrossStaleMarkBrewingReload(t *testing.T) {
+	ctx := context.Background()
+	orders := &competingWriteStore{Memory: store.NewMemory()}
+
+	batidos := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: ""}}
+	snacks := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "sub-snacks"}}
+	batidosReconcile := &reconcileStub{status: dispenser.Status{State: linestate.Brewing, Reason: "en preparación"}}
+
+	engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{
+		"batidos": reconcilingMachine{dispatch: batidos, reconcile: batidosReconcile},
+		"snacks":  reconcilingMachine{dispatch: snacks, reconcile: &reconcileStub{}},
+	}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
+
+	placed := place(t, engine, comboDraft())
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	orders.arm(1)
+
+	if _, err := engine.SyncLineFromCallback(ctx, order.Callback{
+		Source:      "batidos",
+		DedupeKey:   "batidos-adopt-stale",
+		OrderID:     placed.ID,
+		Ref:         "code-adoptado",
+		MachineType: "batidos",
+		State:       order.CallbackProgress,
+	}); err != nil {
+		t.Fatalf("SyncLineFromCallback: %v", err)
+	}
+
+	line := lineFor(t, mustOrder(t, orders, placed.ID), "batidos")
+	if line.Ref != "code-adoptado" {
+		t.Fatalf("Ref = %q, se esperaba %q tras recarga por ErrStale", line.Ref, "code-adoptado")
+	}
+	if line.State != linestate.Brewing {
+		t.Fatalf("State = %q, se esperaba %q", line.State, linestate.Brewing)
+	}
+	if len(batidosReconcile.calls) != 1 || batidosReconcile.calls[0].KnownRef != "code-adoptado" {
+		t.Fatalf("reconcile debe recibir KnownRef adoptada, llamadas: %+v", batidosReconcile.calls)
+	}
+}
+
+func TestApplyCallbackProgressRetriesOnStaleMarkBrewing(t *testing.T) {
+	ctx := context.Background()
+	orders := &competingWriteStore{Memory: store.NewMemory()}
+
+	batidos := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "code-batidos"}}
+	snacks := &stubMachine{attempt: dispenser.DispatchResult{Accepted: true, ProviderRef: "sub-snacks"}}
+
+	engine := order.New(orders, map[machine.Kind]dispenser.Dispenser{
+		"batidos": reconcilingMachine{dispatch: batidos, reconcile: &reconcileStub{}},
+		"snacks":  reconcilingMachine{dispatch: snacks, reconcile: &reconcileStub{}},
+	}, order.WithClock(frozenClock()), order.WithIDGenerator(sequentialIDs()))
+
+	placed := place(t, engine, comboDraft())
+	if err := engine.MarkPaid(ctx, placed.ID, engineNow); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+
+	orders.arm(1)
+
+	if _, err := engine.ApplyCallback(ctx, order.Callback{
+		Source:    "snacks",
+		DedupeKey: "snacks-progress-stale",
+		OrderID:   placed.ID,
+		Ref:       "sub-snacks",
+		State:     order.CallbackProgress,
+	}); err != nil {
+		t.Fatalf("ApplyCallback: %v", err)
+	}
+
+	line := lineFor(t, mustOrder(t, orders, placed.ID), "snacks")
+	if line.State != linestate.Brewing {
+		t.Fatalf("State = %q, se esperaba %q", line.State, linestate.Brewing)
+	}
+	if line.LastError != "otro escritor tocó la línea" {
+		t.Fatalf("LastError = %q, se esperaba preservar el cambio del otro escritor", line.LastError)
 	}
 }
