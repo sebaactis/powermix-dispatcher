@@ -1,131 +1,112 @@
 # Diseño: cobro con QR de Mercado Pago
 
-Estado: diseño acordado el 2026-11-16 (L47 en `odd/tasks/combos-remotos.md`). **Implementado el 2026-11-18** y probado de punta a punta contra el Mercado Pago falso de `cmd/fakeapi`. Falta validarlo contra el sandbox real de Mercado Pago (ver «A confirmar» y [pendientes.md](pendientes.md)).
+Implementado y fusionado en `main`, probado de punta a punta contra el Mercado Pago simulado de `cmd/fakeapi`. Queda pendiente validarlo contra el sandbox real de Mercado Pago (ver [pendientes.md](pendientes.md)).
 
-Decisiones tomadas al implementar, que no estaban en el diseño original:
-
-- **O se cobra simulado o con Mercado Pago completo.** Con Mercado Pago configurado, `POST /orders/{id}/pay` responde 403 también en `sandbox`. Una configuración a medias (secretos sin token, token sin secretos o un mueble sin `mp_pos_id`) hace fallar el arranque.
-- **`qr_data` sólo viaja mientras el cobro está `pending`**, así la tablet nunca dibuja un QR que ya no se puede pagar.
-- **Errores de `POST /orders`**: si Mercado Pago no crea el QR, 502 (`order.ErrQRUnavailable`); si la orden ya no espera el pago, 409 (`order.ErrNotPayable`); cualquier otra falla, 500.
-- **El barrido de pagos usa el mismo tick de 30 s y el mismo lote** que el de líneas. Un QR vencido se cancela entre 210 y 240 s después de creado.
-
-Para el contexto general, consulta [arquitectura.md](arquitectura.md); para el estado de las tareas, [pendientes.md](pendientes.md).
+Para la arquitectura general del backend consulta [arquitectura.md](arquitectura.md); para la configuración de variables y prueba local, [README.md](../README.md).
 
 ---
 
-## Decisiones
+## Decisiones de diseño
 
-| # | Decisión | Por qué |
+| # | Decisión | Motivo |
 | --- | --- | --- |
-| 1 | **QR dinámico** (`config.qr.mode: "dynamic"`) de la Orders API (`POST /v1/orders`) | La tablet dibuja un QR único por orden: nadie puede pagar la orden de otro |
-| 2 | **El QR vence a los 180 s** (`expiration_time: "PT3M"`) | Igual que `QR_EXPIRY_SEC` en `vps-powermix` |
-| 3 | **Si Mercado Pago dice que se pagó, se despacha**, aunque haya pasado el plazo | Sin devoluciones en el MVP, cobrar sin entregar es el peor resultado |
-| 4 | **El monto pagado se compara con el del catálogo**; si no coincide, no se despacha y se avisa a soporte | Invariante 1: el precio sale del catálogo |
-| 5 | **Una aplicación de Mercado Pago propia** para compras-remotas | El webhook es uno por aplicación; compartirla mezclaría avisos de otros sistemas |
-| 6 | **El webhook responde enseguida y el despacho corre en segundo plano** | `MarkPaid` puede tardar hasta 2 min y Mercado Pago reintenta si no respondemos rápido |
-| 7 | **Secreto en la ruta además de la firma** | Misma defensa que los callbacks de batidos y snacks |
-| 8 | **La tablet consulta `GET /orders/{id}` cada 2 s** | Suficiente para el MVP; no hace falta SSE ni WebSocket |
+| 1 | **QR dinámico** (`config.qr.mode: "dynamic"`) en `POST /v1/orders` | Cada orden genera un QR único; nadie puede pagar la orden de otro |
+| 2 | **Vencimiento del QR a los 180 s** (`expiration_time: "PT3M"`, `defaultQRExpiry`) | Mismo criterio que `QR_EXPIRY_SEC` en `vps-powermix` |
+| 3 | **Si Mercado Pago informa pago aprobado, se despacha**, incluso tras vencer el plazo local | Sin devoluciones en el MVP, cobrar sin entregar es el peor escenario |
+| 4 | **Validación estricta del monto contra el catálogo** | Invariante 1: si difiere, no se despacha (`amount_mismatch`) y se avisa a soporte |
+| 5 | **Aplicación propia de Mercado Pago** para `compras-remotas` | El webhook es uno por aplicación; evita mezclar avisos de otros sistemas |
+| 6 | **El webhook responde rápido y el despacho corre en segundo plano (`e.spawn`)** | `dispatchLines` puede tardar hasta 2 min y Mercado Pago reintenta si no recibe `200` |
+| 7 | **Secreto en la ruta además de la firma `X-Signature`** | Misma defensa que los callbacks de máquinas |
+| 8 | **La tablet consulta `GET /orders/{id}` cada 2 s** | Suficiente para el MVP sin agregar SSE ni WebSocket |
+| 9 | **Todo o nada en configuración** | Con Mercado Pago activo, `POST /orders/{id}/pay` responde `403` también en `sandbox`; una configuración incompleta falla al arrancar (`internal/config/validate.go:90-126`) |
+| 10 | **`qr_data` sólo viaja mientras el cobro está `pending`** | Evita que la tablet muestre un QR que ya no puede pagarse (`internal/httpapi/responses.go:34-36`) |
 
 ## Regla central: manda Mercado Pago, no nuestro reloj
 
-Nunca se cancela una orden por cuenta propia. Al vencer el plazo se le pide a Mercado Pago que cancele y se obedece su respuesta: si dice «pagada», se despacha; si dice «cancelada» o «vencida», recién entonces se cancela la nuestra. Así no hace falta abrir la transición `cancelled → paid` (`internal/order/status.go:52`).
+Nunca se cancela una orden por cuenta propia. Al vencer el plazo (`expires_at + 30 s` de gracia), el barrido pide la cancelación a Mercado Pago y obedece su respuesta: si dice «pagada» (`processed`), se despacha; si dice «cancelada» o «vencida», recién entonces pasa nuestra orden a `cancelled`. Así no hace falta abrir la transición `cancelled → paid` (`internal/order/status.go:51-52`).
 
-## Requisitos de Mercado Pago (confirmados en la documentación)
+## Requisitos del contrato de Mercado Pago
 
-- `config.qr.external_pos_id` es **obligatorio** también en modo dinámico: cada mueble necesita **una sucursal y una caja** dadas de alta en Mercado Pago, una sola vez.
-- La URL del webhook **no viaja en la orden**: se configura en el panel de la aplicación, tópico **«Order (Mercado Pago)»**.
-- `POST /v1/orders` exige `X-Idempotency-Key`. `external_reference` admite hasta 64 caracteres `[A-Za-z0-9_-]`, y nuestro id de orden (hex) cumple.
-- `expiration_time` es una duración ISO 8601; sin ella vale 15 minutos.
+- `config.qr.external_pos_id` es obligatorio en modo dinámico: cada mueble requiere una sucursal y una caja dadas de alta en Mercado Pago (`mp_pos_id`).
+- La URL del webhook se configura en el panel de la aplicación de Mercado Pago bajo el tópico **«Order»** (no viaja en el payload de `POST /v1/orders`).
+- `POST /v1/orders` exige `X-Idempotency-Key`. `external_reference` admite hasta 64 caracteres `[A-Za-z0-9_-]`, que nuestro ID de orden cumple (`internal/payments/mercadopago/client.go:123`).
+- `expiration_time` es una duración ISO 8601 (`PT3M`).
 
 ## El webhook
 
-```
+```text
 POST /callbacks/mercadopago/{secret}?data.id=ORD01JQ4S4KY8HWQ6NA5PXB65B3D3&type=order
 X-Request-Id: 2066ca19-c6f1-498a-be75-1923005edd06
 X-Signature: ts=1742505638683,v1=ced36ab6…
 ```
 
-| Dato | Qué es |
+| Dato | Descripción |
 | --- | --- |
-| `data.id` | Id de la orden en Mercado Pago (`ORD…`), el que devolvió `POST /v1/orders` |
-| `x-request-id` | Id único de cada envío del aviso. No se usa para deduplicar: no está documentado si un reintento lo repite |
-| `x-signature` | `ts` (milisegundos) y `v1 = hex(HMAC-SHA256(secreto_webhook, "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"))`. `data.id` va **en minúsculas** dentro del manifiesto y un par vacío se omite (SDK oficial de Go) |
+| `data.id` | ID de la orden en Mercado Pago (`ORD…`) devuelto por `POST /v1/orders` |
+| `x-request-id` | ID único del envío del aviso (usado en el manifiesto de firma, no para deduplicar) |
+| `x-signature` | `ts` (milisegundos) y `v1 = hex(HMAC-SHA256(secreto_webhook, "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"))`, con `data.id` en minúsculas y omitiendo pares vacíos (`internal/payments/mercadopago/signature.go:76-88`) |
 
-Validación en dos capas:
+Validación en `internal/httpapi/mercadopago.go:77` (`receive`):
 
-1. **Firma** y `ts` dentro de una ventana de 5 minutos → prueba que el aviso viene de Mercado Pago. Si falla, 401.
-2. **`GET /v1/orders/{data.id}`** → prueba qué pasó de verdad: estado, monto pagado y `external_reference`. La firma no cubre el cuerpo, así que el cuerpo no se usa.
+1. Secreto de ruta en tiempo constante → si falla, `404`.
+2. Query `data.id` presente → si falta, `400`.
+3. Firma `X-Signature` y ventana `SignatureTolerance` de 5 min (`internal/payments/mercadopago/signature.go:14-51`) → si falla, `401`.
+4. `type == "order"` → si es otro tópico, responde `200` sin tocar nada.
+5. `SyncPayment` (`GET /v1/orders/{data.id}`): nunca confía en el cuerpo del webhook. Si el cobro no pertenece al sistema (`ErrUnknownCharge`), responde `200`; ante error transitorio responde `500` para que Mercado Pago reintente.
 
-La deduplicación no hace falta: `MarkPaid` ignora una orden que ya no está en `pending_payment`.
+La deduplicación explícita no es necesaria: `applyCharge` ignora cualquier `PaymentIntent` que ya no esté en `pending` (`internal/order/charge.go:74`) y `claimPaid` ignora órdenes que ya salieron de `pending_payment` (`internal/order/payment.go:32`).
 
 ## Piezas
 
 ### Datos — migración `0007`
 
-Se reutiliza `payment_intent`, que existe desde `0001` y nunca se usó. La migración agrega:
+`migrations/0007_payment_intent.sql` completa la tabla `payment_intent` con:
 
-- FK de `order_id` a `orders` e índice único por `order_id` (un QR por orden).
-- `expires_at timestamptz`.
-- `version bigint` para el guardado condicional.
-- El estado `cancelled` en el `CHECK`.
+- FK `order_id → orders(id)` e índice único `payment_intent_order_idx` (un cobro por orden).
+- `expires_at timestamptz`, `paid_amount_cents bigint` y `version bigint` para *optimistic locking*.
+- `CHECK` con `pending`, `approved`, `rejected`, `expired`, `cancelled` y `amount_mismatch`.
 
-Puerto `store`, cuatro métodos nuevos: `CreatePaymentIntent`, `PaymentIntentByOrder`, `SavePaymentIntent` (con versión, `ErrStale` como las líneas) y `PendingPaymentIntents(olderThan, limit)`.
+Métodos en `internal/store/store.go:129-132`: `CreatePaymentIntent`, `PaymentIntentByOrder`, `SavePaymentIntent` (`ErrStale`) y `PendingPaymentIntents`.
 
 ### Puerto `payments.Gateway`
 
+Definido en `internal/payments/gateway.go:42-46`:
+
 ```go
 type Gateway interface {
-    CreateQR(ctx context.Context, req QRRequest) (Charge, error)
-    Lookup(ctx context.Context, providerID string) (Charge, error)
-    Cancel(ctx context.Context, providerID string) (Charge, error)
+	CreateQR(ctx context.Context, req QRRequest) (Charge, error)
+	Lookup(ctx context.Context, providerID string) (Charge, error)
+	Cancel(ctx context.Context, providerID string) (Charge, error)
 }
 ```
 
-`Charge` lleva `ProviderID`, `ExternalRef`, `QRData`, `Status` (`pending`, `approved`, `expired`, `cancelled`, `unknown`) y `PaidAmountCents`. `unknown` cubre `refunded`, `failed` y cualquier estado no previsto: el motor no despacha ni cancela, avisa.
+`Charge` incluye `ProviderID`, `ExternalRef`, `QRData`, `Status` (`pending`, `approved`, `expired`, `cancelled`, `unknown`), `ProviderStatus`, `ProviderStatusDetail`, `AmountCents` y `PaidAmountCents`. `unknown` cubre `refunded`, `failed` o estados no previstos: no despacha ni cancela y avisa a soporte.
 
 ### Adaptador `internal/payments/mercadopago`
 
-`client.go` con `net/http` (sin SDK), `wire.go` con el JSON del proveedor (convención L27) y `signature.go` con la validación de `x-signature`.
+- `client.go`: llamadas HTTP (`net/http`, sin SDK) a `/v1/orders` y `/v1/orders/{id}/cancel`.
+- `wire.go`: structs de transporte JSON del proveedor.
+- `signature.go`: verificación de `X-Signature` con tolerancia de 5 min.
+- `status.go`: mapeo `created` / `processed` / `expired` / `canceled` → `ChargeStatus` (pendiente confirmar contra sandbox real).
+- `amount.go`: parseo y formato decimal entre centavos (`int64`) y strings de monto.
 
-**A confirmar contra el sandbox real:** el mapeo de `status`/`status_detail` de Mercado Pago a nuestros estados.
+### Mercado Pago simulado (`internal/fakeapi`)
 
-### Mercado Pago falso
-
-En `internal/fakeapi`, puerto 9404: crea, consulta y cancela órdenes, y envía webhooks firmados. Sin credenciales, es lo que permite probar el circuito completo.
+Escucha por defecto en `127.0.0.1:9404` (`cmd/fakeapi/main.go:48`): crea, consulta y cancela órdenes y envía webhooks firmados hacia `-mp-webhook-url`.
 
 ### Motor (`internal/order`)
 
-| Método | Qué hace |
+| Método | Comportamiento |
 | --- | --- |
-| `RequestQR(orderID, posID)` | Idempotente: si hay un QR pendiente lo devuelve; si no, lo crea en Mercado Pago (clave de idempotencia = id de orden) y lo guarda |
-| `SyncPayment(providerID)` | `Lookup` → verifica `external_reference` y que sea el cobro guardado de esa orden → aprobada y monto correcto: marca pagada y despacha en segundo plano. Monto distinto: no despacha, la orden queda en `pending_payment`, el pago en `amount_mismatch` y se avisa `payment_mismatch`. Estado desconocido: avisa `payment_unknown` y no toca nada |
-| `SyncPendingPayments(limit)` | En el barrido, sobre QR pendientes de más de 10 s: aprobada → mismo camino que el webhook; vencida o cancelada → cancela la orden; pendiente y pasado `expires_at` + 30 s → `Cancel` en Mercado Pago y se obedece la respuesta |
+| `RequestQR` (`qr.go:21`) | Idempotente: si ya existe `PaymentIntent` para la orden, lo devuelve; si no, verifica estado `pending_payment` (`ErrNotPayable`), crea el QR (`X-Idempotency-Key = orderID`) y lo persiste |
+| `SyncPayment` (`charge.go:43`) | `Lookup` → valida `external_reference` y `ProviderID` → si `approved` con monto exacto: `claimPaid` + `e.spawn` (`dispatchLines` en segundo plano con `recover()`); si difiere el monto: `amount_mismatch` + aviso `payment_mismatch`; si `expired`/`cancelled`: cancela la orden; si `unknown`: aviso `payment_unknown` |
+| `SyncPendingPayments` (`reconcile_payments.go:17`) | Ejecutado en cada tick de 30 s del barrido sobre QRs `pending` con > 10 s de antigüedad; si pasaron > 30 s desde `expires_at` y sigue `pending`, llama a `Cancel` en Mercado Pago y aplica la respuesta |
 
-Las escrituras van siempre en el orden **primero el efecto, después el pago**: si el proceso muere entre las dos, el pago sigue `pending` y el barrido completa lo que faltó. Si el proceso muere después de marcar pagada y antes de despachar, el barrido existente (`resumeStalledLine`) retoma las líneas `pending`. Si muere antes de marcar pagada, `SyncPendingPayments` encuentra el QR aprobado.
+Las escrituras siguen siempre el orden **efecto antes que cierre del cobro**: si el proceso muere entre `claimPaid` y `SavePaymentIntent`, el intento sigue `pending` y el barrido lo completa; si muere tras marcar `paid` y antes de despachar, `resumeStalledLine` retoma las líneas `pending`.
 
-### HTTP
+### Borde HTTP y configuración
 
-- `POST /orders` = `CreateOrder` + `RequestQR`. La respuesta suma `"payment": {"status", "qr_data", "expires_at"}`. Si Mercado Pago falla: 502, y la tablet reintenta con el mismo `client_key` sin duplicar orden ni QR.
-- `GET /orders/{id}` incluye el mismo bloque `payment`.
-- `POST /callbacks/mercadopago/{secret}`: secreto de ruta → firma → `type == order` → `SyncPayment` → 200.
-- `POST /orders/{id}/pay` sigue sólo en `sandbox`.
-
-### Configuración
-
-- Entorno: `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`, `MP_CALLBACK_SECRET`, `MP_BASE_URL` (por defecto `https://api.mercadopago.com`).
-- Por mueble: `"mp_pos_id"` (el `external_pos_id` de su caja).
-- En `production` Mercado Pago es obligatorio; en `sandbox` es opcional y sin él queda el pago simulado.
-
-## Orden de implementación
-
-1. Migración `0007` + store (memoria y Postgres).
-2. Puerto + adaptador de Mercado Pago + firma + Mercado Pago falso.
-3. Motor: `RequestQR`, `SyncPayment`, `SyncPendingPayments`.
-4. HTTP + configuración + wiring en `cmd/api`.
-5. Documentación.
-
-## Fuera del código
-
-- Crear la aplicación de Mercado Pago propia y obtener: access token (prueba y producción), secreto del webhook y user id.
-- Dar de alta una sucursal y una caja por mueble.
-- Configurar el webhook de la aplicación con el tópico «Order» apuntando a `PUBLIC_BASE_URL/callbacks/mercadopago/{MP_CALLBACK_SECRET}`.
+- `POST /orders` (`internal/httpapi/orders.go:10`): `CreateOrder` + `RequestQR`. Si falla la creación del QR responde `502`; si la orden no es pagable, `409`; un reintento con el mismo `client_key` (y mismo combo/mueble) devuelve orden y QR existentes sin duplicar.
+- `GET /orders/{id}` (`internal/httpapi/orders.go:56`): incluye `"payment"` cuando Mercado Pago está activo.
+- `POST /orders/{id}/pay` (`internal/httpapi/orders.go:79`): deshabilitado (`403`) con Mercado Pago activo o en `production`.
+- Variables de entorno: `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`, `MP_CALLBACK_SECRET`, `MP_BASE_URL`; por mueble `"mp_pos_id"`. En `production` Mercado Pago es obligatorio; en `sandbox` es opcional.
