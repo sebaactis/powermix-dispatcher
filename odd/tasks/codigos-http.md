@@ -14,10 +14,11 @@ Fuera de alcance: 413 para cuerpos de más de 64 KB. «Por ahora esto no lo toqu
 
 ## Tasks
 
-- [ ] T1 — S1-S4 — writer `gentle-ai-worker` — commit: pendiente.
+- [x] T1 — S1-S4 — writer `gentle-ai-worker` — commit: 980b67b (código y docs); tests en `archive/tests` 1608e9f.
 
 ## Log
 
 - **L1** — Pedido: «Si.» a seguir con F6 (código HTTP), 2026-11-22.
 - **L2** — Decisión del proveedor caído: «502, igual que el QR (recomendado)».
 - **L3** — 413: «Por ahora esto no lo toques, porque desconozco bien aun el body que va a venir con exactitud.»
+- **L4** — Evidencia T1: RED, sentinels sin definir; 500 en vez de 502 en los 3 subcasos; 404 con `combo_id` con espacios. GREEN en `preflight`, `gate` y `httpapi`; `go test ./...` en `archive/tests` con exit 0. Decisiones: `order.ErrAvailabilityUnavailable` (junto a `ErrNotSellable`, así `httpapi` no importa `preflight`); `preflight.ErrPanic` marca el panic para que siga en 500, aunque se mezcle con un error del otro proveedor. S4: el webhook de Mercado Pago no lee el cuerpo (`internal/httpapi/mercadopago.go:77-140` usa sólo ruta, query y headers), así que no tiene riesgo de lectura sin límite. Deuda menor: el test `TestCreateOrderReturnsInternalErrorWhenTheProviderFailsDuringTheCheck` (`internal/httpapi/gate_test.go`, en `archive/tests`) ahora usa un nombre engañoso: prueba que un error genérico cae en 500.

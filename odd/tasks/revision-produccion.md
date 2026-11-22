@@ -6,7 +6,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). **Próximo disponible: F6** (códigos HTTP) u otro que elija el usuario. Cada fix nuevo va en una rama desde `main`.
+2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). F6 hecho en la rama `fix/http-status-codes` (sin mergear ni pushear). **Próximo disponible: F7** (apagado) u otro que elija el usuario. Cada fix nuevo va en una rama desde `main`.
 3. **Publicado (2026-11-22):** `fix/partial-order-alerts` (F1-F5 y los 8 commits de Telegram que estaban sólo en local) se mergeó a `main` (4afadaf) y se pusheó; `archive/tests` se sincronizó con `main` (b873113) y se pusheó. Regla de entrega: en `main` va todo lo que es de la app; los tests van sólo en `archive/tests`.
 4. **Correlación de avisos:** se usa `order_id`; el `request_id` por pedido HTTP queda para **F9**.
 5. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
@@ -28,7 +28,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 
 ### Importantes
 - [x] F5 — Hecho: 409 si la clave llega con otro combo o mueble, 400 si supera 128 caracteres, contrato del kiosco documentado (`odd/tasks/client-key-conflicto.md`, commit e8724a9). Original: `client_key` reutilizado con otro combo devuelve el pedido viejo sin avisar, y no tiene largo máximo (`internal/order/place.go:17-25`, `internal/httpapi/draft.go:20,70`).
-- [ ] F6 — Códigos HTTP: caída del proveedor en el chequeo previo devuelve 500 en vez de 502/503 (`internal/preflight/checker.go:114-116`, `internal/gate/gate.go:76-81`); cuerpo grande devuelve 400 en vez de 413 (`draft.go:29-31`); `combo_id` no se recorta antes de buscarlo (`draft.go:37-41`).
+- [x] F6 — Hecho: 502 si un proveedor no responde en el chequeo previo, `combo_id` recortado; 413 queda fuera por decisión del usuario (`odd/tasks/codigos-http.md`, commit 980b67b). Original: Códigos HTTP: caída del proveedor en el chequeo previo devuelve 500 en vez de 502/503 (`internal/preflight/checker.go:114-116`, `internal/gate/gate.go:76-81`); cuerpo grande devuelve 400 en vez de 413 (`draft.go:29-31`); `combo_id` no se recorta antes de buscarlo (`draft.go:37-41`).
 - [ ] F7 — Apagado: el plazo de 10 s (`cmd/api/main.go:245`) puede vencer con despachos de hasta 2 min en curso y `closeStore()` cierra Postgres debajo de ellos.
 - [ ] F8 — El callback de batidos usa una versión vieja de la línea después de `markBrewing` y la extensión del plazo se pierde sin error (`internal/order/callback.go:65-78`, `internal/order/reconcile.go:223-226`).
 - [ ] F9 — Logueo: falta middleware de access log y de recover HTTP, `request_id`/`order_id` en el contexto, nivel configurable (`cmd/api/main.go:48` fijo en Info) y `http.Server.ErrorLog` estructurado (`cmd/api/server.go:16-25`).
