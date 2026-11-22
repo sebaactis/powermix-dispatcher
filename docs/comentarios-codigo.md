@@ -5,22 +5,36 @@ El código fuente no lleva comentarios a propósito: acá se consulta, se busca 
 
 Formato: `Símbolo --> "texto del comentario"`.
 
-> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 55 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/arquitectura.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
+> **Nota sobre los archivos `_test.go`.** Las secciones cuyo título es una ruta terminada en `_test.go` describen archivos que **no están en `main`**: los 59 archivos de test viven en la rama `archive/tests`, y vuelven con el `git checkout` descrito en `docs/arquitectura.md` («Tests: dónde viven y cómo se usan»). Se mantienen acá porque son el porqué de esos tests y viajan con ellos.
 
 ## cmd/api/main.go
 
 ### (archivo)
 
-> Command api es el backend con el que habla la tablet.
-> 
-> En esta etapa solo expone un endpoint de salud: el sentido de este esqueleto es
-> que la topología venga de la configuración y se valide al arrancar, para que un
-> mueble mal configurado falle acá y no delante de un cliente.
+> Command api es el backend con el que habla la tablet y el punto de entrada de
+> los webhooks de proveedores y pagos (`GET /healthz`, API de la tablet,
+> callbacks de batidos/snacks, webhook de Mercado Pago y el `sweep.Runner` de
+> reconciliación).
+>
+> Al arrancar construye el logger JSON (`logging.NewFromEnv`), carga y valida la
+> topología (`config.Load`) y el catálogo de combos (`catalog.LoadFile`,
+> `catalog.NewMemory`) antes de abrir tráfico —así un mueble o combo mal
+> configurado falla acá y no delante de un cliente—, abre el store (`openStore`),
+> arma los clientes y dispensadores, la puerta de disponibilidad
+> (`gate`/`preflight`), el notificador (`TelegramNotifier` o `LogNotifier`),
+> opcionalmente el gateway de Mercado Pago, el motor `order.Engine` y el
+> `sweep.Runner`, envuelve el `http.ServeMux` con `httpapi.Wrap` y coordina el
+> apagado con `shutdown`.
 
 ### main
 
-> Los nombres de los campos JSON se mantienen estables: son un contrato
-> legible por máquinas, no texto para una persona.
+> En `GET /healthz`, los nombres de los campos JSON (`status`, `env`, `kiosks`,
+> `combos`, `store`) se mantienen estables: son un contrato legible por
+> máquinas, no texto para una persona.
+>
+> Si `httpapi.New` falla al arrancar, llama a `closeStore()` directamente; si el
+> servidor arranca, pasa `closeStore` a `shutdown` para cerrar la base recién
+> después de drenar HTTP, barrido y despachos en segundo plano.
 
 ## cmd/api/server.go
 
@@ -69,27 +83,54 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### newServer
 
-> Arma el `*http.Server` con las cinco cotas de arriba y el handler recibido, sin
-> abrir nada: quien escucha es `ListenAndServe` en `main`. La dirección se pasa
-> desde afuera (`envOr("HTTP_ADDR", …)`) para que este archivo no dependa del
-> entorno.
+> Arma el `*http.Server` con las cinco cotas de arriba, el handler recibido y
+> `ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError)` (si `logger`
+> no es `nil`), para que los errores internos de transporte de `net/http` salgan
+> en JSON por el mismo logger estructurado y capitalizado. No abre nada: quien
+> escucha es `ListenAndServe` en `main`. La dirección se pasa desde afuera
+> (`envOr("HTTP_ADDR", …)`) para que este archivo no dependa del entorno.
 
-### TestNewServerSetsTheTimeoutsAndTheHandler
+### TestNewServerSetsTheTimeoutsHandlerAndErrorLog
 
-> Afirma los siete campos uno por uno, incluida la identidad del handler (el
-> mismo `mux` que se pasó, no otro equivalente). Cada cota está fijada acá y en
-> ningún otro lado: si alguien relaja un plazo para destrabar un caso puntual, el
-> test falla y la discusión ocurre antes de que el cambio llegue a producción.
+> Afirma los ocho campos uno por uno —incluida la identidad del handler (el
+> mismo `mux` que se pasó, no otro equivalente) y que `ErrorLog` emita JSON válido
+> y capitalizado en nivel `ERROR`—. Cada cota está fijada acá y en ningún otro
+> lado: si alguien relaja un plazo para destrabar un caso puntual, el test falla
+> y la discusión ocurre antes de que el cambio llegue a producción.
+
+## cmd/api/shutdown.go
+
+### const
+
+> `httpShutdownTimeout` (10 s) y `drainTimeout` (60 s) fijan el presupuesto
+> máximo de apagado (70 s en total), por debajo de `stop_grace_period: 75s` en
+> `docker-compose.yml` para dejar 5 s de margen antes de `SIGKILL`.
+
+### shutdown
+
+> Coordina el apagado ordenado en cuatro pasos: primero llama a `shutdownHTTP`
+> con `httpShutdownTimeout` para dejar de aceptar conexiones y esperar requests
+> en curso; luego abre un **único** `drainCtx` con `drainTimeout` compartido entre
+> esperar `sweepDone` y —sólo si el barrido frenó a tiempo— esperar
+> `waitDispatches` (`engine.Wait()`); si alguno vence, deja un `ERROR` en el log
+> sabiendo que `resumeStalledLine` retomará los despachos inconclusos al volver
+> a arrancar; por último llama a `closeStore` cuando nadie más sigue escribiendo.
+> Cubierto por los tests `TestShutdown*` en `cmd/api/server_test.go` (rama
+> `archive/tests`).
 
 ## cmd/fakeapi/main.go
 
 ### (archivo)
 
-> Command fakeapi levanta los dos sustitutos locales de los backends de máquinas.
-> 
-> Permite empezar hoy con el trabajo de cliente: la API de batidos y la de snacks
-> responden en dos puertos, exigiendo las firmas reales, el código de canje de un
-> solo uso y la regla de replay de nonce.
+> Command fakeapi levanta los sustitutos locales de batidos, snacks y Mercado
+> Pago, más un servidor de administración loopback (cuatro servidores HTTP en
+> total). Construye el logger JSON con `logging.NewFromEnv` (sale con código 1
+> si `LOG_LEVEL` es inválido) y conecta `slog.NewLogLogger(logger.Handler(),
+> slog.LevelError)` en el `ErrorLog` de los cuatro servidores.
+>
+> Permite probar todo en local sin credenciales reales: los falsos exigen las
+> firmas de cada proveedor, el código de canje de un solo uso y la regla de
+> replay de nonce.
 
 ## internal/config/config.go
 
@@ -588,7 +629,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 > 
 > Code trae el código propio del proveedor cuando la respuesta lo incluye
 > (40001 falta un header obligatorio, 40003 timestamp fuera de la ventana,
-> 40004 firma inválida, 40005 nonce repetido) y queda en 0 si no vino.
+> 40004 firma inválida, 40005 nonce repetido) y queda en 0 si no vino;
+> `hasCode` distingue si el campo `code` estuvo presente en un sobre JSON
+> válido (`env.Code != nil`) frente a su ausencia (por ejemplo, una respuesta HTML
+> de proxy).
 
 ### Option
 
@@ -977,18 +1021,21 @@ Formato: `Símbolo --> "texto del comentario"`.
 > 
 > Por eso la mayúscula se aplica acá, en el borde de salida, y no en el origen.
 
+### LevelEnv / ParseLevel / LevelFromEnv / NewFromEnv
+
+> Lee el nivel de log desde la variable `LOG_LEVEL` (`LevelEnv`), aceptando `debug`, `info`, `warn` y `error` sin importar mayúsculas ni espacios. Si está vacía usa `info`; si trae cualquier otro valor devuelve un error explícito con los valores permitidos para que `cmd/api`, `cmd/fakeapi` y `cmd/migrate` fallen al arrancar en lugar de ignorarlo en silencio.
+
+### WithRequestID / RequestIDFromContext / requestIDHandler
+
+> Propaga el `request_id` HTTP dentro de `context.Context` (si llega un `ctx` nil usa `context.Background()`, y si `requestID` está vacío no envuelve nada). `requestIDHandler` envuelve al `slog.Handler` JSON y agrega automáticamente `"request_id"` a cada registro emitido con `*Context` (`InfoContext`, `WarnContext`, `ErrorContext`), clonando el `slog.Record` y conservando el wrapper también en `WithAttrs` y `WithGroup`.
+
 ### New
 
-> New devuelve un logger de texto para consola, con el nivel indicado.
+> New devuelve un logger JSON (`slog.NewJSONHandler`) con el nivel indicado, construido sobre `NewWithOptions`.
 
 ### NewWithOptions
 
-> NewWithOptions devuelve un logger de texto que capitaliza el mensaje y el
-> error, conservando el ReplaceAttr que haya definido el llamador.
-
-### NewWithOptions
-
-> copia: nunca se mutan las opciones del llamador
+> NewWithOptions devuelve un logger JSON envuelto en `requestIDHandler` que capitaliza el mensaje y el atributo `"error"`, conservando el `ReplaceAttr` que haya definido el llamador sobre una copia de `opts` para no mutar las opciones recibidas.
 
 ### Capitalize
 
@@ -1098,7 +1145,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Kind
 
-> Tipos de aviso que conoce el sistema: `order_in_doubt`, `order_failed`, `order_partial`, `payment_mismatch` y `payment_unknown`.
+> Tipos de aviso que conoce el sistema: `order_in_doubt`, `order_failed`, `order_partial`, `dispatch_panic`, `payment_mismatch` y `payment_unknown`.
 
 ### Event
 
@@ -1139,12 +1186,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 > con HTML alcanza con escapar `<`, `>` y `&` (`esc`), y todo lo que viene del
 > evento pasa por ahí.
 >
-> Formato acordado el 2026-11-18: icono y título según el tipo (`kindStyles`,
-> incluyendo `KindOrderPartial` como «Entrega parcial» con acción de compensar al
-> cliente por lo que falló), entorno en cursiva (🚨 PRODUCCIÓN se distingue a
-> simple vista de 🧪 sandbox), mueble con su nombre de la configuración, id de
-> orden en `<code>` para copiarlo con un toque, hora, detalle en `<blockquote>` y
-> una línea de qué hacer para soporte.
+> Formato acordado el 2026-11-18 y ampliado con F3: icono y título según el tipo (`kindStyles`, incluyendo `KindOrderPartial` como «Entrega parcial» con acción de compensar al cliente por lo que falló y `KindDispatchPanic` como «Panic en despacho» para verificar en la máquina si salió el producto), entorno en cursiva (🚨 PRODUCCIÓN se distingue a simple vista de 🧪 sandbox), mueble con su nombre de la configuración, id de orden en `<code>` para copiarlo con un toque (y `🔹 Línea` en `<code>` si viene `LineID`), hora, detalle en `<blockquote>` y una línea de qué hacer para soporte.
 >
 > La hora usa UTC−3 fijo y no la zona del servidor: en Render el proceso corre
 > en UTC, y Argentina no tiene horario de verano. Con `time.FixedZone` además no
@@ -1314,15 +1356,23 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Sólo acepta un valor positivo. Cero o negativo vencería el contexto antes de la primera llamada y el chequeo fallaría sin preguntarle nada a las máquinas, que es peor que no tener presupuesto. Existe para los tests: el del presupuesto comprueba el corte con 50 ms en vez de esperar los 8 s de producción.
 
+### WithLogger
+
+> Inyecta el `*slog.Logger` con el que `runCheck` registra si una consulta entra en panic (`nil` se ignora; sin logger configurado cae en `slog.Default()`).
+
 ### Check
 
-> Corre las dos máquinas a la vez —una goroutine por máquina con el `sync.WaitGroup` de la biblioteca estándar— y espera a las dos antes de decidir. Dentro de cada máquina las dos llamadas siguen siendo secuenciales, porque la segunda consulta depende del identificador que devuelve la primera. Lo que se gana es el paralelismo **entre** máquinas, que es donde estaba la suma de plazos: 8 s de techo en lugar de 40 s de reloj.
+> Corre las dos máquinas a la vez —una goroutine por máquina lanzada con `runCheck` y sincronizada con `sync.WaitGroup`— y espera a las dos antes de decidir. Dentro de cada máquina las dos llamadas siguen siendo secuenciales, porque la segunda consulta depende del identificador que devuelve la primera. Lo que se gana es el paralelismo **entre** máquinas, que es donde estaba la suma de plazos: 8 s de techo en lugar de 40 s de reloj.
 >
 > El plazo es uno solo y se deriva del contexto entrante con `context.WithTimeout`: si la tablet ya cortó, el chequeo se va con ella y no con su propio reloj.
 >
 > Consulta los cuatro datos siempre, incluso cuando una máquina ya falló, y recién después decide. Una máquina que agota el presupuesto devuelve el error del contexto, y el resultado es el mismo que con un proveedor que no contesta: `Result` vacío y error, nunca una razón, porque un plazo vencido no describe el estado del mueble y disfrazarlo de causa de bloqueo mentiría sobre lo que sabemos.
 >
 > Cada goroutine escribe sólo su propio `machineResult` y la combinación ocurre después de `Wait`: no hay estado compartido que proteger con un mutex. El orden de las razones tampoco depende de quién terminó antes: se concatenan siempre batidos y después snacks, igual que cuando el chequeo era secuencial, para que el cuerpo del 409 no cambie entre dos pedidos idénticos. Los errores se juntan en ese mismo orden con `errors.Join`, para no perder el de la segunda máquina.
+
+### ErrPanic / runCheck
+
+> `runCheck` envuelve cada goroutine con `defer wait.Done()` y `recover()`: si `checkBatidos` o `checkSnacks` entra en panic, registra el valor y `debug.Stack()` en `ERROR` y escribe en `out.err` un error envuelto con `ErrPanic`. `gate.Check` deja pasar `ErrPanic` sin envolverlo como `ErrAvailabilityUnavailable`, de modo que la API responda `500` y no `502` (un panic propio no es un fallo del proveedor).
 
 ### checkBatidos
 
@@ -1642,9 +1692,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### CreateOrder
 
-> Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema.
+> Valida el borrador entero antes de crear nada: si un ítem está mal, no queda una orden a medio armar. El mensaje nombra la posición del ítem, porque el llamador necesita saber cuál corregir. Si viene `ClientKey` no vacío, consulta `OrderByClientKey` antes de correr `gate.Check` (y ante un empate `ErrAlreadyExists` al persistir) y delega en `matchClientKeyOrder`: con mismo combo y mueble devuelve la orden existente de forma idempotente; con otro combo o mueble devuelve `ErrClientKeyConflict` (409 en HTTP, ampliado en la sección de `client_key` y puerta de disponibilidad).
 >
-> La línea se arma copiando la `machine.Ref` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
+> La orden nace `pending_payment` con una línea `pending` por ítem y los importes copiados; el dinero es int64 en centavos en todo el sistema. La línea se arma copiando la `machine.Ref` del ítem y nada más: no hay un `MachineType` aparte que setear ni que pueda desincronizarse.
 
 ## internal/order/payment.go
 
@@ -1652,7 +1702,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Es el único disparador del despacho y tiene que ser inofensivo si el proveedor de pagos repite el webhook: si la orden ya no está `pending_payment`, responde nil sin tocar nada.
 >
-> La orden se escribe dos veces. Primero `paid` con `PaidAt`, que es la evidencia del cobro, sobre la versión que se acaba de leer. Después `dispatching`, partiendo de la orden que devolvió el primer guardado —con su versión nueva—: una línea sólo sale de `pending` por `sent`, así que sin ese estado intermedio una orden cuyas dos líneas fallan no tendría arista legal hasta `failed`. Recién entonces se lanza una goroutine por línea, cada una escribiendo su propio slot del slice de errores — sin lock compartido.
+> La orden se escribe dos veces (`claimPaid`). Primero `paid` con `PaidAt`, que es la evidencia del cobro, sobre la versión que se acaba de leer. Después `dispatching`, partiendo de la orden que devolvió el primer guardado —con su versión nueva—: una línea sólo sale de `pending` por `sent`, así que sin ese estado intermedio una orden cuyas dos líneas fallan no tendría arista legal hasta `failed`. Recién entonces llama a `dispatchLines` con `context.WithoutCancel(ctx)`.
 >
 > Esa versión es lo que separa dos `/pay` concurrentes. Si el choque llega en el guardado a `paid`, la respuesta es nil y nada más: el otro `/pay` ya registró el cobro y va a despachar, así que reintentar sería cobrar dos veces o despachar dos veces. Si llega en el guardado a `dispatching`, en cambio, el error se devuelve y no se despacha: sin ese estado no hay arista legal hacia la entrega.
 >
@@ -1660,9 +1710,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Ese plazo por línea es igual al **plazo de reclamo** (`e.deadline`, 2 min por defecto), que es el número que `dispatchLine` escribe en `DeadlineAt` en cada vuelta. Que sean la misma constante y no dos parecidas no es estética: el barrido declara vencida una línea mirando `DeadlineAt`, así que un despacho autorizado a vivir más que su propio reclamo seguiría en vuelo cuando el barrido ya lo dio por abandonado. El `cancel` se difiere dentro de la goroutine de la línea, así que el temporizador se libera en cuanto esa línea termina. Si el plazo vence, `Dispatch` vuelve con `context.DeadlineExceeded`, `classifyDispatch` lo lee como «no sabemos» y la línea queda `in_doubt` para que la reconciliación pregunte —nunca `failed`, porque cobrar sin entregar no se arregla con un reintento a ciegas (invariante 8)—.
 >
-> Al final `dispatchLines` **recarga y asienta** la orden con `settleOrder` (`refreshOrderStatus` + `notifyOrder`), que deriva el estado con `AdvanceOrder` sobre las líneas leídas y avisa si quedó `failed`, `in_doubt` o `partial` —con el mismo dedupe que callback y barrido—. Esa recarga también usa el contexto separado: el estado de una orden que ya se despachó tiene que persistirse y avisarse aunque el cliente se haya ido. Derivar de la copia en memoria que las goroutines mutaron sería leer exactamente aquello que se quería verificar.
+> Sólo los errores de store o de un panic recuperado vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
+
+### dispatchLines / handleDispatchPanic / markPanickedLineInDoubt
+
+> Lanza una goroutine por línea —cada una escribe en su propio slot de `failures` y `panicked`, sin lock compartido— y recupera cualquier `panic` con un `defer` dedicado.
 >
-> Sólo los errores de store vuelven de acá; el fallo de una máquina no es un error de infraestructura sino un resultado que se persiste.
+> Si una goroutine entra en panic, `handleDispatchPanic` registra el `panic` y su `debug.Stack()` en `ERROR` (`recoverPanic`) y llama a `markPanickedLineInDoubt`: recarga la línea, sale sin tocarla si ya está cerrada, y si sigue abierta la pasa a `in_doubt` con `DeadlineAt` en `e.reconcileInterval` y `ReconcileUntil` en `e.reconcileWindow` (reintentando una vez ante `store.ErrStale`) para que el barrido la reconcilie contra la máquina.
+>
+> Al terminar el `wg.Wait()`, `dispatchLines` **recarga y asienta** la orden con `settleOrder` (`refreshOrderStatus` + `notifyOrder`), que deriva el estado con `AdvanceOrder` sobre las líneas leídas y avisa si quedó `failed`, `in_doubt` o `partial` —con el mismo dedupe que callback y barrido—. Esa recarga también usa el contexto separado: el estado de una orden que ya se despachó tiene que persistirse y avisarse aunque el cliente se haya ido.
+>
+> Si además alguna línea sufrió un panic (`panickedLines`), emite aparte un aviso único `notify.KindDispatchPanic` vía `notifyOnce` nombrando las líneas afectadas: usar un tipo de aviso propio preserva intacta la clave de deduplicación `order_in_doubt` de `settleOrder`.
 
 ## internal/order/dispatch.go
 
@@ -1804,11 +1862,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El worker que cierra E4: lee las líneas vencidas y le pregunta al proveedor qué pasó realmente con cada una. Las procesa de a una, en serie: un worker corre sobre una cadencia y el manejo de fallos se lee de arriba abajo. `limit` es la perilla — una máquina lenta retrasa el lote entero.
 >
+> Al apagarse el proceso (`ctx.Err() != nil`), `SyncOverdueLines` corta antes de consultar o iniciar trabajo nuevo —al principio, antes de cada línea vencida o estancada y antes de `StalledLines`—, mientras que las órdenes ya tocadas sí ejecutan `settleOrder` con `context.WithoutCancel(ctx)`. En `reconcileLine`, si `machine.Reconcile` falla por cancelación del contexto (`errors.Is(reconcileErr, ctx.Err())`), devuelve el error sin llamar a `extendReconcile` para no gastar presupuesto de reconciliación; en cambio, una vez que el proveedor respondió (o ante cualquier otro error), persiste el cierre o la reprogramación con `context.WithoutCancel(ctx)` para no dejar a medias un resultado ya conocido.
+>
 > Los errores no cortan el lote: se acumulan y se devuelven juntos, para que una línea que falló no deje sin reconciliar a las demás. Un error de consulta no pierde la línea: se trata como «sigue en duda» y se agenda el próximo intento.
 >
 > `reconcileLine` busca el driver con `line.Machine.Kind`, igual que el despacho, y por eso una línea que se reconcilia después de un reinicio elige exactamente el mismo driver que la despachó.
 >
-> Después del lote vencido viene el otro: `StalledLines(ahora - plazo, limit)` trae las líneas que nunca se reclamaron, y por cada una se llama a `resumeStalledLine`. Esa función hace tres cosas en este orden y el orden importa. Primero `refreshOrderStatus`: una orden que quedó en `paid` porque el guardado a `dispatching` chocó con otro escritor (C3) no puede despachar sus líneas desde `paid` sin que el estado lo refleje, y `AdvanceOrder` es el único lugar donde se deriva. Después **recarga la línea** con `LoadOrder`: entre el `StalledLines` y este punto otro escritor pudo reclamarla o cerrarla, y despachar la copia vieja sería despachar dos veces; el `DeadlineAt` en cero es la condición que decide, no el estado de la copia. Sólo entonces `dispatchLine`, que vuelve a reclamar con `SaveLine` y por eso mismo es seguro: si otro ganó ese guardado, devuelve nil sin llamar a la máquina.
+> Después del lote vencido viene el otro: `StalledLines(ahora - plazo, limit)` trae las líneas que nunca se reclamaron, y por cada una se llama a `resumeStalledLine`. Esa función hace tres cosas en este orden y el orden importa. Primero `refreshOrderStatus`: una orden que quedó en `paid` porque el guardado a `dispatching` chocó con otro escritor (C3) no puede despachar sus líneas desde `paid` sin que el estado lo refleje, y `AdvanceOrder` es el único lugar donde se deriva. Después **recarga la línea** con `LoadOrder`: entre el `StalledLines` y este punto otro escritor pudo reclamarla o cerrarla, y despachar la copia vieja sería despachar dos veces; el `DeadlineAt` en cero es la condición que decide, no el estado de la copia. Antes de despachar comprueba una vez más `ctx.Err() != nil`, y sólo entonces llama a `dispatchWithinDeadline` con `context.WithoutCancel(ctx)` para que el despacho, una vez iniciado, termine su guardado igual que en `MarkPaid`. `dispatchLine` vuelve a reclamar con `SaveLine` y por eso mismo es seguro: si otro ganó ese guardado, devuelve nil sin llamar a la máquina.
 >
 > Las órdenes tocadas se asientan al final con `settleOrder`, igual que las que cerraron una línea, y el `seen` compartido evita asentarlas dos veces cuando la misma orden aparece por los dos caminos. Los errores se acumulan con los del primer lote: una línea que falló no deja sin recuperar a las demás.
 >
@@ -1832,7 +1892,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > La cabecera también compite —el callback de snacks, `MarkPaid` y el barrido escriben la misma orden—, así que el guardado lleva versión y `refreshOrderStatus` reintenta **una sola vez** ante `ErrStale`: recarga y vuelve a derivar. Un segundo `ErrStale` se devuelve como error, porque un tercer escritor significa que reintentar es una carrera sin final. El reintento es seguro acá, a diferencia de la línea: el estado no se inventa, se vuelve a derivar de las líneas frescas.
 >
-> `settleOrder` es `refreshOrderStatus` más el aviso; también la cola de `dispatchLines` en `payment.go` llama a `settleOrder`, para que una orden que termina `failed` o `in_doubt` en el despacho inicial avise igual que por callback o barrido y quede deduplicada si después llega un callback tardío.
+> `settleOrder` es `refreshOrderStatus` más el aviso; también la cola de `dispatchLines` en `payment.go` llama a `settleOrder`, para que una orden que termina `failed`, `in_doubt` o `partial` en el despacho inicial avise igual que por callback o barrido y quede deduplicada si después llega un callback tardío.
 >
 > Un aviso por orden afectada, y sólo cuando el estado final es duda (`order_in_doubt`), fallo (`order_failed`) o entrega parcial (`order_partial`): es la excepción que necesita una persona, no un parte de novedades. El detalle va en español porque lo lee alguien del equipo, no un programa.
 >
@@ -1884,13 +1944,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### decodeCreateOrder
 
-> El cuerpo se lee con `DisallowUnknownFields` y con un tope de tamaño, y se exige un único objeto JSON. Un cuerpo inválido no llega a crear nada.
+> El cuerpo se lee con `DisallowUnknownFields` y con un tope de tamaño, y se exige un único objeto JSON. Un cuerpo inválido no llega a crear nada. `combo_id` y `client_key` se recortan con `strings.TrimSpace` antes de validar: así un espacio accidental en `combo_id` no devuelve 404 ni cuenta como clave distinta. `client_key` tiene un tope de `maxClientKeyRunes` (128 runas UTF-8); si lo supera se rechaza con 400.
 
 ## internal/httpapi/errors.go
 
-### fail
+### fail / failWithOrder / appendOrderID
 
-> `fail` es el único lugar que decide el código de estado: los errores propios viajan como `apiError` con su status, `catalog.ErrNotFound` y `store.ErrNotFound` son 404, y el resto es 500 con el detalle sólo en el log, nunca en la respuesta. El `path` que va al log pasa por `redactCallbackPath`: el secreto de los callbacks viaja en la ruta y no puede quedar escrito.
+> `fail` delega en `failWithOrder` y es el único lugar que decide el código de estado: los errores propios viajan como `apiError` con su status, `catalog.ErrNotFound` y `store.ErrNotFound` son 404, `order.ErrNotPayable` y `order.ErrClientKeyConflict` son 409, `order.ErrAvailabilityUnavailable` y `order.ErrQRUnavailable` son 502 (con log de error), `NotSellableError` es 409 con la lista de razones, y el resto es 500 con el detalle sólo en el log, nunca en la respuesta.
+>
+> `failWithOrder` permite pasar el `order_id` explícito cuando ya se creó la orden (como en `createOrder` si falla `RequestQR`), y si llega vacío intenta leerlo de `r.PathValue("id")` o `r.PathValue("orderId")`. `appendOrderID` agrega `order_id` sólo si no es vacío, y `logError` escribe con `logger.ErrorContext` pasando `path` por `redactCallbackPath` para que el secreto del callback no quede escrito.
 
 ## internal/httpapi/responses.go
 
@@ -1932,15 +1994,15 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### ApplyCallback / SyncLineFromCallback
 
-> `ApplyCallback` aplica el estado que informa el proveedor: entregado, fallido con su motivo, o en elaboración. `SyncLineFromCallback` **ignora** el estado del callback para cerrar y consulta al proveedor; el único uso que le da al callback es el de "en curso", que sube la línea a elaboración porque es información cierta y visible para la tablet, sin poder cerrar nada.
+> `ApplyCallback` aplica el estado que informa el proveedor: entregado, fallido con su motivo, o en elaboración. `SyncLineFromCallback` **ignora** el estado del callback para cerrar y consulta al proveedor; el único uso que le da al callback es el de "en curso", que intenta subir la línea a elaboración con `markBrewing` porque es información cierta y visible para la tablet, sin poder cerrar nada. Si `markBrewing` devuelve una línea que otro escritor ya cerró (`lineClosed`), `SyncLineFromCallback` asienta la orden y registra el callback sin llamar a `reconcileLine`.
 >
 > Los dos terminan recalculando el estado de la orden, y sólo después. Una línea cerrada no arregla la orden sola: sin ese paso la orden se quedaba en `dispatching` para siempre.
 
-### markBrewing
+### markBrewing / saveBrewingLine
 
-> Devuelve si aplicó, y el llamador sólo toca el estado en memoria cuando aplicó. La primera versión forzaba `linestate.Brewing` aunque la transición fuera ilegal, y eso permitía que un callback «en curso» que llegaba tarde degradara una línea ya entregada: el reconcile posterior le escribía encima `in_doubt` o `failed`. Una transición ilegal ahora es silencio, no error: si el callback dice «en curso» cuando la línea todavía no salió, se deja como está y sigue mandando el worker.
+> `markBrewing` devuelve `(store.Line, error)` —la última versión persistida de la línea, no un booleano—. La primera versión devolvía un `bool`, y tras un `ErrStale` `SyncLineFromCallback` seguía hacia `reconcileLine` con la versión vieja de la línea (sin la extensión de plazo o el cierre recién guardado).
 >
-> `ErrStale` también termina en `(false, nil)`: significa que otro escritor tocó la línea entre la lectura y el guardado, y en esa carrera «en curso» es siempre la información más débil —un cierre entregado o fallido la supera, y si el otro escritor sólo movió un plazo no hay nada que corregir—. Devolver error obligaría al handler a responder 500 y el proveedor reintentaría un aviso que ya no puede aplicar; devolver `false` deja que el flujo siga y que el que ganó mande.
+> `saveBrewingLine` trata como no-op `(line, nil)` si la línea ya está `brewing`, si está cerrada o si la transición a `brewing` no es legal (nunca degrada una línea entregada ni falla por ello). Si `SaveLine` responde `ErrStale`, `markBrewing` recarga con `reloadLine`, conserva `line.Ref` si faltaba y reintenta `saveBrewingLine` **una sola vez**. Si el reintento vuelve a dar `ErrStale`, recarga la última copia (`latest`), conserva `Ref`, registra un `WARN` con `order_id`, `line_id` y `state`, y devuelve `(latest, nil)` para que `SyncLineFromCallback` siga con la versión vigente sin obligar al proveedor a reintentar con un 500.
 
 ## internal/httpapi/callbacks.go
 
@@ -1976,11 +2038,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### writeCallbackResult / acknowledgeBrokenCallback / decodeCallback
 
-> El mapeo de errores a código de respuesta es una decisión sobre el proveedor, no sobre nosotros: **sólo se devuelve error cuando reintentar puede ayudar**. Nada que cerrar (`ErrCallbackUnknownLine`, orden inexistente), un callback ambiguo (`ErrCallbackAmbiguous`), un cuerpo roto y un evento incompleto se acusan recibo con 200 y quedan en el log: son casos que no se van a poder aplicar nunca y un 4xx los volvería un reintento eterno. La ambigüedad se registra con nivel de error y no de aviso: dos líneas candidatas significan que algo se descartó mal, y una persona tiene que mirarlo. Lo demás es 500, que es el único caso donde el reintento sirve, y desde la corrección de arriba ya no hay clave quemada que lo inutilice.
+> El mapeo de errores a código de respuesta es una decisión sobre el proveedor, no sobre nosotros: **sólo se devuelve error cuando reintentar puede ayudar**. Nada que cerrar (`ErrCallbackUnknownLine`, orden inexistente), un callback ambiguo (`ErrCallbackAmbiguous`), un cuerpo roto y un evento incompleto se acusan recibo con 200 y quedan en el log: son casos que no se van a poder aplicar nunca y un 4xx los volvería un reintento eterno. La ambigüedad se registra con nivel de error y no de aviso: dos líneas candidatas significan que algo se descartó mal, y una persona tiene que mirarlo. Lo demás delega en `failWithOrder` (500 con `order_id`), que es el único caso donde el reintento sirve, y desde la corrección de arriba ya no hay clave quemada que lo inutilice.
 >
 > Los cuerpos de los proveedores se decodifican **sin** `DisallowUnknownFields`, al revés que el cuerpo de la tablet: sus contratos pueden crecer y no quiero que un campo nuevo rompa la recepción.
 >
-> Los tres logs de este bloque usan `redactCallbackPath` en lugar del path crudo: el secreto de la ruta nunca se escribe completo.
+> Los logs de este archivo usan `redactCallbackPath` en lugar del path crudo, las variantes `Context` del logger para propagar `request_id`, y `appendOrderID` para incluir `order_id` cuando el callback lo trae.
 
 ## internal/httpapi/callback_url.go
 
@@ -1990,11 +2052,31 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > La base se normaliza sin barra final y los dos segmentos variables se escapan con `url.PathEscape`, porque el secreto y el `orderId` viajan dentro del path. Si algún día cambia la ruta, acá y en el patrón de `Register` están los únicos dos lugares que hay que acompañar: nadie más arma la URL a mano.
 
-### redactCallbackPath
+### redactCallbackPath / unescapePathBounded
 
-> El secreto del callback viaja en el path, así que escribirlo completo en el log equivale a publicarlo: cualquiera con acceso al log puede forjar cierres de línea contra la máquina. Se conserva sólo el origen —lo que hace falta para saber qué proveedor avisó— y se tapa el resto.
+> El secreto del callback viaja en el path, así que escribirlo completo en el log equivale a publicarlo: cualquiera con acceso al log puede forjar cierres de línea contra la máquina. Para evitar bypasses con doble percent-encoding, barras invertidas (`\`) o segmentos `..`, `unescapePathBounded` decodifica de forma acotada hasta 4 pasadas (cayendo a decodificación por segmento si un segmento está mal formado), normaliza `\` a `/` y limpia con `path.Clean`. Si aparece un segmento `callbacks` (sin importar mayúsculas), tapa todo lo posterior como `/callbacks/***`.
 >
-> Cualquier otra ruta se devuelve intacta: la redacción es una regla de los callbacks, no un filtro general de logs.
+> Cualquier otra ruta se devuelve limpia sin recortar: la redacción es una regla de los callbacks, no un filtro general de logs.
+
+## internal/httpapi/middleware.go
+
+### Wrap
+
+> Compone la cadena de middlewares alrededor del `ServeMux`: `requestIDMiddleware(accessLogMiddleware(logger, recoverMiddleware(logger, next)))`. El orden importa: `requestIDMiddleware` va por fuera para que tanto `accessLogMiddleware` como `recoverMiddleware` y el handler tengan `request_id` en el contexto y la cabecera `X-Request-Id` ya escrita.
+
+### requestIDMiddleware / newRequestID
+
+> Genera un identificador aleatorio de 16 bytes en hexadecimal (con respaldo en `UnixNano` si falla `crypto/rand`), lo escribe en `X-Request-Id` de la respuesta y lo inyecta en el contexto con `logging.WithRequestID` para que cualquier log con contexto lo incluya automáticamente.
+
+### accessLogMiddleware / statusRecorder / accessLogLevel / logPathAndRoute
+
+> Registra una entrada por cada pedido HTTP al salir (`pedido HTTP` con `method`, `path`, `status`, `duration_ms`, `bytes`, `route` si coincidió un patrón y `aborted: true` si la ejecución salió antes de completar por panic o aborto). El nivel sale de `accessLogLevel`: `ERROR` si abortó o `status >= 500`, `WARN` si `status >= 400`, e `INFO` en el resto.
+>
+> `logPathAndRoute` toma `r.Pattern` cuando el `ServeMux` enrutó la petición —así las rutas de callbacks nunca escriben el secreto aunque no pasen por la redacción— y para rutas no matcheadas usa `redactCallbackPath(r.URL.Path)`. `statusRecorder` implementa `Unwrap()` para no romper `http.ResponseController`.
+
+### recoverMiddleware
+
+> Captura panics dentro de los handlers HTTP sin derribar el servidor. Re-lanza `http.ErrAbortHandler` intacto (convención de `net/http` para abortar la conexión sin log adicional). Para cualquier otro panic, registra `ERROR` con `panic` y `debug.Stack()`; si los encabezados ya se enviaron (`sr.wroteHeader`), aborta limpiamente con `http.ErrAbortHandler` en vez de corromper la respuesta, y si no, responde 500 JSON genérico (`no se pudo completar la operación`).
 
 ## internal/config/validate.go — publicBaseURLProblems / callbackSecretProblems
 
@@ -2016,25 +2098,25 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Ignora un `nil` a propósito. Con la puerta en `nil` el motor no llama a nadie, así que los tests y los llamadores que ya existían siguen comportándose igual: el chequeo previo se enciende cableándolo, no se apaga con un interruptor de configuración.
 
-### ErrNotSellable
+### ErrNotSellable / ErrAvailabilityUnavailable
 
-> El error de negocio, comparable con `errors.Is` desde cualquier capa. La capa HTTP lo traduce a 409 y no necesita saber nada de `preflight`: sólo pregunta si el error es esto.
+> `ErrNotSellable` es el error de negocio, comparable con `errors.Is` desde cualquier capa: la capa HTTP lo traduce a 409 y no necesita saber nada de `preflight`. `ErrAvailabilityUnavailable` representa un fallo del proveedor o de red durante el chequeo previo: la capa HTTP lo traduce a 502 Bad Gateway para distinguirlo de un error interno propio (500).
 
 ### NotSellableError
 
 > Lleva las razones para que el mensaje se entienda sin abrir el log, y las expone como campo para que la respuesta HTTP las pueda listar. `Unwrap` devuelve `ErrNotSellable`, así que `errors.Is` funciona y `errors.As` sigue dando acceso a las razones. Sin razones el mensaje es sólo la frase: un bloqueo que no se pudo explicar no inventa una causa.
 
-## internal/order/place.go — CreateOrder y la puerta de disponibilidad
+## internal/order/place.go — CreateOrder, client_key y la puerta de disponibilidad
 
-> La consulta va exactamente en un lugar: **después** de validar el draft, **después** del lookup de idempotencia por `client_key` y **antes** de generar cualquier identificador. Las tres posiciones son decisiones, no casualidad.
+> La consulta a la puerta va exactamente en un lugar: **después** de validar el draft, **después** del lookup de idempotencia por `client_key` y **antes** de generar cualquier identificador. Las tres posiciones son decisiones, no casualidad.
 >
 > Después de validar, porque un draft inválido no merece una consulta al proveedor y su error es más útil que un «no vendible».
 >
-> Después de la idempotencia, porque un reintento que devuelve una orden existente no se vuelve a chequear: la orden ya existe y bloquear el reintento sería mentir sobre un pedido ya hecho. Si la máquina se cayó después de la compra, el problema es del despacho, no de la creación.
+> Después de la idempotencia, porque un reintento que devuelve una orden existente no se vuelve a chequear: la orden ya existe y bloquear el reintento sería mentir sobre un pedido ya hecho. Si la máquina se cayó después de la compra, el problema es del despacho, no de la creación. `matchClientKeyOrder` exige que la orden existente tenga el mismo `ComboID` y el mismo `KioskID`: si coinciden devuelve la orden existente; si no, registra un `WARN` con la orden previa y devuelve `ErrClientKeyConflict` (409 en HTTP). La misma verificación corre si dos pedidos con la misma `client_key` compiten en el `INSERT` y el segundo recibe `store.ErrAlreadyExists`.
 >
 > Antes de generar identificadores, porque un bloqueo no debe consumir ids ni dejar rastro en el store: si no se vende, no se creó nada.
 >
-> El error de la puerta se devuelve tal cual, sin envolver: un fallo del proveedor y un combo no vendible tienen que llegar distintos a la capa HTTP, que responde 500 o 409 según cuál sea.
+> El error de la puerta se devuelve tal cual, sin envolver: un fallo del proveedor (`ErrAvailabilityUnavailable`), un combo no vendible (`NotSellableError`) o un panic (`preflight.ErrPanic`) llegan distintos a la capa HTTP, que responde 502, 409 o 500 según cuál sea.
 
 ## internal/gate/gate.go
 
@@ -2052,7 +2134,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### Check
 
-> Un error del verificador se devuelve tal cual y **no** se convierte en `NotSellableError`: que un proveedor no conteste no es lo mismo que un combo agotado, y el llamador decide distinto en cada caso (reintentar sirve en uno, no en el otro). Sólo un resultado con `Sellable=false` se traduce al error de negocio, con las razones en el orden en que vinieron.
+> Un error del verificador se envuelve con `order.ErrAvailabilityUnavailable` (para que el borde HTTP responda 502 y no 500), **salvo** `preflight.ErrPanic`: si una rama del chequeo sufrió un panic, el error vuelve sin envolver para que HTTP responda 500 como falla interna y nunca lo disfrace de problema externo. Tampoco se convierte en `NotSellableError`: que un proveedor no conteste no es lo mismo que un combo agotado, y el llamador decide distinto en cada caso (reintentar sirve en uno, no en el otro). Sólo un resultado con `Sellable=false` se traduce al error de negocio, con las razones en el orden en que vinieron.
 
 ### request
 
@@ -2066,7 +2148,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `ErrNotSellable` es **409 Conflict**: el pedido está bien formado y el servidor lo entiende, pero el estado actual de las máquinas no permite crear la orden. Es un conflicto con el estado del recurso, no un error del cliente ni del servidor. El cuerpo lleva el mensaje en español y la lista de razones tomada del `NotSellableError` con `errors.As`, en el mismo orden en que las acumuló `preflight`. Sin razones se serializa una lista vacía y no `null`: el contrato del cuerpo dice lista.
 >
-> Un fallo del proveedor durante el chequeo **no** es 409: cae en el 500 que ya existía y sigue ahí por la misma razón, porque reintentar puede servir. Distinguirlos es lo que impide que la tablet le diga «combo agotado» a un cliente cuando en realidad el proveedor no contestaba.
+> Un fallo del proveedor durante el chequeo (`order.ErrAvailabilityUnavailable`) **no** es 409 ni 500: responde **502 Bad Gateway**, igual que `order.ErrQRUnavailable`, porque la falla está aguas arriba y la tablet puede reintentar. Un panic en `preflight` (`preflight.ErrPanic`) no viene envuelto en `ErrAvailabilityUnavailable`, así que sí cae en el 500. Distinguirlos impide que la tablet le diga «combo agotado» a un cliente cuando en realidad el proveedor no contestaba.
 
 ## internal/fakeapi/admin.go — NewAdmin / adminHandler / decodeAdmin
 
@@ -2087,7 +2169,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 > - `closeLine` — relee la orden, busca la línea por `ID` y decide: si ya está cerrada (`delivered` o `failed`) es un no-op exitoso, alguien con más autoridad la resolvió; si sigue abierta reintenta **una sola vez** la transición con la versión fresca. Nunca reabre ni reescribe un cierre ajeno, y la copia vieja —con su `Ref` vacío— no llega al store.
 > - `extendReconcile` — `(false, nil)`. La línea ya tiene dueño: no se reprograma ni se cierra, porque rearmar un plazo sobre una línea que otro acaba de cerrar es reabrirla de costado.
 > - `dispatchLine` — nil, sin revertir nada. El efecto del despacho ya ocurrió y el estado de la línea lo resuelve la reconciliación con lo que diga el proveedor; el cierre del intento ya se registró antes, así que no se pierde la evidencia.
-> - `markBrewing` — `(false, nil)`. «En curso» es la información más débil de las tres y no gana una carrera contra un cierre o contra un aplazo.
+> - `markBrewing` — ante `ErrStale`, recarga con `reloadLine`, conserva `line.Ref` si faltaba y reintenta **una sola vez** `saveBrewingLine`. Si vuelve a chocar, recarga la última versión, conserva `Ref`, deja un `WARN` y devuelve `(latest, nil)` para que `SyncLineFromCallback` siga con la versión fresca (y omita `reconcileLine` si la línea ya cerró).
 > - `settleOrder`, `CreateOrder` y `MarkPaid` — sin reacción propia: escriben la orden, no la línea, y `SaveOrder` guarda sólo la cabecera.
 >
 > La carrera se demuestra sin goroutines, porque una carrera reproducida por suerte no es un test. `staleDueStore` (`internal/order/callback_test.go`) guarda la copia que devolvió `OverdueLines` y la repite en las llamadas siguientes: es exactamente el estado en el que está el worker cuando el callback se le adelanta. El test `TestSyncOverdueLinesDoesNotOverwriteTheCloseThatACallbackAlreadyMade` copia la línea abierta, la cierra por el camino real del callback —que además adopta un `Ref`— y recién ahí corre el barrido con la copia vieja, en tres variantes según lo que la máquina le conteste al worker (cierre fallido, entrega y aplazo). Las tres afirman lo mismo: la línea sigue `delivered`, el `Ref` adoptado sigue ahí, los plazos siguen en cero, no hay error en `LastError` y la orden sigue `delivered`.
@@ -2329,7 +2411,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### main
 
-> Sin `DATABASE_URL` no hay nada que hacer y el error es explícito —el nombre de la variable, no un «no se pudo conectar»— y la salida es 1: en el compose eso corta el arranque de `api`, que espera `service_completed_successfully`. Los mensajes son los de siempre, español y capitalizados por `internal/logging`.
+> Construye el logger JSON con `logging.NewFromEnv` (si `LOG_LEVEL` es inválido, lo registra con `logging.New` en nivel `info` y sale con código 1). Sin `DATABASE_URL` no hay nada que hacer y el error es explícito —el nombre de la variable, no un «no se pudo conectar»— y la salida es 1: en el compose eso corta el arranque de `api`, que espera `service_completed_successfully`. Los mensajes son los de siempre, español y capitalizados por `internal/logging`.
 
 ### run
 
@@ -2363,7 +2445,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ## cmd/api/main.go — openStore
 
-> `openStore` devuelve el store del puerto más su cierre, y por eso el `main` puede tener un solo `defer closeStore()` sin saber cuál de los dos motores salió. Con `memory` avisa con el `WARN` de siempre: el estado se pierde al reiniciar y sólo puede correr una instancia. Con `postgres` abre, siembra y, si el sembrado falla, cierra lo abierto antes de devolver el error: un store abierto que nadie va a usar es una conexión colgada.
+> `openStore` devuelve el store del puerto más su cierre (`closeStore`), y por eso el `main` puede trabajar con un único cierre sin saber cuál de los dos motores salió. Con `memory` avisa con el `WARN` de siempre: el estado se pierde al reiniciar y sólo puede correr una instancia. Con `postgres` abre, siembra y, si el sembrado falla, cierra lo abierto antes de devolver el error: un store abierto que nadie va a usar es una conexión colgada. Si falla la construcción de la API se llama a `closeStore()` directo, y en el cierre normal se pasa a `shutdown` para cerrar la base recién al final, después de drenar HTTP, barrido y despachos.
 >
 > El sembrado usa un contexto propio con tope de 30 segundos, no el del servidor: en ese punto las señales todavía no están conectadas y una base que no responde dejaría el arranque colgado para siempre.
 
@@ -2371,13 +2453,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Dos etapas para no llevar compilador a producción: `golang:1.23` compila con `CGO_ENABLED=0` y la imagen final es `gcr.io/distroless/static:nonroot`, sin shell, sin gestor de paquetes y con usuario no root. `-trimpath` y `-ldflags "-s -w"` sacan rutas locales y símbolos de depuración del binario.
 >
-> Hay tres etapas finales, `runtime`, `migrate` y `fakeapi`, porque el compose necesita tres binarios con la misma receta de compilación: la API, el runner de esquema y los proveedores falsos. `migrate` es el más chico de los tres: un proceso que corre una vez, aplica lo pendiente y termina, así que la etapa final no expone puerto ni necesita shell. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`, `migrations`) y no `COPY . .`: así el contexto no arrastra `.git`, `design/` ni los documentos de terceros, y con BuildKit ni siquiera se envían. `migrations` tiene que estar en esa lista porque los `.sql` se compilan adentro (`//go:embed`), no se montan en tiempo de ejecución.
+> Hay tres etapas finales, `runtime`, `migrate` y `fakeapi`, porque el compose necesita tres binarios con la misma receta de compilación: la API, el runner de esquema y los proveedores falsos. `migrate` es el más chico de los tres: un proceso que corre una vez, aplica lo pendiente y termina, así que la etapa final no expone puerto ni necesita shell. El `COPY` es explícito (`go.mod`, `go.sum`, `cmd`, `internal`, `migrations`) y no `COPY . .`: así el contexto no arrastra `.git`, `docs/` ni los documentos de terceros, y con BuildKit ni siquiera se envían. `migrations` tiene que estar en esa lista porque los `.sql` se compilan adentro (`//go:embed`), no se montan en tiempo de ejecución.
 >
 > La imagen no lleva secretos: todo entra por variables de entorno en tiempo de ejecución.
 
 ## docker-compose.yml
 
-> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` construye el *target* `migrate` del `Dockerfile`, apunta `DATABASE_URL` a `db`, corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien (`service_completed_successfully`), y `fakeapi` levanta los dos proveedores falsos.
+> Cuatro servicios que reproducen el orden real de un despliegue. `db` es `postgres:16` con volumen nombrado y `healthcheck` de `pg_isready`. `migrate` construye el *target* `migrate` del `Dockerfile`, apunta `DATABASE_URL` a `db`, corre una vez y termina. `api` depende de la base sana y de que `migrate` haya terminado bien (`service_completed_successfully`), declara `stop_grace_period: 75s` (10 s de apagado HTTP + 60 s de drenaje + 5 s de margen antes de `SIGKILL`), y `fakeapi` levanta los dos proveedores falsos.
 >
 > `migrate` ya no usa la imagen de Postgres ni monta `./migrations`: los `.sql` viajan dentro del binario y la versión aplicada queda en `schema_migrations`, así que el segundo `up` es un no-op y no un fallo de DDL repetido. Un volumen anterior a este cambio tiene las tablas y no tiene la tabla de control: el runner intentaría aplicarlos de nuevo y fallaría en la primera sentencia, así que ese caso se resuelve una sola vez con `docker compose down -v` (S6/L18: no hay compatibilidad con volúmenes viejos). `restart: "no"` es lo que hace que el `up` siga y que un fallo se vea en el estado del servicio en vez de reintentarse para siempre.
 >
@@ -2481,7 +2563,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `VerifySignature` reproduce el validador oficial: arma `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`, omite un par vacío, calcula HMAC-SHA256 con el secreto del webhook y compara en tiempo constante (`hmac.Equal` sobre los bytes, no sobre el texto hex). Dos detalles que el diseño no tenía y salen del SDK oficial de Go: **`data.id` va en minúsculas** dentro del manifiesto, y el encabezado puede traer espacios y los pares en cualquier orden. La ventana de `ts` es de 5 minutos para los dos lados: un aviso del futuro también es sospechoso. Un `data.id` vacío se rechaza aunque el SDK lo admita, porque sin él no hay qué consultar. `SignatureHeader` es la operación inversa y existe para el Mercado Pago falso.
 
-## internal/payments/mercadopago — tests (rama `tests/mercadopago`)
+## internal/payments/mercadopago — tests (rama `archive/tests`)
 
 > El vector de la firma se calculó fuera de Go, con Python (`hmac`) y `openssl dgst -hmac`, que coincidieron; así el test no se valida contra la misma implementación que prueba. El `data.id` del vector está en mayúsculas a propósito: sacar el `ToLower` pone en rojo cinco tests, y eso se verificó mutando el código. Los tests del cliente usan `httptest` y fijan el cuerpo enviado campo por campo, la clave de idempotencia, que un pedido inválido no sale de la máquina, que el token no aparece en los errores y que un id con `../` no escapa de `/v1/orders`.
 
@@ -2511,7 +2593,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Arma el aviso como el real: `POST <-mp-webhook-url>?data.id=<ORD…>&type=order`, con `X-Request-Id` aleatorio por envío y `X-Signature` firmado con `mercadopago.SignatureHeader`, la misma función que valida del otro lado. Cuerpo mínimo, porque nuestra API no lo lee: la firma no lo cubre. El estado se copia bajo el candado y el envío sale sin el candado, así un webhook lento no bloquea la API falsa. La respuesta de la administración informa el código HTTP que devolvió nuestra API y la URL **con el secreto de ruta tapado**. Sin `-mp-webhook-url` no envía nada y lo dice (`"sent": false`).
 
-## internal/fakeapi/mercadopago_test.go (rama `tests/mercadopago`)
+## internal/fakeapi/mercadopago_test.go (rama `archive/tests`)
 
 > Los tests conectan el adaptador real de la unidad 2a con el falso y un receptor `httptest` que valida cada aviso con `mercadopago.VerifySignature`: es la prueba de que el cliente, el falso y la firma hablan el mismo idioma. Cubren la idempotencia del alta, el pago con y sin monto distinto, el vencimiento en el borde exacto de 180 s, la cancelación repetida, la cancelación de una orden pagada (`ErrNotCancelable`), el reenvío con un `x-request-id` nuevo, el token equivocado y que la URL devuelta no expone el secreto. Firmar con un secreto equivocado pone en rojo el test del aviso; eso se verificó mutando el código.
 
@@ -2519,7 +2601,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### MarkPaid / claimPaid / dispatchLines
 
-> `MarkPaid` se partió en dos sin cambiar lo que hace: `claimPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos y cierre con `settleOrder` para avisar si la orden terminó `failed` o `in_doubt` en el despacho inicial. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
+> `MarkPaid` se partió en dos sin cambiar lo que hace: `claimPaid` es la parte corta y sincrónica (`pending_payment → paid → dispatching`, y dice si fue esta llamada la que la movió) y `dispatchLines` es la larga, el despacho en paralelo con su plazo de 2 minutos y cierre con `settleOrder` para avisar si la orden terminó `failed`, `in_doubt` o `partial` en el despacho inicial. El pago simulado del sandbox las llama una tras otra, como antes; el webhook de Mercado Pago llama a la primera en el momento y lanza la segunda en segundo plano.
 
 ### WithQRPayments / WithQRExpiry
 
@@ -2527,15 +2609,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### WithBackground / WithBackgroundErrors / Wait / spawn
 
-> El despacho que dispara un webhook corre fuera del request, pero no suelto: `spawn` lo registra en un `WaitGroup` y `Wait` permite que el apagado espere los despachos en curso. Un error del despacho en segundo plano no tiene a quién volver, así que va a `WithBackgroundErrors` (en `cmd/api`, un log). `WithBackground` existe para que los tests corran el despacho en el mismo goroutine y no tengan que esperar.
+> El despacho que dispara un webhook corre fuera del request, pero no suelto: `spawn` lo registra en un `WaitGroup` (`inFlight`) bajo `bgMu` y `Wait` permite que el apagado espere los despachos en curso. Al empezar el cierre, `Wait` marca `closed = true` bajo `bgMu` antes de esperar `inFlight.Wait()`; si `spawn` llega después de ese punto, no lanza goroutines nuevas y registra un `WARN` para que `resumeStalledLine` retome el despacho al reiniciar. Además, la tarea de `spawn` envuelve la ejecución con `recover()`: ante un panic llama a `recoverPanic` (loguea mensaje y `stack`) y reporta el error por `WithBackgroundErrors` (en `cmd/api`, un log) en vez de derribar el proceso. `WithBackground` existe para que los tests corran el despacho en la misma goroutine y no tengan que esperar.
 
 ### RequestQR
 
 > Idempotente por orden: si la orden ya tiene un pago guardado, lo devuelve **tal como está** —pendiente, vencido o pagado— y no llama a Mercado Pago. Si no lo tiene, crea el QR en Mercado Pago **antes** de guardarlo: si el guardado falla, el reintento vuelve a llamar con la misma clave de idempotencia (el id de la orden) y recibe el mismo QR, así que nunca queda un QR cobrable sin registro. Dos pedidos simultáneos chocan en `ErrAlreadyExists` y el perdedor devuelve el del ganador. Sólo se pide QR para una orden `pending_payment` con importe positivo (`ErrNotPayable`).
 
-### SyncPayment
+### SyncPayment / orderError / OrderIDFromError
 
 > La entrada del webhook. Nunca usa el cuerpo del aviso: pregunta a Mercado Pago (`Lookup`) y obedece la respuesta. El cobro tiene que apuntar, por `external_reference`, a una orden nuestra **y** ser el mismo cobro que esa orden tiene guardado; si no, es `ErrUnknownCharge` y el webhook responde 200 igual, porque reintentar no lo va a arreglar.
+>
+> Cuando `SyncPayment` ya resolvió la intención de pago y conoce `intent.OrderID`, envuelve cualquier error posterior con `wrapOrderError` (`*orderError`, que preserva `Unwrap` para `errors.Is`). Así el borde HTTP (`httpapi/mercadopago.go`) extrae `order_id` con `OrderIDFromError` para incluirlo en los logs sin cambiar el tipo ni el centinela del error.
 
 ### applyCharge
 
@@ -2554,14 +2638,16 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### SyncPendingPayments
 
 > El barrido de los pagos `pending` con más de 10 s (antes, la tablet acaba de mostrar el QR y el webhook todavía puede llegar). Recupera el webhook que no llegó con el mismo `applyCharge`. Si el cobro sigue pendiente y pasaron 30 s del vencimiento, le pide a Mercado Pago que lo cancele y aplica **su** respuesta; si Mercado Pago no acepta cancelar (`ErrNotCancelable`), consulta de nuevo y obedece lo que diga: así un pago que entró justo al vencer se despacha en lugar de perderse. Un error en un pago no frena a los demás.
+>
+> Durante el apagado, revisa `ctx.Err() != nil` al entrar, en cada iteración del bucle y antes de pedir la cancelación en `reconcilePayment`, de modo que no inicia llamadas nuevas cuando el contexto ya se canceló; una vez recibida la respuesta de Mercado Pago, `applyCharge` corre con `context.WithoutCancel(ctx)` para persistirla aunque la señal de cierre haya llegado en el medio.
 
 ### notifyOnce
 
-> Lo que antes vivía dentro de `notifyOrder` —consultar el registro, avisar, anotar— salió a una función propia para que los avisos de pago (`payment_mismatch`, `payment_unknown`) usen el mismo dedupe por `(orden, tipo)` que los de despacho.
+> Lo que antes vivía dentro de `notifyOrder` —consultar el registro, avisar, anotar— salió a una función propia para que los avisos de pago (`payment_mismatch`, `payment_unknown`) y los de panic en despacho (`dispatch_panic`) usen el mismo dedupe por `(orden, tipo)` que los de cierre.
 >
-> Si el evento llega sin mueble (los avisos de pago sólo tienen el `payment_intent`), lo completa cargando la orden. Esa carga es la única que se hace sólo cuando el aviso de verdad sale (después del dedupe), y si falla el aviso sale igual sin mueble: el dato es para soporte, no puede frenar el aviso.
+> Si el evento llega sin mueble (los avisos de pago y el de panic sólo tienen `order_id`), lo completa cargando la orden. Esa carga es la única que se hace sólo cuando el aviso de verdad sale (después del dedupe), y si falla el aviso sale igual sin mueble: el dato es para soporte, no puede frenar el aviso.
 
-## internal/order/charge_test.go (rama `tests/mercadopago`)
+## internal/order/charge_test.go (rama `archive/tests`)
 
 > Fixtures propios (gateway programable, dispenser que cuenta despachos, notificador que registra) porque los helpers del motor viven en `archive/tests`. Fijan la idempotencia de `RequestQR`, el pago correcto con un despacho por línea aunque el webhook se repita, el monto de más y de menos, el vencimiento y la cancelación, el estado desconocido, los cobros ajenos, la recuperación de un corte entre la orden y el pago, el cobro de una orden cancelada, que el webhook responde con la orden en `dispatching` **antes** de que termine el despacho, y los bordes del barrido (10 s de antigüedad, 30 s de margen). Cuatro mutaciones verificadas en rojo: sacar la comparación de montos, el margen de cancelación, la obediencia ante `ErrNotCancelable` y el chequeo de pago cerrado.
 
@@ -2579,7 +2665,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > El `external_pos_id` de la caja de Mercado Pago del mueble. La Orders API lo exige también en modo dinámico: sin caja no hay QR.
 
-## internal/config/mercadopago_test.go (rama `tests/mercadopago`)
+## internal/config/mercadopago_test.go (rama `archive/tests`)
 
 > Escribe un JSON mínimo por caso y limpia las variables `MP_*` para que el entorno de quien corre los tests no se cuele. Cubre el modo simulado, la configuración completa con la URL por defecto, que las variables pisan al archivo y los ocho caminos de error.
 
@@ -2591,7 +2677,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### createOrder
 
-> Con Mercado Pago, después de `CreateOrder` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo.
+> Con Mercado Pago, después de `CreateOrder` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo; el error pasa por `failWithOrder(..., placed.ID)` para que el log lleve `order_id`.
 
 ### readOrder
 
@@ -2603,13 +2689,13 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### fail — ErrNotPayable / ErrQRUnavailable
 
-> `ErrNotPayable` es 409: la orden ya no espera el pago. `ErrQRUnavailable` es 502: falló Mercado Pago, no nosotros; se loguea y la tablet reintenta.
+> `ErrNotPayable` es 409: la orden ya no espera el pago. `ErrQRUnavailable` es 502: falló Mercado Pago, no nosotros; se loguea con contexto y `order_id` si se conoce, y la tablet reintenta.
 
 ### MercadoPagoWebhook.receive
 
-> El orden de los chequeos es de más barato a más caro: secreto de ruta (404, igual que una ruta inexistente), `data.id` (400), firma con su ventana de 5 minutos (401), tópico (200 sin hacer nada si no es `order`), y recién ahí `SyncPayment`, que consulta a Mercado Pago. El cuerpo no se lee: la firma no lo cubre. Un cobro ajeno responde 200 porque reintentar no lo arregla; cualquier otro error responde 500 para que Mercado Pago reintente, y como `SyncPayment` es idempotente el reintento es seguro.
+> El orden de los chequeos es de más barato a más caro: secreto de ruta (404, igual que una ruta inexistente), `data.id` (400), firma con su ventana de 5 minutos (401), tópico (200 sin hacer nada si no es `order`), y recién ahí `SyncPayment`, que consulta a Mercado Pago. El cuerpo no se lee: la firma no lo cubre. Un cobro ajeno responde 200 porque reintentar no lo arregla; cualquier otro error responde 500 para que Mercado Pago reintente, y como `SyncPayment` es idempotente el reintento es seguro. Cuando `SyncPayment` devuelve error, intenta extraer `order.OrderIDFromError(err)` para incluir `order_id` en el log de advertencia o error.
 
-## internal/httpapi/mercadopago_test.go (rama `tests/mercadopago`)
+## internal/httpapi/mercadopago_test.go (rama `archive/tests`)
 
 > Fixtures propios porque los del paquete viven en `archive/tests`. Firma los avisos con `mercadopago.SignatureHeader`, así el test usa la misma firma que el adaptador real. Cubre los ocho casos del webhook, que el id llega sin tocar al motor, la ruta ausente sin confirmador, `POST /orders` con y sin Mercado Pago y sus tres errores, el bloque `payment` de `GET` (pendiente, vencido, ausente, error), el pago simulado apagado con Mercado Pago y las `Deps` a medias. Mutaciones verificadas en rojo: prender el simulado con Mercado Pago, exponer el QR vencido e ignorar el tópico.
 
@@ -2617,17 +2703,17 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Envuelve sólo la falla de `CreateQR`, para que el borde HTTP distinga «Mercado Pago no respondió» (502) de una falla propia (500).
 
-## internal/sweep — WithPaymentSync
+## internal/sweep — Runner.tick y WithPaymentSync
 
-> Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro.
+> Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro. En `tick`, se comprueba `ctx.Err() != nil` antes de reconciliar líneas y otra vez antes de reconciliar pagos, para que al apagarse el proceso no comience una etapa nueva con el contexto ya cancelado.
 
-## internal/sweep/payments_test.go (rama `tests/mercadopago`)
+## internal/sweep/payments_test.go (rama `archive/tests`)
 
 > Un sweeper que cuenta llamadas y límites. Cubre que los dos barridos corren con el mismo límite, que sin `WithPaymentSync` el de pagos no corre y que un error en las líneas no frena a los pagos. Mutación verificada en rojo: pasar otro límite al barrido de pagos.
 
-## cmd/api/main.go — Mercado Pago (unidad 4)
+## cmd/api/main.go — Mercado Pago y apagado (unidad 4 y F7)
 
-> Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithQRPayments`), al handler (`QRRequester` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagar, después del barrido, espera `engine.Wait()` dentro de la misma ventana de 10 s; si un despacho no terminó, lo retoma `resumeStalledLine` al volver a arrancar.
+> Con `MercadoPagoEnabled`, arma el cliente y lo pasa al motor (`WithQRPayments`), al handler (`QRRequester` = motor, `Payments` = store), al barrido y registra el webhook. Sin Mercado Pago lo dice con un WARN para que nadie crea que está cobrando de verdad. Los errores del despacho en segundo plano no tienen request a quien volver: van al log por `WithBackgroundErrors`. Al apagarse (por señal o caída del servidor HTTP), delega en `shutdown` (`cmd/api/shutdown.go`), que da 10 s a HTTP, 60 s compartidos a esperar el barrido (`sweepDone`) y los despachos en curso (`engine.Wait()`), y recién al final cierra el store; si un despacho no alcanzó a terminar, lo retoma `resumeStalledLine` al volver a arrancar.
 
 ## internal/catalog/catalog.go
 
