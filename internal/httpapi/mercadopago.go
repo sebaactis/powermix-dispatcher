@@ -119,21 +119,24 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = m.syncer.SyncPayment(r.Context(), providerID)
+	orderID, _ := order.OrderIDFromError(err)
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusOK)
 	case errors.Is(err, order.ErrUnknownCharge):
-		m.logger.WarnContext(r.Context(), "webhook de Mercado Pago de un cobro que no es nuestro",
+		attrs := appendOrderID([]any{
 			"provider_id", providerID,
 			"error", err,
-		)
+		}, orderID)
+		m.logger.WarnContext(r.Context(), "webhook de Mercado Pago de un cobro que no es nuestro", attrs...)
 
 		w.WriteHeader(http.StatusOK)
 	default:
-		m.logger.ErrorContext(r.Context(), "no se pudo procesar el webhook de Mercado Pago: se espera el reintento",
+		attrs := appendOrderID([]any{
 			"provider_id", providerID,
 			"error", err,
-		)
+		}, orderID)
+		m.logger.ErrorContext(r.Context(), "no se pudo procesar el webhook de Mercado Pago: se espera el reintento", attrs...)
 
 		writeError(w, http.StatusInternalServerError, "no se pudo procesar el aviso")
 	}
