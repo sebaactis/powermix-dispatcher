@@ -12,7 +12,7 @@ Rama: `fix/partial-order-alerts`. Tests: flujo `archive/tests` (`docs/arquitectu
 
 ## Tasks
 
-- [x] T1 — S1, S2, S3, S4 — recuperación de panics en `internal/order/engine.go` (`spawn`), `internal/order/payment.go` (`dispatchLines`), `internal/preflight/checker.go`, aviso dedicado `KindDispatchPanic` en `internal/notify/` y cableado de `logger` en `cmd/api/main.go` — worker — commit: pendiente
+- [x] T1 — S1, S2, S3, S4 — recuperación de panics en `internal/order/engine.go` (`spawn`), `internal/order/payment.go` (`dispatchLines`), `internal/preflight/checker.go`, aviso dedicado `KindDispatchPanic` en `internal/notify/` y cableado de `logger` en `cmd/api/main.go` — worker — commit: 1915a23
 
 ## Log
 
@@ -23,3 +23,4 @@ Rama: `fix/partial-order-alerts`. Tests: flujo `archive/tests` (`docs/arquitectu
 - **L5** — Decisión del usuario (D1): «Vamos con A. Pero que los avisos esten interrelacionados. Es decir, tengamos un request id (si ya no lo tenemos) que matchee una linea de mensajes/logs. Entonces: 1) Recibimos el aviso de la duda del despacho del batido con un request id 123 2) Que el aviso del pedido en duda por este tema sea tambien id 123.»
 - **L6** — Decisión de seguimiento (D1): correlation ID = el `order_id` existente (ya impreso en las alertas de Telegram en `internal/notify/telegram.go:160` y logueado como `order_id`); un nuevo `request_id` HTTP queda diferido a F9.
 - **L7** — D1 y D2: RED observada (`undefined: KindDispatchPanic` en `internal/notify` e `internal/order`); agregado `notify.KindDispatchPanic` con estilo en `internal/notify/telegram.go` y clave de deduplicación propia en `internal/order/payment.go`; renombrados los helpers de `internal/preflight/checker_panic_test.go` e `internal/order/panic_recovery_test.go` para evitar colisiones con `archive/tests`.
+- **L8** — Verificación independiente aprobada para S1-S4 (`go build ./...`, `go vet ./...` y `go test -count=1 ./...` en verde; `-race` no disponible con `CGO_ENABLED=0`). D1 (aviso dedicado `dispatch_panic`, correlacionado por `order_id`) y D2 (helpers de test renombrados para evitar colisiones con `archive/tests`) quedaron corregidos en el commit `1915a23`. Nota: la rama superó el límite de ~400 líneas por slice (1522 líneas propias en 7 commits desde `main`), mayormente tests.

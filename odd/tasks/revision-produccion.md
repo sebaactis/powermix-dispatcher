@@ -6,7 +6,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. El próximo fix es el **F3**, en una rama nueva creada desde `fix/partial-order-alerts` o desde `main` si esa rama ya se mergeó (la rama actual suma ~320 líneas).
+2. El próximo fix es el **F4**, que necesita confirmación del proveedor antes de decidir; trabajarlo en una rama nueva desde `main` una vez mergeada `fix/partial-order-alerts` (la rama actual suma 1522 líneas propias en 7 commits desde `main`, por encima del límite de ~400 líneas, mayormente tests).
 3. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
 4. Nada está pusheado. Push y merge de `fix/partial-order-alerts` y de `archive/tests` los decide el usuario.
 
@@ -22,8 +22,8 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ### Críticos
 - [x] F1 — Avisos de pedidos cobrados sin entrega completa: `partial` no avisaba, y un `failed` en el despacho inicial tampoco. Hecho: `odd/tasks/avisos-entrega-parcial.md`, commits 8931cb3, ab28962, 509e7fc.
 - [x] F2 — Errores 5xx/429/ilegibles del proveedor reintentados como rechazo (riesgo de doble despacho). Hecho: `odd/tasks/despacho-errores-ambiguos.md`, commits 9996d4e, 3ca699c; verificación independiente aprobada.
-- [ ] F3 — **En curso (`odd/tasks/recuperar-panics.md`).** Sin `recover()` en goroutines de fondo: un panic tira el servidor (`internal/order/engine.go:171-180` `spawn`, `internal/order/payment.go:65-70` `dispatchLines`, `internal/preflight/checker.go:104-111`). Decisión: «in_doubt + aviso a soporte (recomendado)».
-- [ ] F4 — `Reconcile` de snacks siempre devuelve `InDoubt` y busca sólo en la página 1 sin filtro (`internal/dispenser/snacks/dispenser.go:106-139`). Puede ser deliberado (la API no informa el resultado del despacho). Confirmar con el proveedor antes de decidir.
+- [x] F3 — Sin `recover()` en goroutines de fondo: un panic tira el servidor (`internal/order/engine.go:171-180` `spawn`, `internal/order/payment.go:65-70` `dispatchLines`, `internal/preflight/checker.go:104-111`). Decisión: «in_doubt + aviso a soporte (recomendado)». Hecho: `odd/tasks/recuperar-panics.md`, commit 1915a23; verificación independiente aprobada.
+- [ ] F4 — **Próximo.** `Reconcile` de snacks siempre devuelve `InDoubt` y busca sólo en la página 1 sin filtro (`internal/dispenser/snacks/dispenser.go:106-139`). Puede ser deliberado (la API no informa el resultado del despacho). Confirmar con el proveedor antes de decidir.
 
 ### Importantes
 - [ ] F5 — `client_key` reutilizado con otro combo devuelve el pedido viejo sin avisar, y no tiene largo máximo (`internal/order/place.go:17-25`, `internal/httpapi/draft.go:20,70`).
@@ -40,6 +40,9 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - [ ] F14 — Respuestas de más de 1 MB se truncan sin error en batidos y snacks (`batidos/client.go:321`, `snacks/client.go:268,428`).
 - [ ] F15 — El aviso de entrega parcial muestra el SKU (`DEMO-SNACK-ALFAJOR`) y no el nombre del producto: haría falta el nombre en el catálogo.
 - [ ] F16 — `POST /orders` responde 200 en vez de 201 (`internal/httpapi/orders.go:53`); el barrido no tiene plazo por vuelta (`internal/sweep/runner.go:92-104`).
+- [ ] D3 — Los manejadores de recuperación no se protegen a sí mismos: un segundo panic dentro de `markPanickedLineInDoubt` o `notifyOnce` (`internal/order/payment.go:73-78,98,133`) todavía tira el proceso.
+- [ ] D4 — Un panic dentro de `spawn` (`internal/order/engine.go:192-211`) pero fuera de una línea (por ejemplo en `settleOrder`, `internal/order/payment.go:88`, `internal/order/settle.go:16`) sólo se loguea: no avisa ni recalcula el estado del pedido; falta confirmar si el barrido lo corrige.
+- [ ] D5 — El intento que entró en panic queda `OutcomeAmbiguous` sin `FinishedAt` (`internal/order/dispatch.go:49-56,94`) y no incrementa `line.Attempts` (`internal/order/payment.go:133-167`), distinto de las líneas de F2.
 
 ### H-BP — Buenas prácticas (insumo de P3)
 - Funciones largas: `main` de `cmd/api/main.go` (232 líneas), `(*Engine).dispatchLine` en `internal/order/dispatch.go` (~100 líneas).
