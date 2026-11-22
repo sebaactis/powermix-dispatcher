@@ -72,6 +72,8 @@ go run ./cmd/api -config config.local.json -combos combos.local.json
 # GET  /healthz
 # GET  /combos
 # POST /orders               {"combo_id":"...","client_key":"...","kiosk_id":"..."}
+#                            client_key: un UUID por pedido confirmado, reutilizado sólo para reintentar ese mismo pedido
+#                            (<= 128 caracteres tras trim -> 400 si excede; mismo combo y mueble -> 200; otro combo o mueble -> 409)
 #                            with Mercado Pago: adds "payment": {"status","qr_data","expires_at"}
 # GET  /orders/{id}          same "payment" block; the tablet polls it every 2 s
 # POST /orders/{id}/pay      simulated, sandbox without Mercado Pago only: 403 otherwise
@@ -128,6 +130,7 @@ go run ./cmd/fakeapi -mp-webhook-url http://127.0.0.1:8080/callbacks/mercadopago
 #                   "webhook_secret": "fake-webhook-secret", "callback_secret": "local-mp"}
 #   and "mp_pos_id": "POS-1" on every kiosk
 
+# client_key: un UUID por pedido confirmado, reutilizado sólo para reintentar ese mismo pedido (400 si > 128 caracteres, 409 si cambia combo o mueble)
 curl -X POST localhost:8080/orders -d '{"combo_id":"...","client_key":"k1"}'
 curl -X POST localhost:9403/admin/mercadopago/pay -d '{"order":"<order id>"}'
 curl localhost:8080/orders/<order id>      # dispatching, payment approved

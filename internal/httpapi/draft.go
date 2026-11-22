@@ -7,12 +7,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 )
+
+const maxClientKeyRunes = 128
 
 type createOrderRequest struct {
 	KioskID   string `json:"kiosk_id"`
@@ -36,6 +39,11 @@ func decodeCreateOrder(w http.ResponseWriter, r *http.Request) (createOrderReque
 
 	if strings.TrimSpace(request.ComboID) == "" {
 		return createOrderRequest{}, badRequest("hace falta indicar el combo (combo_id)")
+	}
+
+	request.ClientKey = strings.TrimSpace(request.ClientKey)
+	if utf8.RuneCountInString(request.ClientKey) > maxClientKeyRunes {
+		return createOrderRequest{}, badRequest(fmt.Sprintf("la clave del cliente (client_key) no puede superar los %d caracteres", maxClientKeyRunes))
 	}
 
 	return request, nil

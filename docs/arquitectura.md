@@ -106,7 +106,7 @@ Reglas que no se rompen:
 Si un cambio rompe alguna de estas invariantes, el cambio está mal:
 
 1. **El precio y el SKU salen del catálogo**, nunca del cliente. El cuerpo del pedido sólo trae `combo_id`, `client_key` y `kiosk_id`. Cada ítem del catálogo (`combos.example.json`) lleva su `price_cents` (> 0) y la suma de sus ítems debe coincidir con el `price_cents` del combo.
-2. **Idempotencia de la creación** por `client_key`: la consulta rápida en memoria o base de datos es la vía rápida, la restricción de clave única del store es la verdad definitiva.
+2. **Idempotencia de la creación** por `client_key`: la consulta rápida en memoria o base de datos es la vía rápida, la restricción de clave única del store es la verdad definitiva. Contrato del kiosco: `client_key` es un UUID por pedido confirmado, reutilizado sólo para reintentar ese mismo pedido (`<= 128` caracteres tras `strings.TrimSpace`, si supera responde **400**; misma clave con mismo `combo_id` y `kiosk_id` devuelve **200** con la orden existente; misma clave con otro combo u otro mueble responde **409 Conflict** y registra un `warn` en el log, sin crear ni modificar órdenes).
 3. **La línea lleva una sola familia de máquina** (`line.Machine.Kind`). En el struct `Line`, `MachineType` fue reemplazado por `Machine.Kind`; no obstante, el nombre `MachineType` se mantiene legítimamente en `internal/order/callback.go:33`, `internal/catalog/catalog.go:17` e `internal/httpapi/responses.go:27`.
 4. **El estado de la orden se deriva de las líneas** (`DeriveOrderStatus`), nunca se inventa; `settleOrder` lo recalcula después de cada cambio en cualquier línea.
 5. **Una línea cerrada no se reabre** (`delivered` y `failed` son terminales).
@@ -249,19 +249,21 @@ TABLET
   │ POST /orders {combo_id, client_key, kiosk_id}
   ▼
 httpapi/orders.go:10 createOrder
-  ├─ decodeCreateOrder ...... httpapi/draft.go:23   (64 KB, sin campos extra)
-  ├─ resolveKiosk ........... httpapi/draft.go:44
-  └─ buildDraft ............. httpapi/draft.go:66   (precio del combo y por ítem SIEMPRE del catálogo)
+  ├─ decodeCreateOrder ...... httpapi/draft.go:26   (64 KB, sin campos extra, trim de client_key <= 128 runas → 400)
+  ├─ resolveKiosk ........... httpapi/draft.go:52
+  └─ buildDraft ............. httpapi/draft.go:74   (precio del combo y por ítem SIEMPRE del catálogo)
   ▼
-order/place.go:12 CreateOrder
-  ├─ validateDraft :74 ──► machine.Ref.Validate (identificadores según Kind)
-  ├─ ¿ya existe client_key? (:18) ── sí → devuelve la misma orden (idempotencia)
+order/place.go:14 CreateOrder
+  ├─ validateDraft :95 ──► machine.Ref.Validate (identificadores según Kind)
+  ├─ ¿ya existe client_key? (:20, o tras ErrAlreadyExists en :62) ──► matchClientKeyOrder :76
+  │     ├─ mismo combo y mueble → devuelve la misma orden (200, idempotencia)
+  │     └─ otro combo u otro mueble → warn en log + ErrClientKeyConflict → 409 (httpapi/errors.go:48)
   ├─ gate.Check (gate/gate.go:27) → preflight.Check (preflight/checker.go:93)
   │     plazo total 8 s, una goroutine por máquina:
   │       checkBatidos :125  (Device + DeviceGoods)
   │       checkSnacks  :157  (Devices + Slots)
-  │     no vendible → NotSellableError → 409 (httpapi/errors.go:59)
-  └─ CreateOrder: orden pending_payment, líneas pending (:60)
+  │     no vendible → NotSellableError → 409 (httpapi/errors.go:64)
+  └─ CreateOrder: orden pending_payment, líneas pending (:62)
   ▼
   └─ (con MP) RequestQR (order/qr.go:21): crea el QR en MP (idempotencia = id de orden),
      guarda el payment_intent y la respuesta suma payment {status, qr_data, expires_at}

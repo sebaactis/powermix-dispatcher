@@ -9,6 +9,8 @@ import (
 	"compras-remotas/internal/store"
 )
 
+var ErrClientKeyConflict = errors.New("la clave del cliente ya se usó para otro combo o mueble")
+
 func (e *Engine) CreateOrder(ctx context.Context, draft Draft) (store.Order, error) {
 	if err := e.validateDraft(draft); err != nil {
 		return store.Order{}, err
@@ -18,7 +20,7 @@ func (e *Engine) CreateOrder(ctx context.Context, draft Draft) (store.Order, err
 		existing, err := e.store.OrderByClientKey(ctx, draft.ClientKey)
 		switch {
 		case err == nil:
-			return existing, nil
+			return e.matchClientKeyOrder(ctx, existing, draft)
 		case !errors.Is(err, store.ErrNotFound):
 			return store.Order{}, err
 		}
@@ -61,7 +63,7 @@ func (e *Engine) CreateOrder(ctx context.Context, draft Draft) (store.Order, err
 		if errors.Is(err, store.ErrAlreadyExists) && draft.ClientKey != "" {
 			existing, readErr := e.store.OrderByClientKey(ctx, draft.ClientKey)
 			if readErr == nil {
-				return existing, nil
+				return e.matchClientKeyOrder(ctx, existing, draft)
 			}
 		}
 
@@ -69,6 +71,25 @@ func (e *Engine) CreateOrder(ctx context.Context, draft Draft) (store.Order, err
 	}
 
 	return placed, nil
+}
+
+func (e *Engine) matchClientKeyOrder(ctx context.Context, existing store.Order, draft Draft) (store.Order, error) {
+	if existing.ComboID == draft.ComboID && existing.KioskID == draft.KioskID {
+		return existing, nil
+	}
+
+	e.log().WarnContext(ctx, "clave de cliente reutilizada con otro combo o mueble",
+		"order_id", existing.ID,
+		"kiosk", existing.KioskID,
+		"combo", existing.ComboID,
+		"requested_kiosk", draft.KioskID,
+		"requested_combo", draft.ComboID,
+	)
+
+	return store.Order{}, fmt.Errorf(
+		"%w: la orden %s tiene combo %q en mueble %q y se pidió combo %q en mueble %q",
+		ErrClientKeyConflict, existing.ID, existing.ComboID, existing.KioskID, draft.ComboID, draft.KioskID,
+	)
 }
 
 func (e *Engine) validateDraft(draft Draft) error {
