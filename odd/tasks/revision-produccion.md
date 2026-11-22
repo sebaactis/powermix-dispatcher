@@ -6,9 +6,10 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. El próximo fix es el **F4**, que necesita confirmación del proveedor antes de decidir; trabajarlo en una rama nueva desde `main` una vez mergeada `fix/partial-order-alerts` (la rama actual suma 1522 líneas propias en 7 commits desde `main`, por encima del límite de ~400 líneas, mayormente tests).
-3. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
-4. Nada está pusheado. Push y merge de `fix/partial-order-alerts` y de `archive/tests` los decide el usuario.
+2. **Próximo: F4**, bloqueado hasta confirmar con el proveedor de snacks si su API informa el resultado del despacho (pregunta pendiente para el usuario). Trabajarlo en una rama nueva desde `main` una vez resuelta `fix/partial-order-alerts`. Mientras tanto se puede avanzar con **F5** (`client_key` reutilizado con otro combo / sin largo máximo) o **F6** (códigos HTTP); el usuario elige cuál.
+3. **Decisión de entrega pendiente:** la rama `fix/partial-order-alerts` tiene 8 commits y ~1526 líneas desde `main` (mayoría tests); falta decidir si se publica como un PR o se parte en PRs encadenados. Nada fue pusheado (push y merge de `fix/partial-order-alerts` y de `archive/tests` los decide el usuario).
+4. **Correlación de avisos:** se usa `order_id`; el `request_id` por pedido HTTP queda para **F9**.
+5. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
 
 ## Partes de la revisión
 
@@ -62,3 +63,4 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - **L3** — «para el catalogo, pone el price_cents porque son datos mockeados, por ahora no son los datos reales.» Hecho en `combos.local.json` (50 + 50 = 100; archivo fuera de Git).
 - **L4** — «Me tengo que ir. Frenemos aca, actrualizá los docs para que sepamos de donde retomar despues. Es edecir, el plan, y lo que queda pendiente de ese plan.» Pausa el 2026-11-21 antes de F3.
 - **L5** — Decisión sobre F3: «in_doubt + aviso a soporte (recomendado)» — "No sabemos si la máquina entregó. La línea entra en el circuito de reconciliación que ya existe y soporte recibe un aviso por Telegram." En curso en `odd/tasks/recuperar-panics.md`.
+- **L6** — «Cerramos por hoy. Guardá todo en la doc.» Pausa el 2026-11-21 después de cerrar F3 (commits 1915a23, 58b3984).
