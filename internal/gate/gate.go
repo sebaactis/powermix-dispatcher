@@ -36,7 +36,11 @@ func (g *Gate) Check(ctx context.Context, draft order.Draft) error {
 
 	result, err := g.checker.Check(ctx, request)
 	if err != nil {
-		return err
+		if errors.Is(err, preflight.ErrPanic) {
+			return err
+		}
+
+		return fmt.Errorf("%w: %w", order.ErrAvailabilityUnavailable, err)
 	}
 
 	if result.Sellable {

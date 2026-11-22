@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-var ErrNotSellable = errors.New("el combo no se puede vender ahora")
+var (
+	ErrNotSellable             = errors.New("el combo no se puede vender ahora")
+	ErrAvailabilityUnavailable = errors.New("no se pudo verificar la disponibilidad de las máquinas")
+)
 
 type AvailabilityChecker interface {
 	Check(ctx context.Context, draft Draft) error

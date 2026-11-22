@@ -50,6 +50,17 @@ func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error
 		return
 	}
 
+	if errors.Is(err, order.ErrAvailabilityUnavailable) {
+		logger.ErrorContext(r.Context(), "no se pudo verificar la disponibilidad de las máquinas",
+			"method", r.Method,
+			"path", redactCallbackPath(r.URL.Path),
+			"error", err,
+		)
+
+		writeError(w, http.StatusBadGateway, order.ErrAvailabilityUnavailable.Error())
+		return
+	}
+
 	if errors.Is(err, order.ErrQRUnavailable) {
 		logger.ErrorContext(r.Context(), "el proveedor de pagos no pudo crear el QR",
 			"method", r.Method,
