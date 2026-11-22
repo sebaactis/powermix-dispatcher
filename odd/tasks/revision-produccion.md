@@ -6,8 +6,8 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). Trabajarlo en una rama nueva desde `main` una vez resuelta `fix/partial-order-alerts`. **Próximo disponible: F6** (códigos HTTP) u otro que elija el usuario.
-3. **Entrega decidida:** `fix/partial-order-alerts` se publica como **un solo PR** (decisión del 2026-11-22; los tests viven en `archive/tests`, fuera del PR). Nada fue pusheado: push y merge de `fix/partial-order-alerts` y de `archive/tests` los decide el usuario.
+2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). **Próximo disponible: F6** (códigos HTTP) u otro que elija el usuario. Cada fix nuevo va en una rama desde `main`.
+3. **Publicado (2026-11-22):** `fix/partial-order-alerts` (F1-F5 y los 8 commits de Telegram que estaban sólo en local) se mergeó a `main` (4afadaf) y se pusheó; `archive/tests` se sincronizó con `main` (b873113) y se pusheó. Regla de entrega: en `main` va todo lo que es de la app; los tests van sólo en `archive/tests`.
 4. **Correlación de avisos:** se usa `order_id`; el `request_id` por pedido HTTP queda para **F9**.
 5. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
 
@@ -66,3 +66,4 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - **L6** — «Cerramos por hoy. Guardá todo en la doc.» Pausa el 2026-11-21 después de cerrar F3 (commits 1915a23, 58b3984).
 - **L7** — 2026-11-22. F4: el proveedor «Todavía no» respondió. Entrega: «Uno solo. si la mayoria son test acordate que tiene su rama aparte.» Los 3 tests de F3 que habían quedado en la rama se movieron a `archive/tests` (commit 36bc607 en la rama + merge `-s ours` en `archive/tests`); la rama queda en ~600 líneas contra `main`.
 - **L8** — F5: «No puede haber una clave con otro combo. El que va a crear esa key (el cliente = kiosk) es una app nuestra tambien. Asi que la idea seria que se cree una vez confirmado el epdido. Si el usuario arranca y cancela no deberia crearla.» Decisión «Sí, así». Detalle en `odd/tasks/client-key-conflicto.md`.
+- **L9** — «Pushiemos lo actual antes de seguir.» y «En main todo lo que vaya a estar en la app principal (si tener que mergear ramas mergea) y obvio la de tests separados los tests.»
