@@ -12,9 +12,10 @@ Fix F8 de `odd/tasks/revision-produccion.md`, rama `fix/batidos-callback-stale-l
 
 ## Tasks
 
-- [ ] T1 — S1-S4 — writer `gentle-ai-worker` — commit: pendiente.
+- [x] T1 — S1-S4 — writer `gentle-ai-worker` — commit: 6bef9cd; tests en `archive/tests` f8e7143.
 
 ## Log
 
 - **L1** — «Si dale.» a publicar F7 y arrancar F8 (2026-11-22).
 - **L2** — Mapa: `closeLine` recarga ante `ErrStale`, así que entregado y fallido no se pierden. Lo que se pierde es la extensión del plazo, `LastError` y el paso a `in_doubt` cuando vence la ventana (lo hace el barrido más tarde).
+- **L3** — Evidencia: RED (sin `LastError`, `DeadlineAt` sin extender, línea cerrada reconciliada igual); GREEN; la suite de `archive/tests` da exit 0. Verificación independiente: S1-S4 PASS sin bloqueantes. Su should-fix (un doble stale sin log) se corrigió con un `warn`; el camino de error ahora devuelve la línea sin modificar y el test comprueba que se conserva el `LastError` del otro escritor. S4: `extendReconcile` no cambia, porque un stale fuera de S1 significa que escribió alguien más nuevo y el barrido retoma la línea vencida. Duplicación anotada: «recargar y reintentar ante stale» en `markBrewing` y `closeLine` (2 lugares, se deja así). No verificado: Postgres real, `-race`.
