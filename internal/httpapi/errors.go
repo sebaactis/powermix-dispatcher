@@ -23,7 +23,18 @@ func badRequest(message string) apiError {
 	return apiError{status: http.StatusBadRequest, message: message}
 }
 
+func appendOrderID(attrs []any, orderID string) []any {
+	if orderID == "" {
+		return attrs
+	}
+	return append(attrs, "order_id", orderID)
+}
+
 func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	failWithOrder(w, r, logger, err, "")
+}
+
+func failWithOrder(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, orderID string) {
 	var apiErr apiError
 	if errors.As(err, &apiErr) {
 		writeError(w, apiErr.status, apiErr.message)
@@ -50,23 +61,31 @@ func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error
 		return
 	}
 
-	if errors.Is(err, order.ErrAvailabilityUnavailable) {
-		logger.ErrorContext(r.Context(), "no se pudo verificar la disponibilidad de las máquinas",
+	if orderID == "" {
+		orderID = r.PathValue("id")
+	}
+	if orderID == "" {
+		orderID = r.PathValue("orderId")
+	}
+
+	logError := func(msg string) {
+		attrs := appendOrderID([]any{
 			"method", r.Method,
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
-		)
+		}, orderID)
+		logger.ErrorContext(r.Context(), msg, attrs...)
+	}
+
+	if errors.Is(err, order.ErrAvailabilityUnavailable) {
+		logError("no se pudo verificar la disponibilidad de las máquinas")
 
 		writeError(w, http.StatusBadGateway, order.ErrAvailabilityUnavailable.Error())
 		return
 	}
 
 	if errors.Is(err, order.ErrQRUnavailable) {
-		logger.ErrorContext(r.Context(), "el proveedor de pagos no pudo crear el QR",
-			"method", r.Method,
-			"path", redactCallbackPath(r.URL.Path),
-			"error", err,
-		)
+		logError("el proveedor de pagos no pudo crear el QR")
 
 		writeError(w, http.StatusBadGateway, order.ErrQRUnavailable.Error())
 		return
@@ -86,11 +105,7 @@ func fail(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error
 		return
 	}
 
-	logger.ErrorContext(r.Context(), "no se pudo atender el pedido HTTP",
-		"method", r.Method,
-		"path", redactCallbackPath(r.URL.Path),
-		"error", err,
-	)
+	logError("no se pudo atender el pedido HTTP")
 
 	writeError(w, http.StatusInternalServerError, "no se pudo completar la operación")
 }

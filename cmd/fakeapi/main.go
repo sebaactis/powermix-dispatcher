@@ -51,7 +51,11 @@ func main() {
 	flag.StringVar(&mpWebhookURL, "mp-webhook-url", "", "URL completa del webhook, con el secreto de ruta (ej. http://127.0.0.1:8080/callbacks/mercadopago/<secreto>); vacía no envía avisos")
 	flag.Parse()
 
-	logger := logging.New(os.Stdout, slog.LevelInfo)
+	logger, err := logging.NewFromEnv(os.Stdout)
+	if err != nil {
+		logging.New(os.Stdout, slog.LevelInfo).Error("nivel de log inválido", "error", err)
+		os.Exit(1)
+	}
 
 	if err := requireLoopback(adminAddr); err != nil {
 		logger.Error("la administración del falso sólo puede escuchar en loopback", "addr", adminAddr, "error", err)
@@ -83,11 +87,12 @@ func main() {
 
 	admin := fakeapi.NewAdmin(batidosFake, snacksFake, mpFake)
 
+	errorLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
 	servers := []*http.Server{
-		{Addr: batidosAddr, Handler: batidosFake, ReadHeaderTimeout: 5 * time.Second},
-		{Addr: snacksAddr, Handler: snacksFake, ReadHeaderTimeout: 5 * time.Second},
-		{Addr: mpAddr, Handler: mpFake, ReadHeaderTimeout: 5 * time.Second},
-		{Addr: adminAddr, Handler: admin, ReadHeaderTimeout: 5 * time.Second},
+		{Addr: batidosAddr, Handler: batidosFake, ReadHeaderTimeout: 5 * time.Second, ErrorLog: errorLog},
+		{Addr: snacksAddr, Handler: snacksFake, ReadHeaderTimeout: 5 * time.Second, ErrorLog: errorLog},
+		{Addr: mpAddr, Handler: mpFake, ReadHeaderTimeout: 5 * time.Second, ErrorLog: errorLog},
+		{Addr: adminAddr, Handler: admin, ReadHeaderTimeout: 5 * time.Second, ErrorLog: errorLog},
 	}
 
 	logger.Warn("la administración del falso no tiene autenticación y sólo escucha en loopback: no la expongas fuera de esta máquina",

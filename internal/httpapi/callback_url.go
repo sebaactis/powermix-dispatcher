@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -14,17 +15,48 @@ func BatidosCallbackURL(baseURL, secret, orderID string) string {
 		"/callbacks/batidos/" + url.PathEscape(secret) + "/" + url.PathEscape(orderID)
 }
 
-func redactCallbackPath(path string) string {
-	const prefix = "/callbacks/"
-
-	if !strings.HasPrefix(path, prefix) {
-		return path
+func redactCallbackPath(raw string) string {
+	if raw == "" {
+		return ""
 	}
 
-	source, _, found := strings.Cut(path[len(prefix):], "/")
-	if !found || source == "" {
-		return path
+	normalized := unescapePathBounded(raw)
+	normalized = strings.ReplaceAll(normalized, "\\", "/")
+	cleaned := path.Clean("/" + strings.TrimLeft(normalized, "/"))
+	if cleaned == "/" {
+		return "/"
 	}
 
-	return prefix + source + "/***"
+	segments := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
+	for i, seg := range segments {
+		if strings.EqualFold(seg, "callbacks") {
+			if i+1 >= len(segments) {
+				return cleaned
+			}
+			return "/" + strings.Join(append(segments[:i+1], "***"), "/")
+		}
+	}
+
+	return cleaned
+}
+
+func unescapePathBounded(raw string) string {
+	cur := raw
+	for range 4 {
+		next, err := url.PathUnescape(cur)
+		if err != nil {
+			parts := strings.Split(cur, "/")
+			for i, part := range parts {
+				if decoded, segErr := url.PathUnescape(part); segErr == nil {
+					parts[i] = decoded
+				}
+			}
+			next = strings.Join(parts, "/")
+		}
+		if next == cur {
+			break
+		}
+		cur = next
+	}
+	return cur
 }

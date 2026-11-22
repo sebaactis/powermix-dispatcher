@@ -43,7 +43,7 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 	if h.qrRequester != nil {
 		intent, err := h.qrRequester.RequestQR(r.Context(), placed.ID, kiosk.MPPosID)
 		if err != nil {
-			fail(w, r, h.logger, err)
+			failWithOrder(w, r, h.logger, err, placed.ID)
 			return
 		}
 

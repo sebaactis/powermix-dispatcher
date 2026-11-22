@@ -12,6 +12,34 @@ import (
 
 var ErrUnknownCharge = errors.New("el cobro no corresponde a ninguna orden de este sistema")
 
+type orderError struct {
+	orderID string
+	err     error
+}
+
+func (e *orderError) Error() string {
+	return e.err.Error()
+}
+
+func (e *orderError) Unwrap() error {
+	return e.err
+}
+
+func wrapOrderError(orderID string, err error) error {
+	if err == nil || orderID == "" {
+		return err
+	}
+	return &orderError{orderID: orderID, err: err}
+}
+
+func OrderIDFromError(err error) (string, bool) {
+	var target *orderError
+	if errors.As(err, &target) && target.orderID != "" {
+		return target.orderID, true
+	}
+	return "", false
+}
+
 func (e *Engine) SyncPayment(ctx context.Context, providerID string) error {
 	if e.payments == nil {
 		return ErrPaymentsDisabled
@@ -36,10 +64,10 @@ func (e *Engine) SyncPayment(ctx context.Context, providerID string) error {
 	}
 
 	if intent.ProviderID != charge.ProviderID {
-		return fmt.Errorf("%w: la orden %s tiene el cobro %s y no %s", ErrUnknownCharge, intent.OrderID, intent.ProviderID, charge.ProviderID)
+		return wrapOrderError(intent.OrderID, fmt.Errorf("%w: la orden %s tiene el cobro %s y no %s", ErrUnknownCharge, intent.OrderID, intent.ProviderID, charge.ProviderID))
 	}
 
-	return e.applyCharge(ctx, intent, charge)
+	return wrapOrderError(intent.OrderID, e.applyCharge(ctx, intent, charge))
 }
 
 func (e *Engine) applyCharge(ctx context.Context, intent store.PaymentIntent, charge payments.Charge) error {

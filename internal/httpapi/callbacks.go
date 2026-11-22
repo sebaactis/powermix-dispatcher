@@ -121,19 +121,22 @@ func (c *Callbacks) batidosCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	orderID := r.PathValue("orderId")
+
 	var payload batidosCallbackPayload
 	if err := decodeCallback(w, r, &payload); err != nil {
-		c.acknowledgeBrokenCallback(w, r, err, ack)
+		c.acknowledgeBrokenCallback(w, r, orderID, err, ack)
 		return
 	}
 
 	state, known := batidosState(payload.Status)
 	if !known {
-		c.logger.WarnContext(r.Context(), "el callback de batidos informó un estado que no está en la tabla: se acusa recibo sin tocarlo",
+		attrs := appendOrderID([]any{
 			"status", payload.Status,
 			"code", payload.Code,
 			"order_no", payload.OrderNo,
-		)
+		}, orderID)
+		c.logger.WarnContext(r.Context(), "el callback de batidos informó un estado que no está en la tabla: se acusa recibo sin tocarlo", attrs...)
 
 		writeJSON(w, http.StatusOK, ack)
 		return
@@ -142,14 +145,14 @@ func (c *Callbacks) batidosCallback(w http.ResponseWriter, r *http.Request) {
 	event := order.Callback{
 		Source:      "batidos",
 		DedupeKey:   fmt.Sprintf("%s|%s|%d", payload.OrderNo, payload.Code, payload.Status),
-		OrderID:     r.PathValue("orderId"),
+		OrderID:     orderID,
 		Ref:         payload.Code,
 		MachineType: machine.Batidos,
 		State:       state,
 		Reason:      batidosFailureReason,
 	}
 
-	c.writeCallbackResult(w, r, c.runCallback(r.Context(), event, c.receiver.SyncLineFromCallback), ack)
+	c.writeCallbackResult(w, r, orderID, c.runCallback(r.Context(), event, c.receiver.SyncLineFromCallback), ack)
 }
 
 func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
@@ -162,15 +165,16 @@ func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
 
 	var payload snacksCallbackPayload
 	if err := decodeCallback(w, r, &payload); err != nil {
-		c.acknowledgeBrokenCallback(w, r, err, ack)
+		c.acknowledgeBrokenCallback(w, r, "", err, ack)
 		return
 	}
 
 	if len(payload.OrderProductResults) == 0 {
-		c.logger.WarnContext(r.Context(), "el callback de snacks llegó sin resultados de suborden",
+		attrs := appendOrderID([]any{
 			"order_no", payload.OrderNo,
 			"payment_order_id", payload.PaymentOrderID,
-		)
+		}, payload.PaymentOrderID)
+		c.logger.WarnContext(r.Context(), "el callback de snacks llegó sin resultados de suborden", attrs...)
 
 		writeJSON(w, http.StatusOK, ack)
 		return
@@ -181,11 +185,12 @@ func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
 	for _, result := range payload.OrderProductResults {
 		state, known := shipmentState(result.ShipmentStatus)
 		if !known {
-			c.logger.WarnContext(r.Context(), "el callback de snacks informó un estado de despacho que no está en la tabla: se acusa recibo sin tocarlo",
+			attrs := appendOrderID([]any{
 				"shipment_status", result.ShipmentStatus,
 				"sub_order_no", result.SubOrderNo,
 				"payment_order_id", payload.PaymentOrderID,
-			)
+			}, payload.PaymentOrderID)
+			c.logger.WarnContext(r.Context(), "el callback de snacks informó un estado de despacho que no está en la tabla: se acusa recibo sin tocarlo", attrs...)
 
 			continue
 		}
@@ -204,7 +209,7 @@ func (c *Callbacks) snacksCallback(w http.ResponseWriter, r *http.Request) {
 		failures = append(failures, c.runCallback(r.Context(), event, c.receiver.ApplyCallback))
 	}
 
-	c.writeCallbackResult(w, r, errors.Join(failures...), ack)
+	c.writeCallbackResult(w, r, payload.PaymentOrderID, errors.Join(failures...), ack)
 }
 
 func (c *Callbacks) runCallback(ctx context.Context, event order.Callback, apply func(context.Context, order.Callback) (bool, error)) error {
@@ -224,45 +229,49 @@ func (c *Callbacks) runCallback(ctx context.Context, event order.Callback, apply
 	return nil
 }
 
-func (c *Callbacks) writeCallbackResult(w http.ResponseWriter, r *http.Request, err error, ack any) {
+func (c *Callbacks) writeCallbackResult(w http.ResponseWriter, r *http.Request, orderID string, err error, ack any) {
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, ack)
 
 	case errors.Is(err, order.ErrCallbackUnknownLine), errors.Is(err, store.ErrNotFound):
-		c.logger.WarnContext(r.Context(), "el callback no corresponde a ninguna línea conocida: se acusa recibo igual para que no se reintente",
+		attrs := appendOrderID([]any{
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
-		)
+		}, orderID)
+		c.logger.WarnContext(r.Context(), "el callback no corresponde a ninguna línea conocida: se acusa recibo igual para que no se reintente", attrs...)
 
 		writeJSON(w, http.StatusOK, ack)
 
 	case errors.Is(err, order.ErrCallbackAmbiguous):
-		c.logger.ErrorContext(r.Context(), "el callback corresponde a más de una línea: se acusa recibo igual para que no se reintente y no se cierra nada",
+		attrs := appendOrderID([]any{
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
-		)
+		}, orderID)
+		c.logger.ErrorContext(r.Context(), "el callback corresponde a más de una línea: se acusa recibo igual para que no se reintente y no se cierra nada", attrs...)
 
 		writeJSON(w, http.StatusOK, ack)
 
 	case errors.Is(err, order.ErrCallbackIncomplete):
-		c.logger.ErrorContext(r.Context(), "el callback llegó incompleto: se acusa recibo igual para que no se reintente",
+		attrs := appendOrderID([]any{
 			"path", redactCallbackPath(r.URL.Path),
 			"error", err,
-		)
+		}, orderID)
+		c.logger.ErrorContext(r.Context(), "el callback llegó incompleto: se acusa recibo igual para que no se reintente", attrs...)
 
 		writeJSON(w, http.StatusOK, ack)
 
 	default:
-		fail(w, r, c.logger, err)
+		failWithOrder(w, r, c.logger, err, orderID)
 	}
 }
 
-func (c *Callbacks) acknowledgeBrokenCallback(w http.ResponseWriter, r *http.Request, err error, ack any) {
-	c.logger.ErrorContext(r.Context(), "el callback llegó con un cuerpo que no se puede leer: se acusa recibo igual para que no se reintente",
+func (c *Callbacks) acknowledgeBrokenCallback(w http.ResponseWriter, r *http.Request, orderID string, err error, ack any) {
+	attrs := appendOrderID([]any{
 		"path", redactCallbackPath(r.URL.Path),
 		"error", err,
-	)
+	}, orderID)
+	c.logger.ErrorContext(r.Context(), "el callback llegó con un cuerpo que no se puede leer: se acusa recibo igual para que no se reintente", attrs...)
 
 	writeJSON(w, http.StatusOK, ack)
 }
