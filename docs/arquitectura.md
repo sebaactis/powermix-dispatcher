@@ -369,9 +369,9 @@ Regla clave: sólo se reintenta un **rechazo de negocio claro** (`*dispenser.Rej
    │   lineByRef :124 → lineByThirdOrderNo :138   ├─ StalledLines (pending sin plazo, pagada
    │   → lineByMachineType :152                   │    hace más de 2 min)
    ├ SNACKS  ApplyCallback :38                │    └ resumeStalledLine :76 → dispatchWithinDeadline
-   │   → applyCallback :205 (delivered/failed)    │
+   │   → applyCallback :206 (delivered/failed)    │
    └ BATIDOS SyncLineFromCallback :55              └─ settleOrder de cada orden tocada (:67)
-       → markBrewing :222 + reconcileLine
+       → markBrewing :223 + reconcileLine
          (no se confía en el aviso: se pregunta a la API)
    ▼
  settleOrder (order/settle.go:16)
