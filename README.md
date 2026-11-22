@@ -1,289 +1,226 @@
 # compras-remotas
 
-Backend for a kiosk that sells combos: one tablet, two Powermix vending
-machines. A single purchase must dispatch the drink to the batidos machine and
-the snack to the snacks machine, independently.
+Backend en Go para un mueble expendedor con una tablet y dos máquinas independientes (batidos y snacks). Cada compra crea un pedido, valida la disponibilidad de ambas máquinas, gestiona el cobro y despacha cada ítem a su máquina por separado.
 
-```
-tablet (Kotlin, later)  ->  this backend  ->  Batidos API  ->  batidos machine
-                                        ->  Snacks API   ->  snacks machine
+```text
+tablet (app Android) ──► compras-remotas ──► API Batidos ──► máquina de batidos
+                                         ──► API Snacks  ──► máquina de snacks
 ```
 
-The tablet never talks to a machine: both providers forbid shipping the secret in
-a client, and neither API is callable from an app.
+La tablet nunca se comunica directo con las máquinas ni con los proveedores: las credenciales viven sólo en este backend.
 
-## The two machines are not symmetrical
+## Documentación
 
-| | Batidos | Snacks |
-| --- | --- | --- |
-| Dispatch | create a redemption campaign, then redeem the code | direct remote shipment by product |
-| Calls per item | 2 | 1 |
-| Auth | `key`, `timestamp`, `key-md5 = MD5(key+secret+timestamp)` | `accessKey`, `timestamp`, `nonce`, `sign = Base64(HMAC-SHA256)` |
-| Campaign dates | strings read as **UTC+8** | n/a |
+- [docs/flujo-del-sistema.svg](docs/flujo-del-sistema.svg): diagrama visual completo de la arquitectura, rutas HTTP, cobro, despacho y reconciliación.
+- [docs/arquitectura.md](docs/arquitectura.md): cómo funciona por dentro (paquetes, dependencias, invariantes y flujo paso a paso con referencias `archivo:línea`).
+- [docs/diseno-mercadopago.md](docs/diseno-mercadopago.md): diseño e implementación del cobro con QR de Mercado Pago.
+- [docs/pendientes.md](docs/pendientes.md): qué queda abierto, bloqueos externos, qué falta verificar y puntero a `odd/tasks/revision-produccion.md`.
+- [docs/comentarios-codigo.md](docs/comentarios-codigo.md): explicación detallada símbolo por símbolo (el código fuente no lleva comentarios a propósito).
+- [odd/tasks/combos-remotos.md](odd/tasks/combos-remotos.md) y [odd/tasks/revision-produccion.md](odd/tasks/revision-produccion.md): especificación histórica, decisiones y plan de revisión para producción.
 
-That asymmetry is the reason the order engine only knows the `dispenser.Dispenser`
-port: it never learns that a drink needs a code.
+## Requisitos y estructura rápida
 
-## Layout
+- Go `1.23` (`go.mod`).
+- PostgreSQL 16 (opcional en desarrollo local con `STORE=memory`; obligatorio con `STORE=postgres`).
+- Docker y Docker Compose (para levantar el stack local completo).
 
-```
-cmd/api          backend for the tablet: catalog, orders, live status, Mercado Pago QR (or simulated pay)
-cmd/migrate      one-shot schema runner: applies the embedded `migrations/*.sql`
-cmd/fakeapi      runs the local stand-ins (Batidos, Snacks, Mercado Pago) plus their test-only admin surface
-internal/config  topology from JSON, secrets from env, validated at startup
-internal/dispenser          the port: Check / Dispatch / Reconcile
-internal/dispenser/batidos       signature and UTC+8 campaign dates
-internal/dispenser/snacks  HMAC signature, nonce, clock window
-internal/fakeapi            local Batidos, Snacks and Mercado Pago, with their real rules enforced
-internal/httpapi            the four tablet endpoints and the provider callbacks, mapped onto catalog + engine + store
-internal/payments           payment Gateway port (QR charge) + Refunder port and its mock
-internal/payments/mercadopago  Orders API adapter and webhook signature check
-internal/notify             Notifier port + log and Telegram transports
-internal/migrate            what is pending, in one transaction per file, under an advisory lock
-migrations                 PostgreSQL schema, embedded with `//go:embed`
-docs                       comments and rationale, kept out of the code
-```
+Binarios principales:
 
-The source carries **no comments on purpose**. Every explanation, warning and
-decision lives in `docs/comentarios-codigo.md`, indexed by symbol
-(`Símbolo --> "texto"`). Keep it updated when behaviour changes; a stale note is
-worse than none.
+- `cmd/api`: servidor HTTP de la tablet, callbacks de proveedores y barrido periódico de reconciliación.
+- `cmd/migrate`: ejecutor puntual de migraciones SQL embebidas (`migrations/*.sql`).
+- `cmd/fakeapi`: servidores simulados locales de Batidos, Snacks y Mercado Pago, más una API de administración sólo para pruebas.
 
-## Documentation
+## Ejecución local
 
-- `docs/arquitectura.md`: Architecture overview and detailed step-by-step flow with `file:line` references.
-- `docs/flujo-del-sistema.svg`: Visual diagram of architecture layers, HTTP routes, and purchase flow.
-- `docs/pendientes.md`: Current backlog, technical debts, external blockers, unverified areas, and recommended work order.
-- `docs/comentarios-codigo.md`: Detailed rationale and code explanation indexed by file and symbol.
-- `docs/proveedores/`: Original vendor specifications and plain-text extractions (local only, git-ignored, copy manually).
-
-## Run
+### 1. Compilar y verificar el código
 
 ```bash
-go test ./...            # no tests in main: the 461 live in branch archive/tests
+go test ./...   # en main no hay tests: los 59 archivos *_test.go viven en la rama archive/tests
 go vet ./...
 go build ./...
-
-cp config.example.json config.local.json     # topology only, no values
-cp combos.example.json combos.local.json     # the menu: each item carries price_cents (> 0) and item prices must sum to combo price_cents
-
-go run ./cmd/api -config config.local.json -combos combos.local.json
-
-# GET  /healthz
-# GET  /combos
-# POST /orders               {"combo_id":"...","client_key":"...","kiosk_id":"..."}
-#                            combo_id y client_key se recortan (trim); 409 si el combo no es vendible; 502 si falla el chequeo previo o el QR; 500 por error interno
-#                            client_key: un UUID por pedido confirmado, reutilizado sólo para reintentar ese mismo pedido
-#                            (<= 128 caracteres tras trim -> 400 si excede; mismo combo y mueble -> 200; otro combo o mueble -> 409)
-#                            with Mercado Pago: adds "payment": {"status","qr_data","expires_at"}
-# GET  /orders/{id}          same "payment" block; the tablet polls it every 2 s
-# POST /orders/{id}/pay      simulated, sandbox without Mercado Pago only: 403 otherwise
-# POST /callbacks/mercadopago/{secret}   Mercado Pago webhook (signed)
 ```
 
-Local stand-ins, so integration work can start without credentials:
+### 2. Preparar configuración y catálogo locales
+
+```bash
+cp config.example.json config.local.json   # topología de muebles/máquinas (sin secretos reales)
+cp combos.example.json combos.local.json   # catálogo: cada ítem lleva price_cents > 0 y su suma debe igualar price_cents del combo
+```
+
+### 3. Migrar base de datos (sólo si usas `STORE=postgres`)
+
+```bash
+DATABASE_URL="postgres://compras:compras@127.0.0.1:5432/compras?sslmode=disable" go run ./cmd/migrate
+```
+
+### 4. Levantar los proveedores simulados y la API
+
+En una terminal:
 
 ```bash
 go run ./cmd/fakeapi
-# fake batidos API  -> http://127.0.0.1:9401
-# fake snacks API   -> http://127.0.0.1:9402
-# fake Mercado Pago -> http://127.0.0.1:9404   (Orders API: create, get, cancel)
-# admin surface     -> http://127.0.0.1:9403   (POST only, loopback only)
+# Batidos falso     -> http://127.0.0.1:9401
+# Snacks falso      -> http://127.0.0.1:9402
+# Administración    -> http://127.0.0.1:9403 (sólo POST, sólo loopback)
+# Mercado Pago falso -> http://127.0.0.1:9404 (Orders API: crear, consultar, cancelar)
 ```
 
-The fake also seeds one listed batidos product on startup, so a fresh fake plus
-this backend can sell a combo without preparing anything: `-batidos-goods`
-(`goods-1` by default) for the device named by `-batidos-device` (`dev-e2e-1` by
-default). Pass `-batidos-goods ""` to start with an empty batidos catalogue and
-load the products through the admin surface instead. The snacks fake needs no
-seed: it already starts with slots that have stock.
+Por defecto `cmd/fakeapi` siembra el producto `goods-1` (`-batidos-goods`) en el dispositivo `dev-e2e-1` (`-batidos-device`), y snacks arranca con el dispositivo `snacks-dev-1` y stock en `prod_snack_1` / `prod_snack_2`. Pasa `-batidos-goods ""` si prefieres empezar con el catálogo de batidos vacío y cargarlo por la API de administración.
 
-### Admin surface of the fake
+En otra terminal:
 
-Test-only, and thin: every route calls one setter the fake already had, so an
-end-to-end run can put the machines in the state it needs. Every route is `POST`,
-takes a JSON body, answers `{"ok":true}` or `{"ok":false,"error":"…"}`, and
-rejects bodies with unknown fields. Values are not persisted: a restart of the
-fake forgets them.
+```bash
+go run ./cmd/api -config config.local.json -combos combos.local.json
+```
 
-| Route | Body | Effect |
-| --- | --- | --- |
-| `/admin/batidos/goods` | `{"device_id":"dev-e2e-1","goods":[{"id":"goods-1","listing":true,"sold_out":0}]}` | replaces the device catalogue (`[]` leaves it empty) |
-| `/admin/batidos/offline` | `{"device_id":"dev-e2e-1","offline":true}` | takes the device offline; `false` is rejected because there is no setter to bring it back |
-| `/admin/batidos/abnormal` | `{"device_id":"dev-e2e-1","abnormal":true}` | marks a fault; `false` is rejected for the same reason |
-| `/admin/batidos/out_of_stock` | `{"device_id":"dev-e2e-1","out_of_stock":true}` | marks it without supplies; `false` is rejected for the same reason |
-| `/admin/batidos/advance` | `{"code":"000001","status":2}` | advances a redemption code, so `getOrderInfo` reports `0` failed, `1` brewing or `2` done |
-| `/admin/snacks/device` | `{"online":true,"sell_status":1,"fault_state":0,"lock_type":0,"stockout_state":0}` | applies only the fields present |
-| `/admin/snacks/slot` | `{"slot_no":"1","stock":5,"slot_status":1}` | sets the stock and/or the status of one slot |
-| `/admin/snacks/order` | `{"status":1,"name":"…"}` or `{"empty":true}` | changes what the orders page reports, or empties it |
-| `/admin/mercadopago/pay` | `{"order":"<ORD… or external_reference>","amount_cents":150050}` | the customer pays: the order goes to `processed`/`accredited` and a signed webhook goes to `-mp-webhook-url`; `amount_cents` is optional (defaults to the order total) and a different value simulates a wrong amount |
-| `/admin/mercadopago/expire` | `{"order":"…"}` | expires a `created` order now and sends the webhook |
-| `/admin/mercadopago/notify` | `{"order":"…"}` | sends the webhook again with the current state and a new `x-request-id` |
+### Probar el flujo completo con Mercado Pago local
 
-To run the whole Mercado Pago flow locally, point the fake's webhook at the API
-and give the API the fake's credentials:
+Apunta el webhook de `fakeapi` al endpoint de la API y configura las credenciales del falso:
 
 ```bash
 go run ./cmd/fakeapi -mp-webhook-url http://127.0.0.1:8080/callbacks/mercadopago/local-mp
-
-# in config.local.json (or the MP_* variables):
-#   "mercadopago": {"base_url": "http://127.0.0.1:9404", "access_token": "TEST-fake-token",
-#                   "webhook_secret": "fake-webhook-secret", "callback_secret": "local-mp"}
-#   and "mp_pos_id": "POS-1" on every kiosk
-
-# client_key: un UUID por pedido confirmado, reutilizado sólo para reintentar ese mismo pedido (400 si > 128 caracteres, 409 si cambia combo o mueble)
-curl -X POST localhost:8080/orders -d '{"combo_id":"...","client_key":"k1"}'
-curl -X POST localhost:9403/admin/mercadopago/pay -d '{"order":"<order id>"}'
-curl localhost:8080/orders/<order id>      # dispatching, payment approved
 ```
 
-> Local tests only. There is no authentication, so the admin server must never be
-> reachable from another machine: `-admin-addr` defaults to `127.0.0.1:9403` and
-> the process refuses to start with a non-loopback host.
+En `config.local.json` (o mediante variables `MP_*`):
 
-## Run with Docker Compose
+- `"mercadopago": {"base_url": "http://127.0.0.1:9404", "access_token": "TEST-fake-token", "webhook_secret": "fake-webhook-secret", "callback_secret": "local-mp"}`
+- `"mp_pos_id": "POS-1"` en cada mueble.
+
+Luego puedes crear una orden, simular el pago y consultar el estado:
+
+```bash
+curl -X POST http://127.0.0.1:8080/orders -d '{"combo_id":"...","client_key":"k1","kiosk_id":"kiosk-demo"}'
+curl -X POST http://127.0.0.1:9403/admin/mercadopago/pay -d '{"order":"<order_id>"}'
+curl http://127.0.0.1:8080/orders/<order_id>
+```
+
+> Solo para pruebas locales: la API de administración de `cmd/fakeapi` no tiene autenticación. `-admin-addr` usa `127.0.0.1:9403` por defecto y el binario rechaza arrancar si se configura fuera de loopback.
+
+### Superficie de administración de `cmd/fakeapi`
+
+Todas las rutas aceptan únicamente `POST` con JSON sin campos desconocidos y responden `{"ok":true}` o `{"ok":false,"error":"…"}` (salvo las de Mercado Pago, que también incluyen `order_id` y `webhook`). El estado vive sólo en memoria.
+
+| Ruta | Cuerpo | Efecto |
+| --- | --- | --- |
+| `/admin/batidos/goods` | `{"device_id":"dev-e2e-1","goods":[{"id":"goods-1","listing":true,"sold_out":0}]}` | Reemplaza el catálogo del dispositivo (`[]` lo vacía) |
+| `/admin/batidos/offline` | `{"device_id":"dev-e2e-1","offline":true}` | Marca el dispositivo offline (`false` responde 501) |
+| `/admin/batidos/abnormal` | `{"device_id":"dev-e2e-1","abnormal":true}` | Marca avería (`false` responde 501) |
+| `/admin/batidos/out_of_stock` | `{"device_id":"dev-e2e-1","out_of_stock":true}` | Marca sin insumos (`false` responde 501) |
+| `/admin/batidos/advance` | `{"code":"000001","status":2}` | Avanza un código (`0` fallido, `1` en preparación, `2` entregado) |
+| `/admin/snacks/device` | `{"online":true,"sell_status":1,"fault_state":0,"lock_type":0,"stockout_state":0}` | Actualiza sólo los campos presentes |
+| `/admin/snacks/slot` | `{"slot_no":"1","stock":5,"slot_status":1}` | Ajusta stock y/o estado de una ranura |
+| `/admin/snacks/order` | `{"status":1,"name":"…"}` o `{"empty":true}` | Cambia lo que informa la página de órdenes o la vacía |
+| `/admin/mercadopago/pay` | `{"order":"<ORD… o order_id>","amount_cents":150050}` | Marca pagada y envía webhook firmado (`amount_cents` opcional; un valor distinto simula monto incorrecto) |
+| `/admin/mercadopago/expire` | `{"order":"…"}` | Expira una orden `created` y envía webhook |
+| `/admin/mercadopago/notify` | `{"order":"…"}` | Reenvía el webhook con el estado actual y un nuevo `x-request-id` |
+
+## Endpoints HTTP
+
+### API de la tablet
+
+- `GET /healthz`: responde `200` con `{"status","env","kiosks","combos","store"}`.
+- `GET /combos`: lista los combos activos del catálogo.
+- `POST /orders`: cuerpo `{"combo_id":"...","client_key":"...","kiosk_id":"..."}` (`kiosk_id` es opcional si sólo hay un mueble configurado; `combo_id` y `client_key` se recortan con `TrimSpace`).
+  - `client_key`: un UUID por pedido confirmado en el kiosco, reutilizado únicamente para reintentar ese mismo pedido (`<= 128` caracteres tras `trim`, si supera responde `400`).
+  - Mismo `client_key`, mismo `combo_id` y mismo `kiosk_id`: devuelve `200` con la orden existente (idempotencia).
+  - Mismo `client_key` con otro combo o mueble, combo no vendible o mueble sin la máquina requerida: responde `409`.
+  - JSON inválido, `combo_id` vacío o `kiosk_id` faltante con múltiples muebles: responde `400`.
+  - Combo o mueble inexistente: responde `404`.
+  - Falla o timeout de un proveedor en el chequeo previo o al crear el QR en Mercado Pago: responde `502`.
+  - Error interno: responde `500`.
+  - Con Mercado Pago activo, suma `"payment": {"status","qr_data","expires_at"}` (`qr_data` sólo mientras el pago está `pending`).
+- `GET /orders/{id}`: devuelve la orden y sus líneas (con Mercado Pago activo incluye el bloque `"payment"`). La tablet lo consulta cada 2 s.
+- `POST /orders/{id}/pay`: pago simulado; disponible **sólo** en `sandbox` sin Mercado Pago configurado (responde `403` en `production` o con Mercado Pago activo).
+
+### Webhooks y callbacks de proveedores
+
+- `POST /callbacks/mercadopago/{secret}`: webhook de Mercado Pago (secreto en ruta + firma `X-Signature`).
+- `POST /callbacks/batidos/{secret}/{orderId}`: callback de Batidos (secreto en ruta; consulta a la API antes de cerrar).
+- `POST /callbacks/snacks/{secret}`: callback de Snacks (secreto en ruta).
+
+Si el secreto configurado está vacío o no coincide, los endpoints de callback responden `404`.
+
+## Ejecución con Docker Compose
 
 ```bash
 docker compose up -d --build
-docker compose down          # keeps the database volume
-docker compose down -v       # drops the database too
+docker compose down          # conserva el volumen pgdata
+docker compose down -v       # borra también la base de datos
 ```
 
-The backend answers on <http://127.0.0.1:18080> (`GET /healthz`, `GET /combos`,
-`POST /orders`). Everything in this stack is local: sandbox environment, example
-callback secrets and the fake providers. No real credential is involved.
+La API responde en `http://127.0.0.1:18080`. Todo el stack de `docker-compose.yml` es local (`sandbox`, secretos de ejemplo y proveedores falsos).
 
-| Service | What it does |
+| Servicio | Función |
 | --- | --- |
-| `db` | PostgreSQL 16, named volume `pgdata`, `pg_isready` healthcheck |
-| `migrate` | builds the `migrate` target; applies the pending `migrations/*.sql` from inside the binary, one transaction per file, tracked in `schema_migrations` with SHA-256 checksums; exits when done |
-| `api` | builds the `runtime` target of the `Dockerfile` and serves the tablet backend, store on PostgreSQL |
-| `fakeapi` | builds the `fakeapi` target; both stand-in provider APIs, with `DEMO-BATIDO-VAINILLA` seeded so the drink half of a combo exists |
+| `db` | PostgreSQL 16 con volumen `pgdata` y healthcheck `pg_isready` |
+| `migrate` | Ejecuta `cmd/migrate` con las migraciones embebidas en el binario bajo advisory lock y checksum SHA-256; termina al finalizar |
+| `api` | Ejecuta `cmd/api` con `STORE=postgres`, sembrando muebles y combos desde `config.docker.json` y `combos.example.json` (upsert seguro) |
+| `fakeapi` | Ejecuta `cmd/fakeapi` exponiendo `9401` (batidos) y `9402` (snacks) sólo en `127.0.0.1`, con `DEMO-BATIDO-VAINILLA` sembrado en batidos |
 
-The `api` container seeds the kiosks, machines and combos it read from
-`config.docker.json` and `combos.example.json` on every start, because an order
-row references both a kiosk and a combo. That write is an upsert, so restarting
-is safe.
-
-`migrate` is a Go program (`cmd/migrate`), not `psql` over a mounted directory: the
-`.sql` files are embedded in the binary, so the container applies exactly the
-files it was built with. It keeps `schema_migrations`, takes an advisory lock so
-two runners never migrate at once, and runs each pending file in one transaction
-together with its version row and its content checksum (normalizing CRLF to LF).
-Applied migrations are immutable: if a previously applied migration file differs
-from its stored checksum, the runner aborts before running any pending migrations.
-A second `up` is a no-op (`el esquema ya está al día`) instead of failing on DDL
-that is already applied, and a broken file rolls back and exits non-zero, which
-keeps `api` from starting. A volume created before the runner existed has the tables
-but no `schema_migrations`: run `docker compose down -v` once.
-
-The fake's admin port (9403) is not published. The fake refuses to bind its admin
-surface outside loopback, and a process bound to `127.0.0.1` inside a container
-cannot be reached through a published port. The two provider ports are published
-on loopback only, so the fakes are never reachable from another machine.
+Las migraciones aplicadas son inmutables: si un archivo ya registrado en `schema_migrations` cambia su checksum SHA-256 (normalizando CRLF a LF), `migrate` aborta antes de aplicar pendientes. Si existe un volumen `pgdata` creado antes de existir `schema_migrations`, ejecuta `docker compose down -v` una vez.
 
 ### Apagado ordenado (producción)
 
-`docker-compose.yml` configura `stop_grace_period: 75s` en el servicio `api`. Cualquier orquestador o supervisor en producción debe dar al menos **75 s** entre `SIGTERM` y `SIGKILL` (por ejemplo `terminationGracePeriodSeconds: 75` en Kubernetes o `TimeoutStopSec=75` en systemd):
+`docker-compose.yml` fija `stop_grace_period: 75s` en el servicio `api`. Cualquier orquestador o supervisor en producción debe dar al menos **75 s** entre `SIGTERM` y `SIGKILL` (por ejemplo `terminationGracePeriodSeconds: 75` en Kubernetes o `TimeoutStopSec=75` en systemd):
 
 - **10 s** para `server.Shutdown` (cerrar conexiones HTTP entrantes).
-- **60 s** de drenaje para esperar que termine el barrido y los despachos en curso (`engine.Wait`), antes de cerrar la base de datos.
+- **60 s** de drenaje para esperar a que terminen el barrido y los despachos en curso (`engine.Wait`), antes de cerrar la base de datos.
 - **5 s** de margen para el cierre del store.
 
-Alcance (F7b no cubierto): si el proceso recibe un corte abrupto (`SIGKILL` o caída eléctrica) durante el despacho de batidos, la línea queda en `in_doubt` porque el código de campaña no se guarda antes de `ProduceCoffee`.
+Alcance (pendiente **F7b**): si el proceso recibe un corte abrupto (`SIGKILL` o caída eléctrica) durante el despacho de batidos, la línea queda en `in_doubt` porque el código de campaña no se guarda antes de `ProduceCoffee`.
 
-## Secrets
+## Variables de entorno y secretos
 
-Credentials never live in a tracked file. They come from environment
-variables, which override anything written in the JSON:
+Las credenciales nunca se versionan. Las variables de entorno pisan los valores del archivo JSON de configuración (`config.local.json`):
 
-| Variable | Provider |
+| Variable | Uso |
 | --- | --- |
-| `BATIDOS_KEY` | Batidos (GS merchant API) |
-| `BATIDOS_SECRET` | Batidos |
-| `SNACKS_ACCESS_KEY` | Snacks (OurVend open API) |
-| `SNACKS_APP_SECRET` | Snacks |
-| `BATIDOS_CALLBACK_SECRET` | Secret path segment for the Batidos callback (optional) |
-| `SNACKS_CALLBACK_SECRET` | Secret path segment for the Snacks callback (optional) |
-| `PUBLIC_BASE_URL` | Public base URL of this backend (optional). Without it the Batidos campaign is created without `notifyUrl`, so the Batidos callback never arrives |
-| `STORE` | `memory` (default) or `postgres`; overrides `store` in the JSON |
-| `DATABASE_URL` | PostgreSQL DSN, required when the store is `postgres`; overrides `database_url` in the JSON |
-| `MP_ACCESS_TOKEN` | Mercado Pago access token. Set: payments go through the QR and the simulated pay is off. Empty: simulated pay (sandbox only; production refuses to start) |
-| `MP_WEBHOOK_SECRET` | Secret Mercado Pago signs the webhook with (`x-signature`); required with the token |
-| `MP_CALLBACK_SECRET` | Secret path segment of the Mercado Pago webhook; required with the token |
-| `MP_BASE_URL` | Mercado Pago API (default `https://api.mercadopago.com`; the local fake is `http://127.0.0.1:9404`) |
-| `TELEGRAM_BOT_TOKEN` | Token of the Telegram bot that sends the support alerts. Empty: alerts only go to the log (sandbox only; production refuses to start) |
-| `TELEGRAM_CHAT_ID` | Chat (or group) the alerts go to; required with the token |
-| `TELEGRAM_BASE_URL` | Telegram Bot API (default `https://api.telegram.org`) |
-| `LOG_LEVEL` | Log level for all three binaries (`debug`, `info`, `warn`, `error`, case-insensitive; default `info`). Invalid values abort startup |
+| `CONFIG_PATH` | Ruta al JSON de topología (por defecto `config.local.json`, o flag `-config`) |
+| `COMBOS_PATH` | Ruta al JSON de catálogo (por defecto `combos.local.json`, o flag `-combos`) |
+| `HTTP_ADDR` | Dirección de escucha HTTP de `cmd/api` (por defecto `127.0.0.1:8080`) |
+| `LOG_LEVEL` | Nivel de log para los tres binarios (`debug`, `info`, `warn`, `error`, insensible a mayúsculas; por defecto `info`). Un valor inválido aborta el arranque |
+| `STORE` | `memory` (por defecto) o `postgres`; pisa `store` del JSON |
+| `DATABASE_URL` | DSN de PostgreSQL, obligatorio si `STORE=postgres` y para `cmd/migrate`; pisa `database_url` del JSON |
+| `PUBLIC_BASE_URL` | URL pública base de este backend (opcional; en `production` exige `https`). Sin ella la campaña de batidos se crea sin `notifyUrl` y el callback no llega |
+| `BATIDOS_KEY` | `key` del proveedor de Batidos (GS merchant API) |
+| `BATIDOS_SECRET` | `secret` del proveedor de Batidos |
+| `BATIDOS_CALLBACK_SECRET` | Segmento secreto en la ruta del callback de Batidos (opcional) |
+| `SNACKS_ACCESS_KEY` | `access_key` del proveedor de Snacks (OurVend open API) |
+| `SNACKS_APP_SECRET` | `app_secret` del proveedor de Snacks |
+| `SNACKS_CALLBACK_SECRET` | Segmento secreto en la ruta del callback de Snacks (opcional) |
+| `MP_ACCESS_TOKEN` | Access token de Mercado Pago. Con valor: cobro por QR activo y pago simulado apagado. Vacío: pago simulado (sólo `sandbox`; `production` rechaza arrancar) |
+| `MP_WEBHOOK_SECRET` | Secreto de firma `X-Signature` del webhook de Mercado Pago; obligatorio con el token |
+| `MP_CALLBACK_SECRET` | Segmento secreto en la ruta del webhook de Mercado Pago; obligatorio con el token |
+| `MP_BASE_URL` | Base URL de Mercado Pago (por defecto `https://api.mercadopago.com`; el falso local usa `http://127.0.0.1:9404`) |
+| `TELEGRAM_BOT_TOKEN` | Token del bot de Telegram para avisos a soporte. Vacío: avisos sólo al log (sólo `sandbox`; `production` rechaza arrancar) |
+| `TELEGRAM_CHAT_ID` | ID del chat o grupo de soporte; obligatorio con el token |
+| `TELEGRAM_BASE_URL` | Base URL de Telegram Bot API (por defecto `https://api.telegram.org`) |
 
-### Logueo
+Notas operativas:
 
-Los tres binarios (`cmd/api`, `cmd/migrate`, `cmd/fakeapi`) emiten logs en formato JSON estructurado (`slog.JSONHandler`) a salida estándar, filtrados por `LOG_LEVEL`. En `cmd/api`, cada pedido HTTP pasa por un middleware que genera un `X-Request-Id` único en el servidor (sin tomar el header entrante), lo devuelve en la respuesta, lo inyecta en el contexto para que los logs con `*Context` incluyan `request_id`, recupera panics devolviendo `500` JSON (o abortando la conexión si ya se enviaron cabeceras) y registra un access log por pedido (`info` para 2xx/3xx, `warn` para 4xx, `error` para 5xx o abortados) usando el patrón de ruta (`route`/`path`) o la ruta limpia y redactada (`/callbacks/***`) sin query string ni headers. `http.Server.ErrorLog` también apunta al logger JSON en nivel `error`.
+- **Mercado Pago es todo o nada**: una configuración a medias (secretos sin token, token sin secretos o algún mueble sin `mp_pos_id`) impide arrancar la API.
+- **Telegram**: los avisos (`order_in_doubt`, `order_failed`, `order_partial`, `dispatch_panic`, `payment_mismatch`, `payment_unknown`) siempre se escriben primero en el log. Si Telegram falla tras 3 intentos, el error queda en el log (`ERROR`) y la orden continúa.
+- **Secretos locales**: guárdalos en `.env` (ignorado por Git) y cárgalos en tu shell antes de ejecutar (`set -a; source .env; set +a` en bash). Nunca pongas valores reales en `config.example.json` ni fuerces el agregado de `.env` o `*.local.json`. Los valores de prueba (`mysecret`, `testsecret`, `ak_test`, `TEST-fake-token`) son sintéticos para `fakeapi`.
 
-Mercado Pago is all or nothing: a half configuration (secrets without token, token
-without secrets, or a kiosk without `mp_pos_id`, the `external_pos_id` of its
-Mercado Pago cash register) makes the API refuse to start.
+## Logueo
 
-Telegram alerts (orders `in_doubt`/`failed`, payments with a wrong amount or an
-unknown state) are always written to the log first. If Telegram does not answer
-after 3 attempts the alert stays only in the log (an ERROR line) and the order or
-payment goes on: an alert channel outage never blocks a sale.
+Los tres binarios (`cmd/api`, `cmd/migrate`, `cmd/fakeapi`) emiten logs en formato JSON estructurado (`slog.JSONHandler`) por salida estándar, filtrados por `LOG_LEVEL`.
 
-To get the values: create the bot with @BotFather (`/newbot` gives the token), add
-it to the support group, send any message there and read the group's `chat.id`
-(a negative number) from `https://api.telegram.org/bot<token>/getUpdates`.
+En `cmd/api`, cada petición HTTP pasa por `httpapi.Wrap`:
 
-Both callback secrets are optional. When a secret is empty, that callback
-endpoint answers 404: an unauthenticated machine callback never reaches the
-order. The Batidos callback is not signed by the provider (R6), so the secret
-lives in the URL path instead of a header.
+- Genera un `X-Request-Id` único en el servidor (ignorando el header entrante), lo devuelve en la respuesta y lo propaga en el contexto para que los logs con `*Context` incluyan `request_id`.
+- Recupera panics en handlers devolviendo `500` en JSON (o aborta con `http.ErrAbortHandler` si ya se enviaron cabeceras).
+- Registra un access log por petición (`info` para 2xx/3xx, `warn` para 4xx, `error` para 5xx o abortadas) usando el patrón de ruta (`route`/`path`) o la ruta limpia y redactada (`/callbacks/***`), sin query string ni headers.
+- `http.Server.ErrorLog` también apunta al logger JSON en nivel `error`.
 
-Keep them in a local `.env` file, which is git-ignored, and load it in the shell:
+## Qué no está en el repositorio
 
-```bash
-set -a; source .env; set +a
-```
-
-Rules, so nothing leaks into history:
-
-- `.env` and `*.local.json` are ignored by git. Do not force-add them.
-- `config.example.json` keeps placeholders (`replace-me`). It is committed, so it
-  must never hold a real value, not even a revoked one.
-- Test fixtures (`mysecret`, `testsecret`, `ak_test`) are synthetic values for the
-  local fakes. They are not credentials for anything, but a secret scanner may
-  flag them; that is expected.
-
-## What is in the repository
-
-Code, plus `odd/tasks/combos-remotos.md`: the specification, the decisions taken
-and the questions still open. It is versioned on purpose — it is the only record
-of why the code looks the way it does.
-
-## What is not in the repository
-
-| Kept out | Why |
+| Excluido (`.gitignore`) | Motivo |
 | --- | --- |
-| `docs/proveedores/` (`batidos-api.md`, `snacks-api.pdf`, `snacks-api.txt`) | Third-party vendor documents with copyright notices |
-| `design/` | Internal design boards and their screenshots |
-| `.env`, `*.local.json` | Real credentials and real topology |
+| `docs/proveedores/` (`batidos-api.md`, `snacks-api.pdf`, `snacks-api.txt`) | Documentación original de terceros con avisos de copyright (copiar manualmente en local) |
+| `design/` | Tableros y capturas internas de diseño |
+| `.env`, `.env.*`, `*.local.json` | Credenciales y topologías reales |
 
-Consequence: a fresh clone cannot read the vendor contracts directly without copying them manually into `docs/proveedores/`. See `docs/pendientes.md` for instructions on acquiring them and the open questions. The wire rules those
-documents define live in code and in tests (`internal/dispenser/*/sign*.go`, the
-`openssl` vectors), which is what actually prevents a regression.
+## Tests
 
-## Tests that exist because the docs were ambiguous
-
-All of them live in branch `archive/tests`, not in `main` (see
-`docs/arquitectura.md`).
-
-- Two Base64 HMAC vectors and two MD5 vectors computed with `openssl`, not with Go,
-  so the test cannot agree with the implementation by accident.
-- `CampaignTime` is checked across a midnight boundary: sending local time instead
-  of UTC+8 pushes the campaign eleven hours into the future.
-- The fake Batidos rejects a reused exchange code; the fake Snacks rejects a replayed
-  nonce and a bad signature.
-
-## Known open questions
-
-Open questions regarding real provider integration (domains, signatures, parameters, and idempotency) and remaining technical debts are tracked in `docs/pendientes.md` and `odd/tasks/combos-remotos.md`.
+`main` no contiene archivos `*_test.go`. Los 59 archivos de tests viven en la rama `archive/tests` (incluida la verificación de firmas HMAC/MD5 contra vectores de `openssl`, fechas `UTC+8` de campaña y rechazos de replay en los falsos). Consulta [docs/arquitectura.md](docs/arquitectura.md) para el flujo de trabajo con `archive/tests`.

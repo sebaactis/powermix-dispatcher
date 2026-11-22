@@ -14,9 +14,9 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Partes de la revisión
 
 - [x] P1 — Entrada del pedido, validaciones, proveedores, pago, despacho y logueo: revisado el 2026-11-21 (hallazgos abajo).
-- [ ] P2 — Documentación (README, `docs/arquitectura.md`, `docs/pendientes.md`, `docs/comentarios-codigo.md` de 2620 líneas): que esté actualizada, clara y concisa. Sin empezar.
+- [x] P2 — Hecho (`odd/tasks/documentacion-y-grafico.md`, commits 70d32b4 y 7dcc10e). Original: Documentación (README, `docs/arquitectura.md`, `docs/pendientes.md`, `docs/comentarios-codigo.md` de 2620 líneas): que esté actualizada, clara y concisa. Sin empezar.
 - [ ] P3 — Buenas prácticas del código (detalle en H-BP). Sin empezar más allá del adelanto.
-- [ ] P4 — Gráfico `docs/flujo-del-sistema.svg`: actualizado (Mercado Pago, Telegram, partial, in_doubt), claro y moderno. Sin empezar.
+- [x] P4 — Hecho (`odd/tasks/documentacion-y-grafico.md`, commit 40f5428). Original: Gráfico `docs/flujo-del-sistema.svg`: actualizado (Mercado Pago, Telegram, partial, in_doubt), claro y moderno. Sin empezar.
 
 ## Fixes
 
