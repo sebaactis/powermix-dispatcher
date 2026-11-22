@@ -554,3 +554,35 @@ func TestCreateOrderEnforcesClientKeyMaxLength(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateOrderTrimsComboID(t *testing.T) {
+	fxUnpadded := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
+	unpadded := call(t, fxUnpadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":"combo-mixto","client_key":"clave-1"}`)
+	if unpadded.Code != http.StatusOK {
+		t.Fatalf("sin espacios se esperaba 200 y llegó %d: %s", unpadded.Code, unpadded.Body.String())
+	}
+
+	fxPadded := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
+	padded := call(t, fxPadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":" combo-mixto ","client_key":"clave-1"}`)
+	if padded.Code != http.StatusOK {
+		t.Fatalf("con espacios alrededor se esperaba 200 y llegó %d: %s", padded.Code, padded.Body.String())
+	}
+
+	if padded.Body.String() != unpadded.Body.String() {
+		t.Fatalf("la respuesta con combo_id con espacios difiere de la normal:\ngot:  %s\nwant: %s", padded.Body.String(), unpadded.Body.String())
+	}
+
+	got := decode(t, padded)
+	retry := call(t, fxPadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":"combo-mixto","client_key":"clave-1"}`)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("reintento sin espacios sobre la misma client_key: se esperaba 200 y llegó %d: %s", retry.Code, retry.Body.String())
+	}
+	if decode(t, retry)["id"] != got["id"] {
+		t.Fatalf("el reintento debía devolver la misma orden %v y devolvió %v", got["id"], decode(t, retry)["id"])
+	}
+
+	blank := call(t, fxPadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":"   "}`)
+	if blank.Code != http.StatusBadRequest {
+		t.Fatalf("combo_id solo con espacios se esperaba 400 y llegó %d: %s", blank.Code, blank.Body.String())
+	}
+}

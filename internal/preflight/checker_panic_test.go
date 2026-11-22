@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"compras-remotas/internal/dispenser/batidos"
 	"compras-remotas/internal/dispenser/snacks"
@@ -136,6 +138,9 @@ func TestCheckerRecoversPanicFromProviderGoroutines(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error from recovered panic, got result %+v", res)
 			}
+			if !errors.Is(err, preflight.ErrPanic) {
+				t.Fatalf("expected error to wrap preflight.ErrPanic, got %v", err)
+			}
 			if res.Sellable || len(res.Reasons) != 0 {
 				t.Fatalf("expected empty unsellable result on error, got %+v", res)
 			}
@@ -182,4 +187,37 @@ func TestCheckerWithLoggerLogsPanic(t *testing.T) {
 	if !strings.Contains(buf.String(), "injected logger boom") {
 		t.Fatalf("expected injected logger to capture panic, got: %s", buf.String())
 	}
+}
+
+func TestCheckerProviderErrorAndTimeoutAreNotErrPanic(t *testing.T) {
+	t.Run("provider error", func(t *testing.T) {
+		checker := preflight.New(
+			&batidosStub{deviceErr: errProvider},
+			&snacksStub{page: healthySnacks().page, slots: healthySnacks().slots},
+		)
+
+		_, err := checker.Check(context.Background(), testRequest())
+		if !errors.Is(err, errProvider) {
+			t.Fatalf("expected provider error, got %v", err)
+		}
+		if errors.Is(err, preflight.ErrPanic) {
+			t.Fatalf("provider error must not match preflight.ErrPanic: %v", err)
+		}
+	})
+
+	t.Run("provider timeout", func(t *testing.T) {
+		checker := preflight.New(
+			&blockedBatidosStub{},
+			&blockedSnacksStub{},
+			preflight.WithBudget(20*time.Millisecond),
+		)
+
+		_, err := checker.Check(context.Background(), testRequest())
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+		}
+		if errors.Is(err, preflight.ErrPanic) {
+			t.Fatalf("timeout must not match preflight.ErrPanic: %v", err)
+		}
+	})
 }

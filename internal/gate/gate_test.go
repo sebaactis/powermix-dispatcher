@@ -187,9 +187,41 @@ func TestGatePropagatesACheckerError(t *testing.T) {
 	if !errors.Is(err, caido) {
 		t.Fatalf("se esperaba el error del verificador y llegó %v", err)
 	}
+	if !errors.Is(err, order.ErrAvailabilityUnavailable) {
+		t.Fatalf("un fallo del proveedor debe marcar ErrAvailabilityUnavailable y llegó %v", err)
+	}
 	if errors.Is(err, order.ErrNotSellable) {
 		t.Fatalf("un proveedor inalcanzable no es un combo no vendible: %v", err)
 	}
+}
+
+func TestGateDoesNotWrapPreflightPanicOrInternalErrorsAsAvailabilityUnavailable(t *testing.T) {
+	t.Run("panic en preflight", func(t *testing.T) {
+		panicErr := errors.Join(errors.New("batidos fallo"), preflight.ErrPanic)
+		err := gate.New(&stubChecker{err: panicErr}).Check(context.Background(), mixedDraft())
+		if !errors.Is(err, preflight.ErrPanic) {
+			t.Fatalf("se esperaba preservar preflight.ErrPanic y llegó %v", err)
+		}
+		if errors.Is(err, order.ErrAvailabilityUnavailable) {
+			t.Fatalf("un panic en preflight no es una caída del proveedor: %v", err)
+		}
+	})
+
+	t.Run("sin verificador configurado", func(t *testing.T) {
+		err := gate.New(nil).Check(context.Background(), mixedDraft())
+		if errors.Is(err, order.ErrAvailabilityUnavailable) {
+			t.Fatalf("errNoChecker no es una caída del proveedor: %v", err)
+		}
+	})
+
+	t.Run("combo no evaluable", func(t *testing.T) {
+		draft := mixedDraft()
+		draft.Items = draft.Items[:1]
+		err := gate.New(&stubChecker{}).Check(context.Background(), draft)
+		if errors.Is(err, order.ErrAvailabilityUnavailable) {
+			t.Fatalf("un combo no evaluable no es una caída del proveedor: %v", err)
+		}
+	})
 }
 
 func TestGateWithANilCheckerFailsClosed(t *testing.T) {
