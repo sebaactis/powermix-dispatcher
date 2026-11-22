@@ -72,6 +72,7 @@ go run ./cmd/api -config config.local.json -combos combos.local.json
 # GET  /healthz
 # GET  /combos
 # POST /orders               {"combo_id":"...","client_key":"...","kiosk_id":"..."}
+#                            combo_id y client_key se recortan (trim); 409 si el combo no es vendible; 502 si falla el chequeo previo o el QR; 500 por error interno
 #                            client_key: un UUID por pedido confirmado, reutilizado sólo para reintentar ese mismo pedido
 #                            (<= 128 caracteres tras trim -> 400 si excede; mismo combo y mueble -> 200; otro combo o mueble -> 409)
 #                            with Mercado Pago: adds "payment": {"status","qr_data","expires_at"}

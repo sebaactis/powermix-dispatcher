@@ -249,7 +249,7 @@ TABLET
   │ POST /orders {combo_id, client_key, kiosk_id}
   ▼
 httpapi/orders.go:10 createOrder
-  ├─ decodeCreateOrder ...... httpapi/draft.go:26   (64 KB, sin campos extra, trim de client_key <= 128 runas → 400)
+  ├─ decodeCreateOrder ...... httpapi/draft.go:26   (64 KB, sin campos extra, trim de combo_id y client_key <= 128 runas → 400)
   ├─ resolveKiosk ........... httpapi/draft.go:52
   └─ buildDraft ............. httpapi/draft.go:74   (precio del combo y por ítem SIEMPRE del catálogo)
   ▼
@@ -258,14 +258,16 @@ order/place.go:14 CreateOrder
   ├─ ¿ya existe client_key? (:20, o tras ErrAlreadyExists en :62) ──► matchClientKeyOrder :76
   │     ├─ mismo combo y mueble → devuelve la misma orden (200, idempotencia)
   │     └─ otro combo u otro mueble → warn en log + ErrClientKeyConflict → 409 (httpapi/errors.go:48)
-  ├─ gate.Check (gate/gate.go:27) → preflight.Check (preflight/checker.go:93)
+  ├─ gate.Check (gate/gate.go:27) → preflight.Check (preflight/checker.go:113)
   │     plazo total 8 s, una goroutine por máquina:
-  │       checkBatidos :125  (Device + DeviceGoods)
-  │       checkSnacks  :157  (Devices + Slots)
-  │     no vendible → NotSellableError → 409 (httpapi/errors.go:64)
+  │       checkBatidos :161  (Device + DeviceGoods)
+  │       checkSnacks  :193  (Devices + Slots)
+  │     no vendible → NotSellableError → 409 (httpapi/errors.go:75)
+  │     falla o timeout del proveedor → ErrAvailabilityUnavailable → 502 (httpapi/errors.go:53), sin crear orden
+  │     panic en preflight (ErrPanic), sin verificador o combo no evaluable → 500, sin crear orden
   └─ CreateOrder: orden pending_payment, líneas pending (:62)
   ▼
-  └─ (con MP) RequestQR (order/qr.go:21): crea el QR en MP (idempotencia = id de orden),
+  └─ (con MP) RequestQR (order/qr.go:21): crea el QR en MP (idempotencia = id de orden; si falla → ErrQRUnavailable → 502),
      guarda el payment_intent y la respuesta suma payment {status, qr_data, expires_at}
   ▼
 COBRO, por uno de dos caminos:

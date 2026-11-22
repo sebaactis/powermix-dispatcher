@@ -37,7 +37,8 @@ func decodeCreateOrder(w http.ResponseWriter, r *http.Request) (createOrderReque
 		return createOrderRequest{}, badRequest("el cuerpo del pedido debe ser un único objeto JSON")
 	}
 
-	if strings.TrimSpace(request.ComboID) == "" {
+	request.ComboID = strings.TrimSpace(request.ComboID)
+	if request.ComboID == "" {
 		return createOrderRequest{}, badRequest("hace falta indicar el combo (combo_id)")
 	}
 
