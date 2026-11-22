@@ -1,8 +1,11 @@
 package order_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -305,5 +308,209 @@ func TestEngineCreateOrderIsIdempotentByClientKey(t *testing.T) {
 
 	if third.ID == first.ID {
 		t.Fatalf("dos claves distintas devolvieron la misma orden %q", third.ID)
+	}
+}
+
+func TestEngineCreateOrderRejectsClientKeyConflict(t *testing.T) {
+	cases := []struct {
+		name    string
+		kioskID string
+		comboID string
+	}{
+		{name: "cambia el combo", kioskID: "kiosk-1", comboID: "combo-2"},
+		{name: "cambia el mueble", kioskID: "kiosk-2", comboID: "combo-1"},
+		{name: "cambian ambos", kioskID: "kiosk-2", comboID: "combo-2"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			st := newRecordingStore()
+			engine := order.New(
+				st,
+				map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+				order.WithClock(frozenClock()),
+				order.WithIDGenerator(sequentialIDs()),
+				order.WithLogger(logger),
+			)
+
+			firstDraft := comboDraft()
+			firstDraft.ClientKey = "tap-conflict"
+			first := place(t, engine, firstDraft)
+
+			conflictDraft := comboDraft()
+			conflictDraft.ClientKey = "tap-conflict"
+			conflictDraft.KioskID = tc.kioskID
+			conflictDraft.ComboID = tc.comboID
+
+			got, err := engine.CreateOrder(context.Background(), conflictDraft)
+			if !errors.Is(err, order.ErrClientKeyConflict) {
+				t.Fatalf("CreateOrder error=%v, se esperaba errors.Is(..., ErrClientKeyConflict)", err)
+			}
+			if !reflect.DeepEqual(got, store.Order{}) {
+				t.Fatalf("CreateOrder devolvió %+v junto al error", got)
+			}
+
+			if created := st.createdIDs(); len(created) != 1 || created[0] != first.ID {
+				t.Fatalf("no debía crearse otra orden: creadas=%v", created)
+			}
+
+			stored := mustOrder(t, st, first.ID)
+			if !reflect.DeepEqual(stored, first) {
+				t.Fatalf("la orden existente cambió: %+v != %+v", stored, first)
+			}
+
+			assertClientKeyWarnLog(t, logBuf.String(), first.ID, first.KioskID, first.ComboID)
+		})
+	}
+}
+
+type racedClientKeyStore struct {
+	*recordingStore
+	competing store.Order
+	injected  bool
+}
+
+func (s *racedClientKeyStore) CreateOrder(ctx context.Context, o store.Order) error {
+	if !s.injected && o.ClientKey == s.competing.ClientKey {
+		s.injected = true
+		if err := s.recordingStore.CreateOrder(ctx, s.competing); err != nil {
+			return err
+		}
+	}
+
+	return s.recordingStore.CreateOrder(ctx, o)
+}
+
+func TestEngineCreateOrderResolvesClientKeyOnCreateRace(t *testing.T) {
+	t.Run("conflicto en carrera", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		competing := store.Order{
+			ID:          "id-competing",
+			KioskID:     "kiosk-1",
+			ComboID:     "combo-original",
+			ClientKey:   "tap-race",
+			AmountCents: 2500,
+			Currency:    "ARS",
+			Status:      store.OrderPendingPayment,
+			CreatedAt:   engineNow,
+			Lines: []store.Line{
+				{
+					ID:          "line-competing",
+					OrderID:     "id-competing",
+					Position:    1,
+					Machine:     comboDraft().Items[0].Machine,
+					SKU:         "sku-batido",
+					AmountCents: 1500,
+					State:       linestate.Pending,
+				},
+			},
+		}
+
+		st := &racedClientKeyStore{
+			recordingStore: newRecordingStore(),
+			competing:      competing,
+		}
+		engine := order.New(
+			st,
+			map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+			order.WithClock(frozenClock()),
+			order.WithIDGenerator(sequentialIDs()),
+			order.WithLogger(logger),
+		)
+
+		draft := comboDraft()
+		draft.ClientKey = "tap-race"
+		draft.ComboID = "combo-otro"
+
+		got, err := engine.CreateOrder(context.Background(), draft)
+		if !errors.Is(err, order.ErrClientKeyConflict) {
+			t.Fatalf("CreateOrder error=%v, se esperaba errors.Is(..., ErrClientKeyConflict)", err)
+		}
+		if !reflect.DeepEqual(got, store.Order{}) {
+			t.Fatalf("CreateOrder devolvió %+v junto al error", got)
+		}
+
+		if created := st.createdIDs(); len(created) != 1 || created[0] != competing.ID {
+			t.Fatalf("no debía crearse la orden en carrera: creadas=%v", created)
+		}
+
+		assertClientKeyWarnLog(t, logBuf.String(), competing.ID, competing.KioskID, competing.ComboID)
+	})
+
+	t.Run("reintento coincidente en carrera", func(t *testing.T) {
+		competing := store.Order{
+			ID:          "id-competing",
+			KioskID:     "kiosk-1",
+			ComboID:     "combo-1",
+			ClientKey:   "tap-race-ok",
+			AmountCents: 2500,
+			Currency:    "ARS",
+			Status:      store.OrderPendingPayment,
+			CreatedAt:   engineNow,
+			Lines: []store.Line{
+				{
+					ID:          "line-competing",
+					OrderID:     "id-competing",
+					Position:    1,
+					Machine:     comboDraft().Items[0].Machine,
+					SKU:         "sku-batido",
+					AmountCents: 1500,
+					State:       linestate.Pending,
+				},
+			},
+		}
+
+		st := &racedClientKeyStore{
+			recordingStore: newRecordingStore(),
+			competing:      competing,
+		}
+		engine := order.New(
+			st,
+			map[machine.Kind]dispenser.Dispenser{"batidos": &stubMachine{}, "snacks": &stubMachine{}},
+			order.WithClock(frozenClock()),
+			order.WithIDGenerator(sequentialIDs()),
+		)
+
+		draft := comboDraft()
+		draft.ClientKey = "tap-race-ok"
+
+		got, err := engine.CreateOrder(context.Background(), draft)
+		if err != nil {
+			t.Fatalf("CreateOrder error=%v, se esperaba nil", err)
+		}
+		if got.ID != competing.ID {
+			t.Fatalf("CreateOrder devolvió %q, se esperaba %q", got.ID, competing.ID)
+		}
+	})
+}
+
+func assertClientKeyWarnLog(t *testing.T, raw, orderID, kioskID, comboID string) {
+	t.Helper()
+
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("línea de log JSON inválida %q: %v", line, err)
+		}
+		if rec["level"] == "WARN" &&
+			rec["order_id"] == orderID &&
+			rec["kiosk"] == kioskID &&
+			rec["combo"] == comboID {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatalf("faltó el log WARN con order_id=%q, kiosk=%q, combo=%q; salida:\n%s", orderID, kioskID, comboID, raw)
 	}
 }

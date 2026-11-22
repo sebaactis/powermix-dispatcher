@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
+	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
+	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
 
@@ -393,5 +396,161 @@ func TestPayFailsWhenThePaymentIsNotRegistered(t *testing.T) {
 
 	if stored.Status != store.OrderPendingPayment {
 		t.Fatalf("la orden debe seguir pendiente de pago y llegó %q", stored.Status)
+	}
+}
+
+func TestCreateOrderRejectsReusedClientKeyWithDifferentComboOrKiosk(t *testing.T) {
+	combos := append(testCombos(), catalog.Combo{
+		ID:         "combo-snack",
+		Name:       "Solo snack",
+		PriceCents: 150000,
+		Currency:   "ARS",
+		Active:     true,
+		Items: []catalog.Item{
+			{MachineType: "snacks", SKU: "snack-alfajor", PriceCents: 150000},
+		},
+	})
+	kiosks := []config.Kiosk{testKiosk("kiosco-uno"), testKiosk("kiosco-dos")}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "otro combo en el mismo mueble",
+			body: `{"kiosk_id":"kiosco-uno","combo_id":"combo-snack","client_key":"clave-compartida"}`,
+		},
+		{
+			name: "mismo combo en otro mueble",
+			body: `{"kiosk_id":"kiosco-dos","combo_id":"combo-mixto","client_key":"clave-compartida"}`,
+		},
+		{
+			name: "otro combo en otro mueble",
+			body: `{"kiosk_id":"kiosco-dos","combo_id":"combo-snack","client_key":"clave-compartida"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newFixture(t, config.EnvSandbox, kiosks, combos)
+
+			first := call(t, fx.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-uno","combo_id":"combo-mixto","client_key":"clave-compartida"}`)
+			if first.Code != http.StatusOK {
+				t.Fatalf("se esperaba 200 al crear la orden inicial y llegó %d: %s", first.Code, first.Body.String())
+			}
+
+			firstID := decode(t, first)["id"].(string)
+			before, err := fx.orders.LoadOrder(context.Background(), firstID)
+			if err != nil {
+				t.Fatalf("LoadOrder(%q): %v", firstID, err)
+			}
+
+			conflict := call(t, fx.mux, http.MethodPost, "/orders", tc.body)
+			if conflict.Code != http.StatusConflict {
+				t.Fatalf("se esperaba 409 Conflict y llegó %d: %s", conflict.Code, conflict.Body.String())
+			}
+
+			payload := decode(t, conflict)
+			if len(payload) != 1 || payload["error"] != order.ErrClientKeyConflict.Error() {
+				t.Fatalf("cuerpo de error inesperado: %v (se esperaba %q)", payload, order.ErrClientKeyConflict.Error())
+			}
+
+			after, err := fx.orders.LoadOrder(context.Background(), firstID)
+			if err != nil {
+				t.Fatalf("LoadOrder(%q) tras conflicto: %v", firstID, err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("la orden existente no debía cambiar: %+v != %+v", after, before)
+			}
+
+			if _, err := fx.orders.LoadOrder(context.Background(), "id-4"); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("el rechazo no debía crear ninguna orden nueva, LoadOrder(id-4)=%v", err)
+			}
+
+			retry := call(t, fx.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-uno","combo_id":"combo-mixto","client_key":"clave-compartida"}`)
+			if retry.Code != http.StatusOK {
+				t.Fatalf("el reintento válido debía seguir devolviendo 200 y llegó %d: %s", retry.Code, retry.Body.String())
+			}
+			if gotID := decode(t, retry)["id"]; gotID != firstID {
+				t.Fatalf("el reintento válido debía devolver %q y devolvió %v", firstID, gotID)
+			}
+		})
+	}
+}
+
+func TestCreateOrderEnforcesClientKeyMaxLength(t *testing.T) {
+	const wantErrMsg = "la clave del cliente (client_key) no puede superar los 128 caracteres"
+
+	cases := []struct {
+		name       string
+		clientKey  string
+		wantStatus int
+		wantTrim   string
+	}{
+		{
+			name:       "128 caracteres ASCII aceptado",
+			clientKey:  strings.Repeat("a", 128),
+			wantStatus: http.StatusOK,
+			wantTrim:   strings.Repeat("a", 128),
+		},
+		{
+			name:       "128 runas multibyte aceptado",
+			clientKey:  strings.Repeat("á", 128),
+			wantStatus: http.StatusOK,
+			wantTrim:   strings.Repeat("á", 128),
+		},
+		{
+			name:       "128 caracteres con espacios alrededor aceptado tras trim",
+			clientKey:  "   " + strings.Repeat("b", 128) + "   ",
+			wantStatus: http.StatusOK,
+			wantTrim:   strings.Repeat("b", 128),
+		},
+		{
+			name:       "129 caracteres ASCII rechazado con 400",
+			clientKey:  strings.Repeat("a", 129),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "129 runas multibyte rechazado con 400",
+			clientKey:  strings.Repeat("á", 129),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "129 caracteres tras trim rechazado con 400",
+			clientKey:  "  " + strings.Repeat("c", 129) + "  ",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
+
+			body := `{"kiosk_id":"kiosco-centro","combo_id":"combo-mixto","client_key":"` + tc.clientKey + `"}`
+			rec := call(t, fx.mux, http.MethodPost, "/orders", body)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("se esperaba %d y llegó %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+
+			payload := decode(t, rec)
+			if tc.wantStatus == http.StatusBadRequest {
+				if len(payload) != 1 || payload["error"] != wantErrMsg {
+					t.Fatalf("cuerpo de error inesperado: %v (se esperaba %q)", payload, wantErrMsg)
+				}
+				if _, err := fx.orders.LoadOrder(context.Background(), "id-1"); !errors.Is(err, store.ErrNotFound) {
+					t.Fatalf("un client_key inválido no debía crear ninguna orden, LoadOrder(id-1)=%v", err)
+				}
+				return
+			}
+
+			orderID, _ := payload["id"].(string)
+			stored, err := fx.orders.LoadOrder(context.Background(), orderID)
+			if err != nil {
+				t.Fatalf("la orden aceptada debía quedar guardada: %v", err)
+			}
+			if stored.ClientKey != tc.wantTrim {
+				t.Fatalf("ClientKey guardado=%q, se esperaba %q", stored.ClientKey, tc.wantTrim)
+			}
+		})
 	}
 }
