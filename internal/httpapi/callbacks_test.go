@@ -1,14 +1,19 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"compras-remotas/internal/config"
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/logging"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
@@ -376,5 +381,145 @@ func TestSnacksCallbackDoesNotCloseTheBatidosLineByThirdOrderNo(t *testing.T) {
 		if line.State == linestate.Delivered || line.State == linestate.Failed {
 			t.Fatalf("un callback de snacks no debe cerrar la línea de batidos: %+v", line)
 		}
+	}
+}
+
+func TestCallbackLogsIncludeOrderIDAndRequestID(t *testing.T) {
+	cases := []struct {
+		name        string
+		target      string
+		body        string
+		confirmErr  error
+		closeErr    error
+		wantLevel   string
+		wantOrderID string
+	}{
+		{
+			name:        "batidos estado desconocido",
+			target:      "/callbacks/batidos/ruta-batidos/orden-1",
+			body:        `{"code":"canje-1","orderNo":"A1","status":7}`,
+			wantLevel:   "WARN",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "batidos cuerpo roto",
+			target:      "/callbacks/batidos/ruta-batidos/orden-1",
+			body:        "no-es-json",
+			wantLevel:   "ERROR",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "batidos linea desconocida",
+			target:      "/callbacks/batidos/ruta-batidos/orden-1",
+			body:        `{"code":"canje-1","orderNo":"A1","status":2}`,
+			confirmErr:  order.ErrCallbackUnknownLine,
+			wantLevel:   "WARN",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "batidos ambiguo",
+			target:      "/callbacks/batidos/ruta-batidos/orden-1",
+			body:        `{"code":"canje-1","orderNo":"A1","status":2}`,
+			confirmErr:  order.ErrCallbackAmbiguous,
+			wantLevel:   "ERROR",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "batidos incompleto",
+			target:      "/callbacks/batidos/ruta-batidos/orden-1",
+			body:        `{"code":"canje-1","orderNo":"A1","status":2}`,
+			confirmErr:  order.ErrCallbackIncomplete,
+			wantLevel:   "ERROR",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "batidos error transitorio",
+			target:      "/callbacks/batidos/ruta-batidos/orden-1",
+			body:        `{"code":"canje-1","orderNo":"A1","status":2}`,
+			confirmErr:  errors.New("falla temporal"),
+			wantLevel:   "ERROR",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "snacks sin resultados",
+			target:      "/callbacks/snacks/ruta-snacks",
+			body:        `{"OrderNo":"S1","PaymentOrderId":"orden-1","OrderProductResults":[]}`,
+			wantLevel:   "WARN",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "snacks estado desconocido",
+			target:      "/callbacks/snacks/ruta-snacks",
+			body:        `{"PaymentOrderId":"orden-1","OrderProductResults":[{"SubOrderNo":"sub-1","ShipmentStatus":9}]}`,
+			wantLevel:   "WARN",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "snacks linea desconocida",
+			target:      "/callbacks/snacks/ruta-snacks",
+			body:        `{"PaymentOrderId":"orden-1","OrderProductResults":[{"SubOrderNo":"sub-1","ShipmentStatus":1}]}`,
+			closeErr:    order.ErrCallbackUnknownLine,
+			wantLevel:   "WARN",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "snacks ambiguo",
+			target:      "/callbacks/snacks/ruta-snacks",
+			body:        `{"PaymentOrderId":"orden-1","OrderProductResults":[{"SubOrderNo":"sub-1","ShipmentStatus":1}]}`,
+			closeErr:    order.ErrCallbackAmbiguous,
+			wantLevel:   "ERROR",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:        "snacks error transitorio",
+			target:      "/callbacks/snacks/ruta-snacks",
+			body:        `{"PaymentOrderId":"orden-1","OrderProductResults":[{"SubOrderNo":"sub-1","ShipmentStatus":1}]}`,
+			closeErr:    errors.New("falla temporal"),
+			wantLevel:   "ERROR",
+			wantOrderID: "orden-1",
+		},
+		{
+			name:      "snacks cuerpo roto sin order_id",
+			target:    "/callbacks/snacks/ruta-snacks",
+			body:      "no-es-json",
+			wantLevel: "ERROR",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := logging.New(&buf, slog.LevelDebug)
+			receiver := &fakeReceiver{confirmErr: tc.confirmErr, closeErr: tc.closeErr}
+			callbacks := NewCallbacks(receiver, CallbackSecrets{Batidos: "ruta-batidos", Snacks: "ruta-snacks"}, WithCallbacksLogger(logger))
+
+			mux := http.NewServeMux()
+			callbacks.Register(mux)
+			wrapped := Wrap(mux, logger)
+
+			rec := httptest.NewRecorder()
+			wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader(tc.body)))
+			reqID := rec.Header().Get("X-Request-Id")
+
+			records := parseJSONLogLines(t, buf.String())
+			if len(records) < 2 {
+				t.Fatalf("se esperaban al menos 2 logs (handler + access), llegaron %d: %s", len(records), buf.String())
+			}
+
+			handlerLog := records[0]
+			if handlerLog["level"] != tc.wantLevel {
+				t.Fatalf("level = %v, se esperaba %s (%v)", handlerLog["level"], tc.wantLevel, handlerLog)
+			}
+			if handlerLog["request_id"] != reqID {
+				t.Fatalf("request_id = %v, se esperaba %q", handlerLog["request_id"], reqID)
+			}
+			if tc.wantOrderID == "" {
+				if _, ok := handlerLog["order_id"]; ok {
+					t.Fatalf("no debía incluir order_id: %v", handlerLog)
+				}
+			} else if handlerLog["order_id"] != tc.wantOrderID {
+				t.Fatalf("order_id = %v, se esperaba %q (%v)", handlerLog["order_id"], tc.wantOrderID, handlerLog)
+			}
+		})
 	}
 }

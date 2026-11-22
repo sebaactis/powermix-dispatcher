@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -14,10 +15,12 @@ import (
 	"compras-remotas/internal/logging"
 )
 
-func TestNewServerSetsTheTimeoutsAndTheHandler(t *testing.T) {
+func TestNewServerSetsTheTimeoutsHandlerAndErrorLog(t *testing.T) {
 	handler := http.NewServeMux()
+	var logs bytes.Buffer
+	logger := logging.New(&logs, slog.LevelInfo)
 
-	server := newServer("127.0.0.1:9999", handler)
+	server := newServer("127.0.0.1:9999", handler, logger)
 
 	if server.Addr != "127.0.0.1:9999" {
 		t.Fatalf("Addr quedó en %q, se esperaba %q", server.Addr, "127.0.0.1:9999")
@@ -39,6 +42,22 @@ func TestNewServerSetsTheTimeoutsAndTheHandler(t *testing.T) {
 	}
 	if server.MaxHeaderBytes != 64<<10 {
 		t.Fatalf("MaxHeaderBytes quedó en %d, se esperaban %d", server.MaxHeaderBytes, 64<<10)
+	}
+	if server.ErrorLog == nil {
+		t.Fatal("ErrorLog quedó nil: debe estar conectado al logger estructurado")
+	}
+
+	server.ErrorLog.Println("fallo interno de transporte")
+
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(logs.String())), &rec); err != nil {
+		t.Fatalf("ErrorLog no escribió JSON válido (%v): %s", err, logs.String())
+	}
+	if rec["level"] != "ERROR" {
+		t.Fatalf("ErrorLog level = %v, se esperaba ERROR", rec["level"])
+	}
+	if rec["msg"] != "Fallo interno de transporte" {
+		t.Fatalf("ErrorLog msg = %v, se esperaba %q", rec["msg"], "Fallo interno de transporte")
 	}
 }
 
@@ -129,8 +148,17 @@ func TestShutdownGivesDrainFullBudgetAfterSlowHTTP(t *testing.T) {
 	}
 
 	output := logs.String()
-	if strings.Contains(output, "level=ERROR") {
-		t.Fatalf("el drenaje no debería expirar por un cierre HTTP lento: %s", output)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("el log de apagado no es JSON válido (%v): %s", err, line)
+		}
+		if rec["level"] == "ERROR" {
+			t.Fatalf("el drenaje no debería expirar por un cierre HTTP lento: %s", output)
+		}
 	}
 	if !strings.Contains(output, "Despachos en segundo plano terminados") {
 		t.Fatalf("falta confirmación de despachos terminados: %s", output)

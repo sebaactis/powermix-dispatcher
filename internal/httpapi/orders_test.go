@@ -1,15 +1,20 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
+	"compras-remotas/internal/logging"
 	"compras-remotas/internal/order"
 	"compras-remotas/internal/store"
 )
@@ -585,4 +590,206 @@ func TestCreateOrderTrimsComboID(t *testing.T) {
 	if blank.Code != http.StatusBadRequest {
 		t.Fatalf("combo_id solo con espacios se esperaba 400 y llegó %d: %s", blank.Code, blank.Body.String())
 	}
+}
+
+type failingOrderReader struct {
+	err error
+}
+
+func (f failingOrderReader) LoadOrder(context.Context, string) (store.Order, error) {
+	return store.Order{}, f.err
+}
+
+type failingComboCatalog struct {
+	err error
+}
+
+func (f failingComboCatalog) Combo(context.Context, string) (catalog.Combo, error) {
+	return catalog.Combo{}, f.err
+}
+
+func (f failingComboCatalog) Combos(context.Context) ([]catalog.Combo, error) {
+	return nil, f.err
+}
+
+func TestFailLogsOrderIDAndRequestIDWhenAvailable(t *testing.T) {
+	t.Run("GET /orders/{id} logs order_id and request_id on 500", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := logging.New(&buf, slog.LevelDebug)
+		comboCatalog, err := catalog.NewMemory(testCombos())
+		if err != nil {
+			t.Fatalf("NewMemory: %v", err)
+		}
+
+		memory := store.NewMemory()
+		engine := order.New(memory, testMachines())
+		handler, err := New(
+			Deps{
+				Catalog:      comboCatalog,
+				OrderCreator: engine,
+				PaidMarker:   engine,
+				Orders:       failingOrderReader{err: errors.New("se cayó postgres")},
+				Kiosks:       []config.Kiosk{testKiosk("kiosco-centro")},
+				Env:          config.EnvSandbox,
+			},
+			WithLogger(logger),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		wrapped := Wrap(mux, logger)
+
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/orders/ord-read-500", nil))
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, quería 500", rec.Code)
+		}
+
+		reqID := rec.Header().Get("X-Request-Id")
+		records := parseJSONLogLines(t, buf.String())
+		if len(records) != 2 {
+			t.Fatalf("se esperaban 2 logs (error + access), llegaron %d: %s", len(records), buf.String())
+		}
+		errLog := records[0]
+		if errLog["order_id"] != "ord-read-500" || errLog["request_id"] != reqID {
+			t.Fatalf("log sin order_id o request_id esperado: %v (want order_id=ord-read-500 request_id=%s)", errLog, reqID)
+		}
+	})
+
+	t.Run("POST /orders/{id}/pay logs order_id and request_id on 500", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := logging.New(&buf, slog.LevelDebug)
+		comboCatalog, err := catalog.NewMemory(testCombos())
+		if err != nil {
+			t.Fatalf("NewMemory: %v", err)
+		}
+
+		memory := store.NewMemory()
+		engine := order.New(memory, testMachines())
+		confirmer := &fakeConfirmer{orders: memory, err: errors.New("falla mark paid")}
+		handler, err := New(
+			Deps{
+				Catalog:      comboCatalog,
+				OrderCreator: engine,
+				PaidMarker:   confirmer,
+				Orders:       failingOrderReader{err: errors.New("falla reload")},
+				Kiosks:       []config.Kiosk{testKiosk("kiosco-centro")},
+				Env:          config.EnvSandbox,
+			},
+			WithLogger(logger),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		wrapped := Wrap(mux, logger)
+
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders/ord-pay-500/pay", nil))
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, quería 500", rec.Code)
+		}
+
+		reqID := rec.Header().Get("X-Request-Id")
+		records := parseJSONLogLines(t, buf.String())
+		if len(records) != 2 {
+			t.Fatalf("se esperaban 2 logs (error + access), llegaron %d: %s", len(records), buf.String())
+		}
+		errLog := records[0]
+		if errLog["order_id"] != "ord-pay-500" || errLog["request_id"] != reqID {
+			t.Fatalf("log sin order_id o request_id esperado: %v (want order_id=ord-pay-500 request_id=%s)", errLog, reqID)
+		}
+	})
+
+	t.Run("POST /orders logs order_id and request_id when RequestQR fails", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := logging.New(&buf, slog.LevelDebug)
+		orders := &payOrders{}
+		charger := &payCharger{err: fmt.Errorf("%w: timeout", order.ErrQRUnavailable)}
+		handler, err := New(
+			Deps{
+				Catalog:      payCatalog{},
+				OrderCreator: orders,
+				PaidMarker:   orders,
+				Orders:       orders,
+				Kiosks:       []config.Kiosk{payKiosk()},
+				Env:          config.EnvSandbox,
+				QRRequester:  charger,
+				Payments:     charger,
+			},
+			WithLogger(logger),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		wrapped := Wrap(mux, logger)
+
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"combo_id":"combo-1"}`)))
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, quería 502", rec.Code)
+		}
+
+		reqID := rec.Header().Get("X-Request-Id")
+		records := parseJSONLogLines(t, buf.String())
+		if len(records) != 2 {
+			t.Fatalf("se esperaban 2 logs (error + access), llegaron %d: %s", len(records), buf.String())
+		}
+		errLog := records[0]
+		if errLog["order_id"] != "ord-1" || errLog["request_id"] != reqID {
+			t.Fatalf("log sin order_id o request_id esperado: %v (want order_id=ord-1 request_id=%s)", errLog, reqID)
+		}
+	})
+
+	t.Run("GET /combos does not invent order_id on 500", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := logging.New(&buf, slog.LevelDebug)
+		memory := store.NewMemory()
+		engine := order.New(memory, testMachines())
+		handler, err := New(
+			Deps{
+				Catalog:      failingComboCatalog{err: errors.New("catálogo caído")},
+				OrderCreator: engine,
+				PaidMarker:   engine,
+				Orders:       memory,
+				Kiosks:       []config.Kiosk{testKiosk("kiosco-centro")},
+				Env:          config.EnvSandbox,
+			},
+			WithLogger(logger),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		wrapped := Wrap(mux, logger)
+
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/combos", nil))
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, quería 500", rec.Code)
+		}
+
+		reqID := rec.Header().Get("X-Request-Id")
+		records := parseJSONLogLines(t, buf.String())
+		if len(records) != 2 {
+			t.Fatalf("se esperaban 2 logs (error + access), llegaron %d: %s", len(records), buf.String())
+		}
+		errLog := records[0]
+		if _, hasOrderID := errLog["order_id"]; hasOrderID {
+			t.Fatalf("GET /combos no debe inventar order_id: %v", errLog)
+		}
+		if errLog["request_id"] != reqID {
+			t.Fatalf("falta request_id=%q: %v", reqID, errLog)
+		}
+	})
 }

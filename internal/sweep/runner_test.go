@@ -3,6 +3,7 @@ package sweep_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strconv"
@@ -129,16 +130,32 @@ func TestRunKeepsGoingAfterAnError(t *testing.T) {
 		t.Fatalf("Run devolvió %v, se esperaba nil", err)
 	}
 
-	output := logs.String()
+	output := strings.TrimSpace(logs.String())
+	if output == "" {
+		t.Fatal("se esperaba al menos una línea de log tras el error del barrido")
+	}
 
-	if !strings.Contains(output, "level=ERROR") {
+	var foundError bool
+	for _, line := range strings.Split(output, "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("la línea de log no es JSON válido (%v): %s", err, line)
+		}
+		if rec["level"] == "ERROR" {
+			foundError = true
+			msg, _ := rec["msg"].(string)
+			if !strings.Contains(msg, "barrido de reconciliación") {
+				t.Fatalf("el log no describe el barrido de reconciliación: %s", line)
+			}
+			errMsg, _ := rec["error"].(string)
+			if !strings.Contains(errMsg, "proveedor no respondió") {
+				t.Fatalf("el log no incluye el error original: %s", line)
+			}
+		}
+	}
+
+	if !foundError {
 		t.Fatalf("el error del barrido no se registró como ERROR: %s", output)
-	}
-	if !strings.Contains(output, "barrido de reconciliación") {
-		t.Fatalf("el log no describe el barrido de reconciliación: %s", output)
-	}
-	if !strings.Contains(output, "proveedor no respondió") {
-		t.Fatalf("el log no incluye el error original: %s", output)
 	}
 }
 

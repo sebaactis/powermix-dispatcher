@@ -78,17 +78,62 @@ func TestRedactCallbackPath(t *testing.T) {
 		{
 			name: "callback de batidos",
 			path: "/callbacks/batidos/ruta-secreta/orden-1",
-			want: "/callbacks/batidos/***",
+			want: "/callbacks/***",
 		},
 		{
 			name: "callback de snacks",
 			path: "/callbacks/snacks/ruta-secreta",
-			want: "/callbacks/snacks/***",
+			want: "/callbacks/***",
 		},
 		{
 			name: "sin nada después del origen",
 			path: "/callbacks/batidos/",
-			want: "/callbacks/batidos/***",
+			want: "/callbacks/***",
+		},
+		{
+			name: "doble barra inicial",
+			path: "//callbacks/mercadopago/ruta-secreta",
+			want: "/callbacks/***",
+		},
+		{
+			name: "path traversal con punto punto",
+			path: "/x/../callbacks/snacks/ruta-secreta",
+			want: "/callbacks/***",
+		},
+		{
+			name: "segmento punto",
+			path: "/./callbacks/batidos/ruta-secreta/orden-1",
+			want: "/callbacks/***",
+		},
+		{
+			name: "mayúsculas en callbacks",
+			path: "/Callbacks/snacks/ruta-secreta",
+			want: "/Callbacks/***",
+		},
+		{
+			name: "doble barra después de callbacks",
+			path: "/callbacks//ruta-secreta",
+			want: "/callbacks/***",
+		},
+		{
+			name: "percent encoding simple",
+			path: "/%63allbacks/snacks/ruta-secreta",
+			want: "/callbacks/***",
+		},
+		{
+			name: "percent encoding doble",
+			path: "/%2563allbacks/snacks/ruta-secreta",
+			want: "/callbacks/***",
+		},
+		{
+			name: "barra codificada tras callbacks",
+			path: "/callbacks%252Fsnacks/ruta-secreta",
+			want: "/callbacks/***",
+		},
+		{
+			name: "barra final tras secreto",
+			path: "/callbacks/snacks/ruta-secreta/",
+			want: "/callbacks/***",
 		},
 		{
 			name: "ruta normal",
@@ -98,7 +143,7 @@ func TestRedactCallbackPath(t *testing.T) {
 		{
 			name: "callbacks sin origen",
 			path: "/callbacks/",
-			want: "/callbacks/",
+			want: "/callbacks",
 		},
 		{
 			name: "raiz",
@@ -109,7 +154,11 @@ func TestRedactCallbackPath(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := redactCallbackPath(tc.path); got != tc.want {
+			got := redactCallbackPath(tc.path)
+			if strings.Contains(got, "ruta-secreta") {
+				t.Fatalf("redactCallbackPath(%q) filtró el secreto: %q", tc.path, got)
+			}
+			if got != tc.want {
 				t.Fatalf("redactCallbackPath(%q) = %q, se esperaba %q", tc.path, got, tc.want)
 			}
 		})
@@ -151,7 +200,7 @@ func TestCallbackLogsNeverCarryTheSecretSegment(t *testing.T) {
 				t.Fatalf("el secreto del callback no puede quedar en el log: %s", logged.String())
 			}
 
-			if !strings.Contains(logged.String(), "/callbacks/batidos/***") {
+			if !strings.Contains(logged.String(), "/callbacks/***") {
 				t.Fatalf("el log debe conservar la forma redactada de la ruta: %s", logged.String())
 			}
 		})

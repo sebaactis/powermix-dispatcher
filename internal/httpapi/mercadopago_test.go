@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,8 +15,10 @@ import (
 
 	"compras-remotas/internal/catalog"
 	"compras-remotas/internal/config"
+	"compras-remotas/internal/logging"
 	"compras-remotas/internal/machine"
 	"compras-remotas/internal/order"
+	"compras-remotas/internal/payments"
 	"compras-remotas/internal/payments/mercadopago"
 	"compras-remotas/internal/store"
 )
@@ -64,7 +68,7 @@ func defaultWebhook() webhookRequest {
 	}
 }
 
-func sendWebhook(t *testing.T, mux *http.ServeMux, req webhookRequest) *httptest.ResponseRecorder {
+func sendWebhook(t *testing.T, mux http.Handler, req webhookRequest) *httptest.ResponseRecorder {
 	t.Helper()
 
 	target := fmt.Sprintf("/callbacks/mercadopago/%s?data.id=%s&type=%s", req.pathSecret, req.dataID, req.topic)
@@ -422,4 +426,193 @@ func TestHandlerRejectsHalfPaymentDeps(t *testing.T) {
 	if err == nil {
 		t.Fatal("New debería rechazar QRRequester sin Payments")
 	}
+}
+
+type mpFakeGateway struct {
+	charges map[string]payments.Charge
+}
+
+func (g *mpFakeGateway) CreateQR(_ context.Context, req payments.QRRequest) (payments.Charge, error) {
+	c := payments.Charge{
+		ProviderID:  mpProviderID,
+		ExternalRef: req.OrderID,
+		QRData:      "qr-data",
+		Status:      payments.ChargePending,
+		AmountCents: req.AmountCents,
+	}
+	g.charges[c.ProviderID] = c
+	return c, nil
+}
+
+func (g *mpFakeGateway) Lookup(_ context.Context, providerID string) (payments.Charge, error) {
+	c, ok := g.charges[providerID]
+	if !ok {
+		return payments.Charge{}, payments.ErrNotFound
+	}
+	return c, nil
+}
+
+func (g *mpFakeGateway) Cancel(_ context.Context, providerID string) (payments.Charge, error) {
+	return g.charges[providerID], nil
+}
+
+type failingSaveOrderStore struct {
+	*store.Memory
+	saveOrderErr error
+}
+
+func (s *failingSaveOrderStore) SaveOrder(ctx context.Context, o store.Order) (store.Order, error) {
+	if s.saveOrderErr != nil {
+		return store.Order{}, s.saveOrderErr
+	}
+	return s.Memory.SaveOrder(ctx, o)
+}
+
+func TestMercadoPagoWebhookLogsOrderIDAndRequestID(t *testing.T) {
+	setupEngine := func(t *testing.T) (*order.Engine, *mpFakeGateway, *failingSaveOrderStore, store.Order) {
+		t.Helper()
+		mem := &failingSaveOrderStore{Memory: store.NewMemory()}
+		gw := &mpFakeGateway{charges: make(map[string]payments.Charge)}
+		engine := order.New(
+			mem,
+			testMachines(),
+			order.WithClock(func() time.Time { return mpClock }),
+			order.WithQRPayments("mercadopago", gw),
+		)
+		placed, err := engine.CreateOrder(context.Background(), order.Draft{
+			KioskID:     "kiosk-1",
+			ComboID:     "combo-1",
+			AmountCents: 450000,
+			Currency:    "ARS",
+			Items: []order.Item{{
+				SKU:         "snack-1",
+				AmountCents: 450000,
+				Machine:     machine.Ref{KioskID: "kiosk-1", Kind: machine.Snacks, MID: "m"},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("CreateOrder: %v", err)
+		}
+		if _, err := engine.RequestQR(context.Background(), placed.ID, "POS-1"); err != nil {
+			t.Fatalf("RequestQR: %v", err)
+		}
+		return engine, gw, mem, placed
+	}
+
+	t.Run("cobro duplicado para orden conocida incluye order_id y request_id", func(t *testing.T) {
+		engine, gw, _, placed := setupEngine(t)
+		dupID := "ORD_DUP_01"
+		gw.charges[dupID] = payments.Charge{
+			ProviderID:      dupID,
+			ExternalRef:     placed.ID,
+			Status:          payments.ChargeApproved,
+			PaidAmountCents: 450000,
+			AmountCents:     450000,
+		}
+
+		var buf bytes.Buffer
+		logger := logging.New(&buf, slog.LevelDebug)
+		mux := http.NewServeMux()
+		NewMercadoPagoWebhook(engine, MercadoPagoSecrets{Callback: mpCallbackSecret, Webhook: mpWebhookSecret},
+			WithMercadoPagoClock(func() time.Time { return mpClock }),
+			WithMercadoPagoLogger(logger),
+		).Register(mux)
+		wrapped := Wrap(mux, logger)
+
+		req := defaultWebhook()
+		req.dataID = dupID
+		rec := sendWebhook(t, wrapped, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, quería 200", rec.Code)
+		}
+
+		reqID := rec.Header().Get("X-Request-Id")
+		records := parseJSONLogLines(t, buf.String())
+		if len(records) != 2 {
+			t.Fatalf("se esperaban 2 logs (warn + access), llegaron %d: %s", len(records), buf.String())
+		}
+		if records[0]["order_id"] != placed.ID || records[0]["request_id"] != reqID {
+			t.Fatalf("log sin order_id=%q o request_id=%q: %v", placed.ID, reqID, records[0])
+		}
+	})
+
+	t.Run("falla transitoria tras resolver la orden incluye order_id y request_id", func(t *testing.T) {
+		engine, gw, mem, placed := setupEngine(t)
+		gw.charges[mpProviderID] = payments.Charge{
+			ProviderID:      mpProviderID,
+			ExternalRef:     placed.ID,
+			Status:          payments.ChargeApproved,
+			PaidAmountCents: 450000,
+			AmountCents:     450000,
+		}
+		mem.saveOrderErr = errors.New("se cayó postgres")
+
+		var buf bytes.Buffer
+		logger := logging.New(&buf, slog.LevelDebug)
+		mux := http.NewServeMux()
+		NewMercadoPagoWebhook(engine, MercadoPagoSecrets{Callback: mpCallbackSecret, Webhook: mpWebhookSecret},
+			WithMercadoPagoClock(func() time.Time { return mpClock }),
+			WithMercadoPagoLogger(logger),
+		).Register(mux)
+		wrapped := Wrap(mux, logger)
+
+		rec := sendWebhook(t, wrapped, defaultWebhook())
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, quería 500", rec.Code)
+		}
+
+		reqID := rec.Header().Get("X-Request-Id")
+		records := parseJSONLogLines(t, buf.String())
+		if len(records) != 2 {
+			t.Fatalf("se esperaban 2 logs (error + access), llegaron %d: %s", len(records), buf.String())
+		}
+		if records[0]["order_id"] != placed.ID || records[0]["request_id"] != reqID {
+			t.Fatalf("log sin order_id=%q o request_id=%q: %v", placed.ID, reqID, records[0])
+		}
+	})
+
+	t.Run("firma inválida, tópico ignorado y cobro inexistente no inventan order_id", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			mutate func(*webhookRequest)
+			status int
+		}{
+			{"firma inválida", func(r *webhookRequest) { r.signWith = "otro" }, http.StatusUnauthorized},
+			{"tópico ignorado", func(r *webhookRequest) { r.topic = "payment" }, http.StatusOK},
+			{"cobro inexistente", func(r *webhookRequest) { r.dataID = "ORDNOEXISTE" }, http.StatusOK},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				engine, _, _, _ := setupEngine(t)
+				var buf bytes.Buffer
+				logger := logging.New(&buf, slog.LevelDebug)
+				mux := http.NewServeMux()
+				NewMercadoPagoWebhook(engine, MercadoPagoSecrets{Callback: mpCallbackSecret, Webhook: mpWebhookSecret},
+					WithMercadoPagoClock(func() time.Time { return mpClock }),
+					WithMercadoPagoLogger(logger),
+				).Register(mux)
+				wrapped := Wrap(mux, logger)
+
+				req := defaultWebhook()
+				tc.mutate(&req)
+				rec := sendWebhook(t, wrapped, req)
+				if rec.Code != tc.status {
+					t.Fatalf("status = %d, quería %d", rec.Code, tc.status)
+				}
+
+				reqID := rec.Header().Get("X-Request-Id")
+				records := parseJSONLogLines(t, buf.String())
+				if len(records) != 2 {
+					t.Fatalf("se esperaban 2 logs (handler + access), llegaron %d: %s", len(records), buf.String())
+				}
+				if _, ok := records[0]["order_id"]; ok {
+					t.Fatalf("no debía incluir order_id: %v", records[0])
+				}
+				if records[0]["request_id"] != reqID {
+					t.Fatalf("falta request_id=%q: %v", reqID, records[0])
+				}
+			})
+		}
+	})
 }

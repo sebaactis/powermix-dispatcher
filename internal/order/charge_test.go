@@ -909,3 +909,33 @@ func TestEngineConcurrentWaitAndSyncPaymentDoNotRace(t *testing.T) {
 		}
 	}
 }
+
+func TestSyncPaymentAttachesOrderIDWhenIntentResolved(t *testing.T) {
+	rig := newChargeRig(t)
+	placed := rig.place(t, "a")
+	_ = rig.qr(t, placed.ID)
+
+	if id, ok := OrderIDFromError(nil); ok || id != "" {
+		t.Fatalf("OrderIDFromError(nil) = (%q, %v), want (\"\", false)", id, ok)
+	}
+
+	err := rig.engine.SyncPayment(context.Background(), "ORDNOEXISTE")
+	if id, ok := OrderIDFromError(err); ok || id != "" {
+		t.Fatalf("cobro inexistente no debe llevar order_id: (%q, %v)", id, ok)
+	}
+
+	rig.gateway.charges["ORDAJENA"] = payments.Charge{ProviderID: "ORDAJENA", ExternalRef: "otra-orden", Status: payments.ChargeApproved, PaidAmountCents: 150050, AmountCents: 150050}
+	err = rig.engine.SyncPayment(context.Background(), "ORDAJENA")
+	if id, ok := OrderIDFromError(err); ok || id != "" {
+		t.Fatalf("cobro de orden ajena no debe llevar order_id: (%q, %v)", id, ok)
+	}
+
+	rig.gateway.charges["ORDDOBLE"] = payments.Charge{ProviderID: "ORDDOBLE", ExternalRef: placed.ID, Status: payments.ChargeApproved, PaidAmountCents: 150050, AmountCents: 150050}
+	err = rig.engine.SyncPayment(context.Background(), "ORDDOBLE")
+	if !errors.Is(err, ErrUnknownCharge) {
+		t.Fatalf("esperaba ErrUnknownCharge, llegó %v", err)
+	}
+	if id, ok := OrderIDFromError(err); !ok || id != placed.ID {
+		t.Fatalf("OrderIDFromError = (%q, %v), quería (%q, true)", id, ok, placed.ID)
+	}
+}
