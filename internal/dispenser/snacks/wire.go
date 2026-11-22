@@ -22,7 +22,7 @@ type shipmentProductBody struct {
 
 type envelope struct {
 	Success *bool           `json:"success"`
-	Code    int             `json:"code"`
+	Code    *int            `json:"code"`
 	Message string          `json:"message"`
 	Result  json.RawMessage `json:"result"`
 }

@@ -162,6 +162,7 @@ type APIError struct {
 	HTTPStatus int
 	Code       int
 	Message    string
+	hasCode    bool
 }
 
 func (e *APIError) Error() string {
@@ -334,7 +335,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any) e
 		return &APIError{HTTPStatus: resp.StatusCode, Message: "la respuesta no trae el campo code"}
 	}
 	if *env.Code != successCode || resp.StatusCode != http.StatusOK {
-		return &APIError{HTTPStatus: resp.StatusCode, Code: *env.Code, Message: env.Msg}
+		return &APIError{HTTPStatus: resp.StatusCode, Code: *env.Code, Message: env.Msg, hasCode: true}
 	}
 	if out == nil {
 		return nil

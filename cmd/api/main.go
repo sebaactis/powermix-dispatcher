@@ -103,7 +103,7 @@ func main() {
 	}
 	defer closeStore()
 
-	availability := gate.New(preflight.New(batidosClient, snacksClient))
+	availability := gate.New(preflight.New(batidosClient, snacksClient, preflight.WithLogger(logger)))
 
 	var notifier notify.Notifier = notify.NewLog(logger)
 	if cfg.TelegramEnabled() {
@@ -124,6 +124,7 @@ func main() {
 	}
 
 	engineOpts := []order.Option{
+		order.WithLogger(logger),
 		order.WithNotifier(notifier),
 		order.WithAvailabilityChecker(availability),
 		order.WithBackgroundErrors(func(orderID string, err error) {

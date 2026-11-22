@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"compras-remotas/internal/dispenser"
@@ -92,7 +93,7 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 			{
 				OrderProductID: req.LineID,
 				ProductID:      req.SKU,
-				RetailPrice:    centsToUnits(req.AmountCents),
+				RetailPrice:    0,
 			},
 		},
 	})
@@ -138,13 +139,9 @@ func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispe
 	}, nil
 }
 
-func centsToUnits(cents int64) float64 {
-	return float64(cents) / 100
-}
-
 func asPortRejection(err error) error {
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
+	if !errors.As(err, &apiErr) || !isClearBusinessRejection(apiErr) {
 		return err
 	}
 
@@ -154,6 +151,19 @@ func asPortRejection(err error) error {
 		Code:       apiErr.Code,
 		Message:    apiErr.Message,
 	}
+}
+
+func isClearBusinessRejection(apiErr *APIError) bool {
+	if !apiErr.hasCode {
+		return false
+	}
+	if apiErr.HTTPStatus == http.StatusOK {
+		return true
+	}
+	return apiErr.HTTPStatus >= http.StatusBadRequest &&
+		apiErr.HTTPStatus < http.StatusInternalServerError &&
+		apiErr.HTTPStatus != http.StatusRequestTimeout &&
+		apiErr.HTTPStatus != http.StatusTooManyRequests
 }
 
 func findDevice(devices []Device, deviceCode string) (Device, bool) {

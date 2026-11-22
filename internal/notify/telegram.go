@@ -39,6 +39,8 @@ type kindStyle struct {
 var kindStyles = map[Kind]kindStyle{
 	KindOrderFailed:     {"🔴", "Orden fallida", "El proveedor informó que no entregó: contactar al cliente."},
 	KindOrderInDoubt:    {"🟡", "Orden en duda", "No se pudo confirmar la entrega: verificar en la máquina si salió el producto."},
+	KindOrderPartial:    {"🟠", "Entrega parcial", "Contactar al cliente y compensar el monto de lo que falló."},
+	KindDispatchPanic:   {"🔴", "Panic en despacho", "El despacho se interrumpió por un panic: verificar en la máquina si salió el producto."},
 	KindPaymentMismatch: {"🟠", "Pago con monto distinto", "Revisar el cobro en Mercado Pago y devolver o completar la diferencia a mano."},
 	KindPaymentUnknown:  {"🟣", "Pago en estado desconocido", "Revisar el cobro en el panel de Mercado Pago: no se despachó ni se canceló."},
 }
