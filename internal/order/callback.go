@@ -65,13 +65,14 @@ func (e *Engine) SyncLineFromCallback(ctx context.Context, cb Callback) (duplica
 	if cb.State == CallbackProgress {
 		line = adoptRef(line, cb)
 
-		applied, brewingErr := e.markBrewing(ctx, line)
+		var brewingErr error
+		line, brewingErr = e.markBrewing(ctx, line)
 		if brewingErr != nil {
 			return false, errors.Join(brewingErr, e.settleOrder(ctx, cb.OrderID))
 		}
 
-		if applied {
-			line.State = linestate.Brewing
+		if lineClosed(line) {
+			return e.recordCallback(ctx, cb, e.settleOrder(ctx, cb.OrderID))
 		}
 	}
 
@@ -219,25 +220,61 @@ func (e *Engine) applyLineCallback(ctx context.Context, line store.Line, cb Call
 	}
 }
 
-func (e *Engine) markBrewing(ctx context.Context, line store.Line) (bool, error) {
-	if line.State == linestate.Brewing {
-		return false, nil
+func (e *Engine) markBrewing(ctx context.Context, line store.Line) (store.Line, error) {
+	saved, err := e.saveBrewingLine(ctx, line)
+	if !errors.Is(err, store.ErrStale) {
+		return saved, err
+	}
+
+	fresh, reloadErr := e.reloadLine(ctx, line)
+	if reloadErr != nil {
+		return line, reloadErr
+	}
+
+	if fresh.Ref == "" && line.Ref != "" {
+		fresh.Ref = line.Ref
+	}
+
+	saved, retryErr := e.saveBrewingLine(ctx, fresh)
+	if !errors.Is(retryErr, store.ErrStale) {
+		return saved, retryErr
+	}
+
+	latest, reloadErr := e.reloadLine(ctx, line)
+	if reloadErr != nil {
+		return fresh, reloadErr
+	}
+
+	if latest.Ref == "" && line.Ref != "" {
+		latest.Ref = line.Ref
+	}
+
+	e.log().WarnContext(ctx, "no se marcó la línea en elaboración porque cambió concurrentemente; se continúa con la última versión",
+		"order_id", latest.OrderID,
+		"line_id", latest.ID,
+		"state", string(latest.State),
+	)
+
+	return latest, nil
+}
+
+func (e *Engine) saveBrewingLine(ctx context.Context, line store.Line) (store.Line, error) {
+	if line.State == linestate.Brewing || lineClosed(line) {
+		return line, nil
 	}
 
 	state, err := transitionLine(line.State, linestate.Brewing)
 	if err != nil {
-		return false, nil
+		return line, nil
 	}
 
-	line.State = state
+	next := line
+	next.State = state
 
-	if _, err := e.store.SaveLine(ctx, line); err != nil {
-		if errors.Is(err, store.ErrStale) {
-			return false, nil
-		}
-
-		return true, err
+	saved, err := e.store.SaveLine(ctx, next)
+	if err != nil {
+		return line, err
 	}
 
-	return true, nil
+	return saved, nil
 }
