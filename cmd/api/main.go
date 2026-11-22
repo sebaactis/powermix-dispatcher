@@ -45,7 +45,11 @@ func main() {
 	flag.StringVar(&combosPath, "combos", envOr("COMBOS_PATH", "combos.local.json"), "ruta al archivo JSON de combos")
 	flag.Parse()
 
-	logger := logging.New(os.Stdout, slog.LevelInfo)
+	logger, err := logging.NewFromEnv(os.Stdout)
+	if err != nil {
+		logging.New(os.Stdout, slog.LevelInfo).Error("nivel de log inválido", "error", err)
+		os.Exit(1)
+	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -190,7 +194,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		available, err := comboCatalog.Combos(r.Context())
 		if err != nil {
-			logger.Error("no se pudo leer el catálogo para el chequeo de salud", "error", err)
+			logger.ErrorContext(r.Context(), "no se pudo leer el catálogo para el chequeo de salud", "error", err)
 			http.Error(w, "no se pudo leer el catálogo", http.StatusInternalServerError)
 			return
 		}
@@ -218,7 +222,7 @@ func main() {
 		}, httpapi.WithMercadoPagoLogger(logger)).Register(mux)
 	}
 
-	server := newServer(envOr("HTTP_ADDR", "127.0.0.1:8080"), mux)
+	server := newServer(envOr("HTTP_ADDR", "127.0.0.1:8080"), httpapi.Wrap(mux, logger), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

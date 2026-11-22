@@ -18,7 +18,11 @@ import (
 const applyTimeout = 60 * time.Second
 
 func main() {
-	logger := logging.New(os.Stdout, slog.LevelInfo)
+	logger, err := logging.NewFromEnv(os.Stdout)
+	if err != nil {
+		logging.New(os.Stdout, slog.LevelInfo).Error("nivel de log inválido", "error", err)
+		os.Exit(1)
+	}
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {

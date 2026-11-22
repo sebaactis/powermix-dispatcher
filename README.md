@@ -212,10 +212,14 @@ variables, which override anything written in the JSON:
 | `MP_WEBHOOK_SECRET` | Secret Mercado Pago signs the webhook with (`x-signature`); required with the token |
 | `MP_CALLBACK_SECRET` | Secret path segment of the Mercado Pago webhook; required with the token |
 | `MP_BASE_URL` | Mercado Pago API (default `https://api.mercadopago.com`; the local fake is `http://127.0.0.1:9404`) |
-
 | `TELEGRAM_BOT_TOKEN` | Token of the Telegram bot that sends the support alerts. Empty: alerts only go to the log (sandbox only; production refuses to start) |
 | `TELEGRAM_CHAT_ID` | Chat (or group) the alerts go to; required with the token |
 | `TELEGRAM_BASE_URL` | Telegram Bot API (default `https://api.telegram.org`) |
+| `LOG_LEVEL` | Log level for all three binaries (`debug`, `info`, `warn`, `error`, case-insensitive; default `info`). Invalid values abort startup |
+
+### Logueo
+
+Los tres binarios (`cmd/api`, `cmd/migrate`, `cmd/fakeapi`) emiten logs en formato JSON estructurado (`slog.JSONHandler`) a salida estándar, filtrados por `LOG_LEVEL`. En `cmd/api`, cada pedido HTTP pasa por un middleware que genera un `X-Request-Id` único en el servidor (sin tomar el header entrante), lo devuelve en la respuesta, lo inyecta en el contexto para que los logs con `*Context` incluyan `request_id`, recupera panics devolviendo `500` JSON (o abortando la conexión si ya se enviaron cabeceras) y registra un access log por pedido (`info` para 2xx/3xx, `warn` para 4xx, `error` para 5xx o abortados) usando el patrón de ruta (`route`/`path`) o la ruta limpia y redactada (`/callbacks/***`) sin query string ni headers. `http.Server.ErrorLog` también apunta al logger JSON en nivel `error`.
 
 Mercado Pago is all or nothing: a half configuration (secrets without token, token
 without secrets, or a kiosk without `mp_pos_id`, the `external_pos_id` of its
