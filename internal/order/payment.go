@@ -3,9 +3,14 @@ package order
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
+	"compras-remotas/internal/linestate"
+	"compras-remotas/internal/notify"
 	"compras-remotas/internal/store"
 )
 
@@ -57,6 +62,7 @@ func (e *Engine) claimPaid(ctx context.Context, orderID string, at time.Time) (s
 
 func (e *Engine) dispatchLines(ctx context.Context, orderID string, lines []store.Line) error {
 	failures := make([]error, len(lines))
+	panicked := make([]bool, len(lines))
 
 	var wg sync.WaitGroup
 	wg.Add(len(lines))
@@ -64,6 +70,12 @@ func (e *Engine) dispatchLines(ctx context.Context, orderID string, lines []stor
 	for i := range lines {
 		go func(i int) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicked[i] = true
+					failures[i] = e.handleDispatchPanic(ctx, orderID, lines[i], r, debug.Stack())
+				}
+			}()
 
 			failures[i] = e.dispatchWithinDeadline(ctx, orderID, lines[i])
 		}(i)
@@ -74,8 +86,82 @@ func (e *Engine) dispatchLines(ctx context.Context, orderID string, lines []stor
 	joined := errors.Join(failures...)
 
 	if err := e.settleOrder(ctx, orderID); err != nil {
-		return errors.Join(joined, err)
+		joined = errors.Join(joined, err)
+	}
+
+	if hit := panickedLines(lines, panicked); len(hit) > 0 {
+		labels := make([]string, len(hit))
+		for i, line := range hit {
+			labels[i] = lineLabel(line)
+		}
+		// Dedicated kind preserves the order_in_doubt dedup key for settleOrder.
+		if err := e.notifyOnce(ctx, notify.Event{
+			Kind:    notify.KindDispatchPanic,
+			OrderID: orderID,
+			LineID:  hit[0].ID,
+			Detail:  fmt.Sprintf("el despacho de %s sufrió un panic y %s en duda: verificar si salió el producto", strings.Join(labels, ", "), joinVerb(len(hit), "la línea quedó", "las líneas quedaron")),
+		}); err != nil {
+			joined = errors.Join(joined, err)
+		}
 	}
 
 	return joined
+}
+
+func panickedLines(lines []store.Line, panicked []bool) []store.Line {
+	var hit []store.Line
+	for i, p := range panicked {
+		if p {
+			hit = append(hit, lines[i])
+		}
+	}
+
+	return hit
+}
+
+func (e *Engine) handleDispatchPanic(ctx context.Context, orderID string, line store.Line, panicked any, stack []byte) error {
+	panicErr := e.recoverPanic(ctx, "panic during line dispatch", panicked, stack,
+		"order_id", orderID,
+		"line_id", line.ID,
+	)
+
+	markErr := e.markPanickedLineInDoubt(ctx, line, panicErr.Error())
+
+	return errors.Join(panicErr, markErr)
+}
+
+func (e *Engine) markPanickedLineInDoubt(ctx context.Context, line store.Line, detail string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		fresh, err := e.reloadLine(ctx, line)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		if lineClosed(fresh) {
+			return nil
+		}
+
+		state, stateErr := transitionLine(fresh.State, linestate.InDoubt)
+		doubtfulAt := e.now()
+
+		fresh.State = state
+		fresh.LastError = detail
+		fresh.DeadlineAt = doubtfulAt.Add(e.reconcileInterval)
+		fresh.ReconcileUntil = doubtfulAt.Add(e.reconcileWindow)
+
+		if _, saveErr := e.store.SaveLine(ctx, fresh); saveErr != nil {
+			if errors.Is(saveErr, store.ErrStale) && attempt == 0 {
+				continue
+			}
+
+			return errors.Join(stateErr, saveErr)
+		}
+
+		return stateErr
+	}
+
+	return nil
 }

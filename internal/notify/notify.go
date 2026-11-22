@@ -11,6 +11,7 @@ const (
 	KindOrderInDoubt    Kind = "order_in_doubt"
 	KindOrderFailed     Kind = "order_failed"
 	KindOrderPartial    Kind = "order_partial"
+	KindDispatchPanic   Kind = "dispatch_panic"
 	KindPaymentMismatch Kind = "payment_mismatch"
 	KindPaymentUnknown  Kind = "payment_unknown"
 )

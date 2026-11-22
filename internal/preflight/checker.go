@@ -3,6 +3,9 @@ package preflight
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -61,6 +64,7 @@ type Checker struct {
 	batidos Batidos
 	snacks  Snacks
 	budget  time.Duration
+	logger  *slog.Logger
 }
 
 type Option func(*Checker)
@@ -85,6 +89,22 @@ func WithBudget(d time.Duration) Option {
 	}
 }
 
+func WithLogger(logger *slog.Logger) Option {
+	return func(checker *Checker) {
+		if logger != nil {
+			checker.logger = logger
+		}
+	}
+}
+
+func (c *Checker) log() *slog.Logger {
+	if c.logger != nil {
+		return c.logger
+	}
+
+	return slog.Default()
+}
+
 type machineResult struct {
 	reasons []Reason
 	err     error
@@ -101,14 +121,12 @@ func (c *Checker) Check(ctx context.Context, req Request) (Result, error) {
 	)
 
 	wait.Add(2)
-	go func() {
-		defer wait.Done()
-		batidosResult.reasons, batidosResult.err = c.checkBatidos(ctx, req)
-	}()
-	go func() {
-		defer wait.Done()
-		snacksResult.reasons, snacksResult.err = c.checkSnacks(ctx, req)
-	}()
+	go c.runCheck(&wait, "batidos", &batidosResult, func() ([]Reason, error) {
+		return c.checkBatidos(ctx, req)
+	})
+	go c.runCheck(&wait, "snacks", &snacksResult, func() ([]Reason, error) {
+		return c.checkSnacks(ctx, req)
+	})
 	wait.Wait()
 
 	if err := errors.Join(batidosResult.err, snacksResult.err); err != nil {
@@ -120,6 +138,22 @@ func (c *Checker) Check(ctx context.Context, req Request) (Result, error) {
 	reasons = append(reasons, snacksResult.reasons...)
 
 	return Result{Sellable: len(reasons) == 0, Reasons: reasons}, nil
+}
+
+func (c *Checker) runCheck(wait *sync.WaitGroup, machine string, out *machineResult, fn func() ([]Reason, error)) {
+	defer wait.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			c.log().Error("panic in preflight check",
+				"machine", machine,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			out.err = fmt.Errorf("preflight panic (%s): %v", machine, r)
+		}
+	}()
+
+	out.reasons, out.err = fn()
 }
 
 func (c *Checker) checkBatidos(ctx context.Context, req Request) ([]Reason, error) {

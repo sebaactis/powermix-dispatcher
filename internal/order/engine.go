@@ -1,8 +1,12 @@
 package order
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -47,6 +51,7 @@ type Engine struct {
 	qrExpiry          time.Duration
 	background        func(task func())
 	backgroundErrors  func(orderID string, err error)
+	logger            *slog.Logger
 
 	idMu     sync.Mutex
 	inFlight sync.WaitGroup
@@ -164,6 +169,22 @@ func WithBackgroundErrors(report func(orderID string, err error)) Option {
 	}
 }
 
+func WithLogger(logger *slog.Logger) Option {
+	return func(engine *Engine) {
+		if logger != nil {
+			engine.logger = logger
+		}
+	}
+}
+
+func (e *Engine) log() *slog.Logger {
+	if e.logger != nil {
+		return e.logger
+	}
+
+	return slog.Default()
+}
+
 func (e *Engine) Wait() {
 	e.inFlight.Wait()
 }
@@ -172,11 +193,31 @@ func (e *Engine) spawn(orderID string, task func() error) {
 	e.inFlight.Add(1)
 	e.background(func() {
 		defer e.inFlight.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				err := e.recoverPanic(context.Background(), "panic in background task", r, debug.Stack(),
+					"order_id", orderID,
+				)
+				if e.backgroundErrors != nil {
+					e.backgroundErrors(orderID, err)
+				}
+			}
+		}()
 
 		if err := task(); err != nil && e.backgroundErrors != nil {
 			e.backgroundErrors(orderID, err)
 		}
 	})
+}
+
+func (e *Engine) recoverPanic(ctx context.Context, msg string, panicked any, stack []byte, attrs ...any) error {
+	args := make([]any, 0, len(attrs)+4)
+	args = append(args, attrs...)
+	args = append(args, "panic", panicked, "stack", string(stack))
+
+	e.log().ErrorContext(ctx, msg, args...)
+
+	return fmt.Errorf("%s: %v", msg, panicked)
 }
 
 func (e *Engine) nextID() string {
