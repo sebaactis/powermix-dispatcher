@@ -140,6 +140,8 @@ func (c *Checker) Check(ctx context.Context, req Request) (Result, error) {
 	return Result{Sellable: len(reasons) == 0, Reasons: reasons}, nil
 }
 
+var ErrPanic = errors.New("preflight panic")
+
 func (c *Checker) runCheck(wait *sync.WaitGroup, machine string, out *machineResult, fn func() ([]Reason, error)) {
 	defer wait.Done()
 	defer func() {
@@ -149,7 +151,7 @@ func (c *Checker) runCheck(wait *sync.WaitGroup, machine string, out *machineRes
 				"panic", r,
 				"stack", string(debug.Stack()),
 			)
-			out.err = fmt.Errorf("preflight panic (%s): %v", machine, r)
+			out.err = fmt.Errorf("%w (%s): %v", ErrPanic, machine, r)
 		}
 	}()
 
