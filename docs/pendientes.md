@@ -1,6 +1,6 @@
 # Pendientes
 
-Estado al 2026-11-22 (con **F1–F3**, **F5–F9** y **F11–F14** ya publicados en `main`).
+Estado al 2026-11-22 (con **F1–F3**, **F5–F9**, **F11–F14** y **F16** ya publicados en `main`).
 
 Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para el detalle completo, las referencias `archivo:línea` y el historial de la revisión para producción, consulta [odd/tasks/revision-produccion.md](../odd/tasks/revision-produccion.md).
 
@@ -14,7 +14,6 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 | **F7b** | Corte abrupto (`SIGKILL`) en despacho de batidos deja la línea `in_doubt` porque el código de campaña se guarda después de `ProduceCoffee` | Abierto (cambia contrato de `Dispatch`) |
 | **F10** | `RetailPrice` en snacks se envía en `0` fijo | Bloqueado por duda al proveedor (sección C) |
 | **F15** | Aviso de entrega parcial muestra SKU en lugar de nombre legible (requiere nombre en catálogo) | Abierto |
-| **F16** | `POST /orders` responde `200` en lugar de `201` y el barrido no tiene plazo máximo por vuelta | Abierto |
 | **D3** | `markPanickedLineInDoubt` y `notifyOnce` no tienen protección propia frente a un segundo panic | Abierto |
 | **D4** | Panic dentro de `spawn` pero fuera de una línea sólo se loguea (sin aviso ni recálculo) | Abierto |
 | **D5** | El intento que entra en panic queda `OutcomeAmbiguous` sin `FinishedAt` ni incremento de `line.Attempts` | Abierto |
@@ -67,7 +66,7 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 
 ## Orden recomendado
 
-1. Desbloquear **F4** y **F10** con el proveedor de snacks; continuar con **F7b** y los menores (**F15**, **F16**, **D3–D5**).
+1. Desbloquear **F4** y **F10** con el proveedor de snacks; continuar con **F7b** y los menores (**F15**, **D3–D5**).
 2. Ejecutar **P3** (buenas prácticas) según `H-BP` de `odd/tasks/revision-produccion.md`.
 3. Desplegar en Render con PostgreSQL, fijar `PUBLIC_BASE_URL` y validar Mercado Pago contra su sandbox real.
 4. Integrar la suite de `archive/tests` en `main` con CI antes de salir a producción, y evaluar las deudas restantes (`Ref` en `GET /orders/{id}` y mecanismo de lease).
