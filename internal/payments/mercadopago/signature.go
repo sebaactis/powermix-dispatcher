@@ -13,21 +13,19 @@ import (
 
 const SignatureTolerance = 5 * time.Minute
 
+const secondsCutoff = 1_000_000_000_000
+
 var ErrInvalidSignature = errors.New("mercadopago: firma del webhook inválida")
 
 func VerifySignature(secret, xSignature, xRequestID, dataID string, now time.Time) error {
 	if secret == "" {
 		return fmt.Errorf("%w: falta el secreto del webhook", ErrInvalidSignature)
 	}
-	if dataID == "" {
-		return fmt.Errorf("%w: falta data.id", ErrInvalidSignature)
-	}
-
 	ts, v1 := parseSignatureHeader(xSignature)
 	if ts == "" || v1 == "" {
 		return fmt.Errorf("%w: encabezado x-signature incompleto", ErrInvalidSignature)
 	}
-	tsMillis, err := strconv.ParseInt(ts, 10, 64)
+	tsValue, err := strconv.ParseInt(ts, 10, 64)
 	if err != nil {
 		return fmt.Errorf("%w: ts no numérico", ErrInvalidSignature)
 	}
@@ -40,7 +38,7 @@ func VerifySignature(secret, xSignature, xRequestID, dataID string, now time.Tim
 		return fmt.Errorf("%w: la firma no coincide", ErrInvalidSignature)
 	}
 
-	drift := now.Sub(time.UnixMilli(tsMillis))
+	drift := now.Sub(signatureTime(tsValue))
 	if drift < 0 {
 		drift = -drift
 	}
@@ -48,6 +46,13 @@ func VerifySignature(secret, xSignature, xRequestID, dataID string, now time.Tim
 		return fmt.Errorf("%w: ts fuera de la ventana de %s", ErrInvalidSignature, SignatureTolerance)
 	}
 	return nil
+}
+
+func signatureTime(ts int64) time.Time {
+	if ts < secondsCutoff {
+		return time.Unix(ts, 0)
+	}
+	return time.UnixMilli(ts)
 }
 
 func SignatureHeader(secret, xRequestID, dataID string, at time.Time) string {

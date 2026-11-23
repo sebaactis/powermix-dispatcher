@@ -39,7 +39,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ### Menores
 - [ ] F11 — `order.ClosedAt` nunca se carga (`internal/store/store.go:36`).
 - [ ] F12 — `refreshOrderStatus` reintenta `ErrStale` una sola vez (`internal/order/settle.go:46`).
-- [ ] F13 — Webhook de Mercado Pago: `data.id` sólo desde la query (`internal/httpapi/mercadopago.go:85`); `ts` asumido en milisegundos (`internal/payments/mercadopago/signature.go:30,43`).
+- [x] F13 — Hecho (2026-11-22, rama `fix/f13-webhook-mp`): `ts` en segundos o milisegundos (`signatureTime`, corte en 1e12) y, si la query no trae `data.id`, se toma del cuerpo con un `WARN`; la firma se verifica con el `data.id` de la query, como la calcula Mercado Pago. Original: Webhook de Mercado Pago: `data.id` sólo desde la query (`internal/httpapi/mercadopago.go:85`); `ts` asumido en milisegundos (`internal/payments/mercadopago/signature.go:30,43`).
 - [ ] F14 — Respuestas de más de 1 MB se truncan sin error en batidos y snacks (`batidos/client.go:321`, `snacks/client.go:268,428`).
 - [ ] F15 — El aviso de entrega parcial muestra el SKU (`DEMO-SNACK-ALFAJOR`) y no el nombre del producto: haría falta el nombre en el catálogo.
 - [ ] F16 — `POST /orders` responde 200 en vez de 201 (`internal/httpapi/orders.go:53`); el barrido no tiene plazo por vuelta (`internal/sweep/runner.go:92-104`).
