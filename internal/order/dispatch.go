@@ -74,6 +74,19 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			Machine:     line.Machine,
 			SKU:         line.SKU,
 			AmountCents: line.AmountCents,
+			SaveRef: func(refCtx context.Context, ref string) error {
+				pending := line
+				pending.Ref = ref
+
+				saved, err := e.store.SaveLine(refCtx, pending)
+				if err != nil {
+					return err
+				}
+
+				line = saved
+
+				return nil
+			},
 		})
 
 		verdict := classifyDispatch(result, dispatchErr)
@@ -132,7 +145,7 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 
 func classifyDispatch(result dispenser.DispatchResult, dispatchErr error) dispatchVerdict {
 	switch {
-	case dispatchErr != nil && isProviderRejection(dispatchErr):
+	case dispatchErr != nil && (isProviderRejection(dispatchErr) || errors.Is(dispatchErr, dispenser.ErrNotDispatched)):
 		return dispatchVerdict{
 			state:   linestate.Failed,
 			outcome: store.OutcomeRejected,
