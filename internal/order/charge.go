@@ -152,6 +152,7 @@ func (e *Engine) closeUnpaid(ctx context.Context, intent store.PaymentIntent, st
 
 	if loaded.Status == store.OrderPendingPayment {
 		loaded.Status = store.OrderCancelled
+		e.markClosed(&loaded)
 
 		if _, err := e.store.SaveOrder(ctx, loaded); err != nil {
 			return err
