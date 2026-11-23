@@ -319,9 +319,12 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any) e
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("no se pudo leer la respuesta de %s: %w", path, err)
+	}
+	if len(raw) > maxResponseBytes {
+		return fmt.Errorf("batidos: la respuesta de %s supera %d bytes", path, maxResponseBytes)
 	}
 
 	var env envelope
