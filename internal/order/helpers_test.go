@@ -42,10 +42,6 @@ type stubMachine struct {
 	err     error
 }
 
-func (s *stubMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (s *stubMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, req)
@@ -83,10 +79,6 @@ type flakyMachine struct {
 	calls      []dispenser.Request
 	rejections int
 	attempt    dispenser.DispatchResult
-}
-
-func (s *flakyMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
 }
 
 func (s *flakyMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
@@ -375,10 +367,6 @@ type closingOnDispatchMachine struct {
 	dispatches int
 }
 
-func (m *closingOnDispatchMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (m *closingOnDispatchMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	m.mu.Lock()
 	m.dispatches++
@@ -429,10 +417,6 @@ type reconcileMachine struct {
 	dispatchErr  error
 	status       dispenser.Status
 	reconcileErr error
-}
-
-func (m *reconcileMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
 }
 
 func (m *reconcileMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {

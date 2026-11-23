@@ -354,10 +354,6 @@ type scriptedMachine struct {
 	calls int
 }
 
-func (m *scriptedMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (m *scriptedMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

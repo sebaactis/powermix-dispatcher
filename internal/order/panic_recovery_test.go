@@ -29,10 +29,6 @@ type panicDispenser struct {
 	reconcileE error
 }
 
-func (d *panicDispenser) Check(ctx context.Context, m machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (d *panicDispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	if d.panicVal != nil {
 		panic(d.panicVal)

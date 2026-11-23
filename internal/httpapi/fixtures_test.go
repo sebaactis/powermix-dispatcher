@@ -82,10 +82,6 @@ func testKiosk(id string) config.Kiosk {
 
 type fakeDispenser struct{}
 
-func (fakeDispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (fakeDispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	return dispenser.DispatchResult{Accepted: true, ProviderRef: "ref-" + req.LineID}, nil
 }
@@ -278,10 +274,6 @@ func newCallbackFixture(t *testing.T, secrets CallbackSecrets) (*http.ServeMux, 
 }
 
 type silentRefDispenser struct{}
-
-func (silentRefDispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
 
 func (silentRefDispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	return dispenser.DispatchResult{Accepted: true, Detail: "despacho encolado: el resultado real llega por callback"}, nil

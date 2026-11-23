@@ -98,10 +98,6 @@ type countingDispenser struct {
 	release  chan struct{}
 }
 
-func (d *countingDispenser) Check(context.Context, machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (d *countingDispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	if d.release != nil {
 		<-d.release

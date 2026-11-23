@@ -26,10 +26,6 @@ type crashingMachine struct {
 	release chan struct{}
 }
 
-func (m *crashingMachine) Check(context.Context, machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (m *crashingMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	if err := req.SaveRef(ctx, "code-crash"); err != nil {
 		return dispenser.DispatchResult{}, err

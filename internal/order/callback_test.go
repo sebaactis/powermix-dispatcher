@@ -25,10 +25,6 @@ type reconcileStub struct {
 	calls []dispenser.Request
 }
 
-func (s *reconcileStub) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (s *reconcileStub) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	return dispenser.DispatchResult{Accepted: true, ProviderRef: req.SKU}, nil
 }
@@ -114,10 +110,6 @@ func dispatchedWith(t *testing.T, draft order.Draft, batidosRef, snacksRef strin
 type reconcilingMachine struct {
 	dispatch  dispenser.Dispenser
 	reconcile dispenser.Dispenser
-}
-
-func (m reconcilingMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return m.dispatch.Check(ctx, machine)
 }
 
 func (m reconcilingMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {

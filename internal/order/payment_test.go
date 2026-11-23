@@ -921,10 +921,6 @@ type probeMachine struct {
 	attempt dispenser.DispatchResult
 }
 
-func (m *probeMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (m *probeMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -968,10 +964,6 @@ func (m *probeMachine) onlyValue(t *testing.T) any {
 type blockedMachine struct {
 	mu   sync.Mutex
 	errs []error
-}
-
-func (m *blockedMachine) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
 }
 
 func (m *blockedMachine) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {

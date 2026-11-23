@@ -620,10 +620,6 @@ type cancellingSweepMachine struct {
 	status       dispenser.Status
 }
 
-func (m *cancellingSweepMachine) Check(context.Context, machine.Ref) (dispenser.Availability, error) {
-	return dispenser.Availability{Available: true}, nil
-}
-
 func (m *cancellingSweepMachine) Dispatch(ctx context.Context, _ dispenser.Request) (dispenser.DispatchResult, error) {
 	m.mu.Lock()
 	m.dispatched++
@@ -826,10 +822,6 @@ func TestEngineSyncOverdueLinesDoesNotMarkInDoubtWhenReconcileIsCancelled(t *tes
 type reconcileCancelWrapper struct {
 	inner  dispenser.Dispenser
 	cancel context.CancelFunc
-}
-
-func (w *reconcileCancelWrapper) Check(ctx context.Context, m machine.Ref) (dispenser.Availability, error) {
-	return w.inner.Check(ctx, m)
 }
 
 func (w *reconcileCancelWrapper) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
