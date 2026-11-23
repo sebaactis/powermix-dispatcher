@@ -2,6 +2,7 @@ package dispenser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"compras-remotas/internal/linestate"
@@ -21,7 +22,11 @@ type Request struct {
 	AmountCents int64
 
 	KnownRef string
+
+	SaveRef func(ctx context.Context, ref string) error
 }
+
+var ErrNotDispatched = errors.New("la máquina no llegó a activarse")
 
 type DispatchResult struct {
 	Accepted    bool
