@@ -288,7 +288,7 @@ func TestCreateOrderWithMercadoPagoReturnsQR(t *testing.T) {
 	mux, _ := newPayHandler(t, config.EnvSandbox, charger)
 
 	status, body := doJSON(t, mux, http.MethodPost, "/orders", `{"combo_id":"combo-1","client_key":"k1"}`)
-	if status != http.StatusOK {
+	if status != http.StatusCreated {
 		t.Fatalf("status = %d, cuerpo %v", status, body)
 	}
 
@@ -310,7 +310,7 @@ func TestCreateOrderWithoutMercadoPagoHasNoPaymentBlock(t *testing.T) {
 	mux, _ := newPayHandler(t, config.EnvSandbox, nil)
 
 	status, body := doJSON(t, mux, http.MethodPost, "/orders", `{"combo_id":"combo-1"}`)
-	if status != http.StatusOK {
+	if status != http.StatusCreated {
 		t.Fatalf("status = %d, cuerpo %v", status, body)
 	}
 

@@ -354,7 +354,7 @@ func paidOrder(t *testing.T, fx *liveCallbackFixture, comboID string) store.Orde
 	t.Helper()
 
 	created := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"`+comboID+`"}`)
-	if created.Code != http.StatusOK {
+	if created.Code != http.StatusCreated {
 		t.Fatalf("no se pudo crear la orden: %d %s", created.Code, created.Body.String())
 	}
 

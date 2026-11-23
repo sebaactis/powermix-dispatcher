@@ -23,8 +23,8 @@ func TestCreateOrderBuildsTheDraftFromTheComboAndTheKiosk(t *testing.T) {
 	fx := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
 
 	recorder := call(t, fx.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":"combo-mixto","client_key":"clave-1"}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("se esperaba 200 y llegó %d: %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("se esperaba 201 y llegó %d: %s", recorder.Code, recorder.Body.String())
 	}
 
 	payload := decode(t, recorder)
@@ -91,8 +91,8 @@ func TestCreateOrderUsesTheOnlyKioskWhenTheBodyOmitsIt(t *testing.T) {
 	fx := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-unico")}, testCombos())
 
 	recorder := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"combo-mixto"}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("se esperaba 200 y llegó %d: %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("se esperaba 201 y llegó %d: %s", recorder.Code, recorder.Body.String())
 	}
 
 	payload := decode(t, recorder)
@@ -136,8 +136,8 @@ func TestCreateOrderIsIdempotentByClientKey(t *testing.T) {
 	fx := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
 
 	first := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"combo-mixto","client_key":"clave-repetida"}`)
-	if first.Code != http.StatusOK {
-		t.Fatalf("se esperaba 200 y llegó %d: %s", first.Code, first.Body.String())
+	if first.Code != http.StatusCreated {
+		t.Fatalf("se esperaba 201 y llegó %d: %s", first.Code, first.Body.String())
 	}
 
 	second := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"combo-mixto","client_key":"clave-repetida"}`)
@@ -166,8 +166,8 @@ func TestCreateOrderIsIdempotentByClientKey(t *testing.T) {
 	}
 
 	third := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"combo-mixto","client_key":"otra-clave"}`)
-	if third.Code != http.StatusOK {
-		t.Fatalf("se esperaba 200 y llegó %d: %s", third.Code, third.Body.String())
+	if third.Code != http.StatusCreated {
+		t.Fatalf("se esperaba 201 y llegó %d: %s", third.Code, third.Body.String())
 	}
 
 	if id := decode(t, third)["id"]; id != "id-4" {
@@ -238,8 +238,8 @@ func TestReadOrderReturnsTheLiveState(t *testing.T) {
 	fx := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
 
 	created := call(t, fx.mux, http.MethodPost, "/orders", `{"combo_id":"combo-mixto"}`)
-	if created.Code != http.StatusOK {
-		t.Fatalf("se esperaba 200 al crear y llegó %d: %s", created.Code, created.Body.String())
+	if created.Code != http.StatusCreated {
+		t.Fatalf("se esperaba 201 al crear y llegó %d: %s", created.Code, created.Body.String())
 	}
 
 	orderID := decode(t, created)["id"].(string)
@@ -440,8 +440,8 @@ func TestCreateOrderRejectsReusedClientKeyWithDifferentComboOrKiosk(t *testing.T
 			fx := newFixture(t, config.EnvSandbox, kiosks, combos)
 
 			first := call(t, fx.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-uno","combo_id":"combo-mixto","client_key":"clave-compartida"}`)
-			if first.Code != http.StatusOK {
-				t.Fatalf("se esperaba 200 al crear la orden inicial y llegó %d: %s", first.Code, first.Body.String())
+			if first.Code != http.StatusCreated {
+				t.Fatalf("se esperaba 201 al crear la orden inicial y llegó %d: %s", first.Code, first.Body.String())
 			}
 
 			firstID := decode(t, first)["id"].(string)
@@ -473,8 +473,8 @@ func TestCreateOrderRejectsReusedClientKeyWithDifferentComboOrKiosk(t *testing.T
 			}
 
 			retry := call(t, fx.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-uno","combo_id":"combo-mixto","client_key":"clave-compartida"}`)
-			if retry.Code != http.StatusOK {
-				t.Fatalf("el reintento válido debía seguir devolviendo 200 y llegó %d: %s", retry.Code, retry.Body.String())
+			if retry.Code != http.StatusCreated {
+				t.Fatalf("el reintento válido debía seguir devolviendo 201 y llegó %d: %s", retry.Code, retry.Body.String())
 			}
 			if gotID := decode(t, retry)["id"]; gotID != firstID {
 				t.Fatalf("el reintento válido debía devolver %q y devolvió %v", firstID, gotID)
@@ -495,19 +495,19 @@ func TestCreateOrderEnforcesClientKeyMaxLength(t *testing.T) {
 		{
 			name:       "128 caracteres ASCII aceptado",
 			clientKey:  strings.Repeat("a", 128),
-			wantStatus: http.StatusOK,
+			wantStatus: http.StatusCreated,
 			wantTrim:   strings.Repeat("a", 128),
 		},
 		{
 			name:       "128 runas multibyte aceptado",
 			clientKey:  strings.Repeat("á", 128),
-			wantStatus: http.StatusOK,
+			wantStatus: http.StatusCreated,
 			wantTrim:   strings.Repeat("á", 128),
 		},
 		{
 			name:       "128 caracteres con espacios alrededor aceptado tras trim",
 			clientKey:  "   " + strings.Repeat("b", 128) + "   ",
-			wantStatus: http.StatusOK,
+			wantStatus: http.StatusCreated,
 			wantTrim:   strings.Repeat("b", 128),
 		},
 		{
@@ -563,14 +563,14 @@ func TestCreateOrderEnforcesClientKeyMaxLength(t *testing.T) {
 func TestCreateOrderTrimsComboID(t *testing.T) {
 	fxUnpadded := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
 	unpadded := call(t, fxUnpadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":"combo-mixto","client_key":"clave-1"}`)
-	if unpadded.Code != http.StatusOK {
-		t.Fatalf("sin espacios se esperaba 200 y llegó %d: %s", unpadded.Code, unpadded.Body.String())
+	if unpadded.Code != http.StatusCreated {
+		t.Fatalf("sin espacios se esperaba 201 y llegó %d: %s", unpadded.Code, unpadded.Body.String())
 	}
 
 	fxPadded := newFixture(t, config.EnvSandbox, []config.Kiosk{testKiosk("kiosco-centro")}, testCombos())
 	padded := call(t, fxPadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":" combo-mixto ","client_key":"clave-1"}`)
-	if padded.Code != http.StatusOK {
-		t.Fatalf("con espacios alrededor se esperaba 200 y llegó %d: %s", padded.Code, padded.Body.String())
+	if padded.Code != http.StatusCreated {
+		t.Fatalf("con espacios alrededor se esperaba 201 y llegó %d: %s", padded.Code, padded.Body.String())
 	}
 
 	if padded.Body.String() != unpadded.Body.String() {
@@ -579,8 +579,8 @@ func TestCreateOrderTrimsComboID(t *testing.T) {
 
 	got := decode(t, padded)
 	retry := call(t, fxPadded.mux, http.MethodPost, "/orders", `{"kiosk_id":"kiosco-centro","combo_id":"combo-mixto","client_key":"clave-1"}`)
-	if retry.Code != http.StatusOK {
-		t.Fatalf("reintento sin espacios sobre la misma client_key: se esperaba 200 y llegó %d: %s", retry.Code, retry.Body.String())
+	if retry.Code != http.StatusCreated {
+		t.Fatalf("reintento sin espacios sobre la misma client_key: se esperaba 201 y llegó %d: %s", retry.Code, retry.Body.String())
 	}
 	if decode(t, retry)["id"] != got["id"] {
 		t.Fatalf("el reintento debía devolver la misma orden %v y devolvió %v", got["id"], decode(t, retry)["id"])
