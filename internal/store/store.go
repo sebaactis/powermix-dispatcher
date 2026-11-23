@@ -44,6 +44,7 @@ type Line struct {
 	Position       int
 	Machine        machine.Ref
 	SKU            string
+	Name           string
 	AmountCents    int64
 	State          linestate.State
 	Ref            string

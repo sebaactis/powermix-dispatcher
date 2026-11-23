@@ -114,6 +114,10 @@ func partialOrderDetail(lines []store.Line) string {
 }
 
 func lineLabel(line store.Line) string {
+	if line.Name != "" {
+		return line.Name
+	}
+
 	if line.SKU == "" {
 		return string(line.Machine.Kind)
 	}

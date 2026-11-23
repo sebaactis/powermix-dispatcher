@@ -34,10 +34,10 @@ const (
 		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price_cents = EXCLUDED.price_cents,
 			currency = EXCLUDED.currency, active = EXCLUDED.active, updated_at = now()`
 
-	comboItemUpsert = `INSERT INTO combo_item (combo_id, position, machine_type, sku)
-		SELECT $1, $2, $3, $4 WHERE to_regclass('combo_item') IS NOT NULL
+	comboItemUpsert = `INSERT INTO combo_item (combo_id, position, machine_type, sku, sku_name)
+		SELECT $1, $2, $3, $4, $5 WHERE to_regclass('combo_item') IS NOT NULL
 		ON CONFLICT (combo_id, position) DO UPDATE SET machine_type = EXCLUDED.machine_type,
-			sku = EXCLUDED.sku`
+			sku = EXCLUDED.sku, sku_name = EXCLUDED.sku_name`
 )
 
 func Seed(ctx context.Context, db Execer, kiosks []config.Kiosk, combos []catalog.Combo) error {
@@ -62,7 +62,7 @@ func Seed(ctx context.Context, db Execer, kiosks []config.Kiosk, combos []catalo
 		}
 
 		for position, item := range combo.Items {
-			if _, err := db.ExecContext(ctx, comboItemUpsert, combo.ID, position, string(item.MachineType), item.SKU); err != nil {
+			if _, err := db.ExecContext(ctx, comboItemUpsert, combo.ID, position, string(item.MachineType), item.SKU, item.Name); err != nil {
 				return fmt.Errorf("no se pudo sembrar el ítem %d del combo %s: %w", position+1, combo.ID, err)
 			}
 		}

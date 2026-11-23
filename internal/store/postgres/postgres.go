@@ -21,9 +21,9 @@ const (
 
 	lineColumns = `id, order_id, position, machine_type, sku, amount_cents, state, external_ref, attempts,
 		deadline_at, reconcile_until, last_error, version, machine_kiosk_id, machine_name,
-		machine_device_id, machine_device_no, machine_device_type_id, machine_mid`
+		machine_device_id, machine_device_no, machine_device_type_id, machine_mid, product_name`
 
-	lineColumnCount = 19
+	lineColumnCount = 20
 )
 
 var stalledLineColumns = tableColumns(lineColumns, "order_line")
@@ -154,14 +154,15 @@ func (s *Store) SaveLine(ctx context.Context, line store.Line) (store.Line, erro
 		machine_device_id = $15,
 		machine_device_no = $16,
 		machine_device_type_id = $17,
-		machine_mid = $18
+		machine_mid = $18,
+		product_name = $19
 		WHERE id = $1 AND version = $2
 		RETURNING `+lineColumns,
 		line.ID, line.Version, line.Position, string(line.Machine.Kind), line.SKU, line.AmountCents, string(line.State),
 		nullableText(line.Ref), line.Attempts, nullableTime(line.DeadlineAt), nullableTime(line.ReconcileUntil),
 		nullableText(line.LastError), nullableText(line.Machine.KioskID), nullableText(line.Machine.Name),
 		nullableText(line.Machine.DeviceID), nullableText(line.Machine.DeviceNo),
-		nullableText(line.Machine.DeviceTypeID), nullableText(line.Machine.MID))
+		nullableText(line.Machine.DeviceTypeID), nullableText(line.Machine.MID), line.Name)
 
 	saved, err := scanLine(row)
 	if err == nil {
@@ -456,7 +457,7 @@ func scanLine(row rowScanner) (store.Line, error) {
 
 	err := row.Scan(&line.ID, &line.OrderID, &line.Position, &machineType, &line.SKU, &line.AmountCents,
 		&state, &ref, &line.Attempts, &deadlineAt, &reconcileUntil, &lastError, &line.Version,
-		&kioskID, &machineName, &deviceID, &deviceNo, &deviceTypeID, &mid)
+		&kioskID, &machineName, &deviceID, &deviceNo, &deviceTypeID, &mid, &line.Name)
 	if err != nil {
 		return store.Line{}, err
 	}
@@ -486,6 +487,7 @@ func lineInsertArgs(orderID string, line store.Line) []any {
 		nullableText(line.LastError), 0,
 		nullableText(line.Machine.KioskID), nullableText(line.Machine.Name), nullableText(line.Machine.DeviceID),
 		nullableText(line.Machine.DeviceNo), nullableText(line.Machine.DeviceTypeID), nullableText(line.Machine.MID),
+		line.Name,
 	}
 }
 

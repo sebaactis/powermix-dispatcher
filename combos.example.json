@@ -9,11 +9,13 @@
       {
         "machine_type": "batidos",
         "sku": "DEMO-BATIDO-VAINILLA",
+        "name": "Batido de vainilla",
         "price_cents": 280000
       },
       {
         "machine_type": "snacks",
         "sku": "DEMO-SNACK-ALFAJOR",
+        "name": "Alfajor",
         "price_cents": 140000
       }
     ]
@@ -28,11 +30,13 @@
       {
         "machine_type": "batidos",
         "sku": "DEMO-BATIDO-CHOCOLATE",
+        "name": "Batido de chocolate",
         "price_cents": 250000
       },
       {
         "machine_type": "snacks",
         "sku": "DEMO-SNACK-CHOCOLATE",
+        "name": "Chocolate",
         "price_cents": 140000
       }
     ]
