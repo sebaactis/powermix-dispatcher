@@ -20,14 +20,14 @@ type dispatchVerdict struct {
 	detail  string
 }
 
-func (e *Engine) dispatchWithinDeadline(ctx context.Context, orderID string, line store.Line) error {
+func (e *Engine) dispatchWithinDeadline(ctx context.Context, orderID string, line store.Line, progress *attemptProgress) error {
 	lineCtx, cancel := context.WithTimeout(ctx, e.deadline)
 	defer cancel()
 
-	return e.dispatchLine(lineCtx, orderID, line)
+	return e.dispatchLine(lineCtx, orderID, line, progress)
 }
 
-func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Line) error {
+func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Line, progress *attemptProgress) error {
 	for line.Attempts < e.maxAttempts {
 		number := line.Attempts + 1
 
@@ -63,6 +63,10 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 			return err
 		}
 
+		progress.number = number
+		progress.attempt = attempt
+		progress.open = true
+
 		machine, ok := e.machines[line.Machine.Kind]
 		if !ok {
 			return fmt.Errorf("no hay una máquina configurada para el tipo %q", line.Machine.Kind)
@@ -96,6 +100,9 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 		attempt.FinishedAt = e.now()
 
 		attemptErr := e.store.SaveAttempt(ctx, attempt)
+		if attemptErr == nil {
+			progress.open = false
+		}
 
 		retrying := verdict.outcome == store.OutcomeRejected && number < e.maxAttempts
 

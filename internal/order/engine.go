@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -212,6 +213,7 @@ func (e *Engine) spawn(orderID string, task func() error) {
 				err := e.recoverPanic(context.Background(), "panic in background task", r, debug.Stack(),
 					"order_id", orderID,
 				)
+				err = errors.Join(err, e.recoverOrder(context.Background(), orderID))
 				if e.backgroundErrors != nil {
 					e.backgroundErrors(orderID, err)
 				}
@@ -222,6 +224,39 @@ func (e *Engine) spawn(orderID string, task func() error) {
 			e.backgroundErrors(orderID, err)
 		}
 	})
+}
+
+func (e *Engine) recoverOrder(ctx context.Context, orderID string) error {
+	settleErr := e.guard(ctx, "panic al recalcular la orden tras un panic", func() error {
+		return e.settleOrder(ctx, orderID)
+	}, "order_id", orderID)
+
+	notifyErr := e.guard(ctx, "panic al avisar el panic de un pedido", func() error {
+		return e.notifyOnce(ctx, notify.Event{
+			Kind:    notify.KindDispatchPanic,
+			OrderID: orderID,
+			Detail:  "el procesamiento del pedido sufrió un panic fuera del despacho de una línea: verificar el estado del pedido y si salió el producto",
+		})
+	}, "order_id", orderID)
+
+	return errors.Join(settleErr, notifyErr)
+}
+
+func (e *Engine) guard(ctx context.Context, msg string, fn func() error, attrs ...any) error {
+	_, err := e.guardPanicked(ctx, msg, fn, attrs...)
+
+	return err
+}
+
+func (e *Engine) guardPanicked(ctx context.Context, msg string, fn func() error, attrs ...any) (panicked bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			err = e.recoverPanic(ctx, msg, r, debug.Stack(), attrs...)
+		}
+	}()
+
+	return false, fn()
 }
 
 func (e *Engine) recoverPanic(ctx context.Context, msg string, panicked any, stack []byte, attrs ...any) error {

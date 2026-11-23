@@ -277,9 +277,9 @@ internal/order/payment.go:17 MarkPaid
   ├─ SaveOrder → paid (ErrStale: otro ganó → retorna sin despachar)
   ├─ AdvanceOrder → dispatching (order/status.go:107) + SaveOrder
   └─ dispatchLines :63 (con context.WithoutCancel :23)
-       ├─ una goroutine por línea con recover() (:73 → handleDispatchPanic :122 → markPanickedLineInDoubt :133)
+       ├─ una goroutine por línea con dispatchRecovering (recover → handleDispatchPanic → cierra el intento y marca la línea in_doubt, protegido con guard)
        ├─ dispatchWithinDeadline (order/dispatch.go:23, timeout 2 min)
-       └─ wg.Wait → settleOrder (order/settle.go:18) + aviso dispatch_panic si hubo panic (:98)
+       └─ wg.Wait → settleOrder (order/settle.go:18, protegido con guard) + aviso dispatch_panic si hubo panic; si settleOrder entró en panic, recoverOrder recalcula la orden y avisa
 ```
 
 ## 4. El corazón: `dispatchLine` (`internal/order/dispatch.go:30`)
