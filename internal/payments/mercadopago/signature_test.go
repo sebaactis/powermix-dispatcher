@@ -100,3 +100,54 @@ func TestManifestOmitsEmptyPairsAndLowercasesID(t *testing.T) {
 		t.Fatalf("manifest = %q, se esperaba %q", got, want)
 	}
 }
+
+const (
+	vectorTSSeconds = int64(1742505638)
+	vectorV1Seconds = "11ca658e265c2e0450b854c45cbdf2a0ce517a6db53fa68cb2b148b2135f7d09"
+)
+
+func vectorHeaderSeconds() string {
+	return "ts=1742505638,v1=" + vectorV1Seconds
+}
+
+func TestVerifySignatureAcceptsTSInSeconds(t *testing.T) {
+	now := time.Unix(vectorTSSeconds, 0)
+	if err := VerifySignature(vectorSecret, vectorHeaderSeconds(), vectorRequestID, vectorDataID, now); err != nil {
+		t.Fatalf("firma con ts en segundos rechazada: %v", err)
+	}
+}
+
+func TestVerifySignatureWindowWithTSInSeconds(t *testing.T) {
+	cases := []struct {
+		name  string
+		shift time.Duration
+		ok    bool
+	}{
+		{"justo en el borde por delante", SignatureTolerance, true},
+		{"justo en el borde por detrás", -SignatureTolerance, true},
+		{"vencida", SignatureTolerance + time.Second, false},
+		{"del futuro", -SignatureTolerance - time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(vectorTSSeconds, 0).Add(tc.shift)
+			err := VerifySignature(vectorSecret, vectorHeaderSeconds(), vectorRequestID, vectorDataID, now)
+			if tc.ok && err != nil {
+				t.Fatalf("rechazada dentro de la ventana: %v", err)
+			}
+			if !tc.ok && !errors.Is(err, ErrInvalidSignature) {
+				t.Fatalf("err = %v, se esperaba ErrInvalidSignature", err)
+			}
+		})
+	}
+}
+
+func TestVerifySignatureWithoutDataIDOmitsPair(t *testing.T) {
+	header := SignatureHeader(vectorSecret, vectorRequestID, "", vectorNow())
+	if err := VerifySignature(vectorSecret, header, vectorRequestID, "", vectorNow()); err != nil {
+		t.Fatalf("firma sin data.id rechazada: %v", err)
+	}
+	if err := VerifySignature(vectorSecret, header, vectorRequestID, vectorDataID, vectorNow()); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("err = %v; una firma sin id no debe valer para un data.id", err)
+	}
+}

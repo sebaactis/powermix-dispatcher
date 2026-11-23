@@ -616,3 +616,55 @@ func TestMercadoPagoWebhookLogsOrderIDAndRequestID(t *testing.T) {
 		}
 	})
 }
+
+func sendBodyOnlyWebhook(t *testing.T, mux http.Handler, body string, signedID string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	target := "/callbacks/mercadopago/" + mpCallbackSecret
+	httpReq := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+
+	const requestID = "2066ca19-c6f1-498a-be75-1923005edd06"
+	httpReq.Header.Set("X-Request-Id", requestID)
+	httpReq.Header.Set("X-Signature", mercadopago.SignatureHeader(mpWebhookSecret, requestID, signedID, mpClock))
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httpReq)
+
+	return recorder
+}
+
+func TestMercadoPagoWebhookFallsBackToBodyDataID(t *testing.T) {
+	body := `{"action":"order.processed","type":"order","data":{"id":"` + mpProviderID + `"}}`
+
+	cases := []struct {
+		name       string
+		body       string
+		signedID   string
+		wantStatus int
+		wantCalls  int
+	}{
+		{"data.id sólo en el cuerpo", body, "", http.StatusOK, 1},
+		{"firma que incluye un id que no vino en la query", body, mpProviderID, http.StatusUnauthorized, 0},
+		{"cuerpo de otro tópico", `{"type":"payment","data":{"id":"123"}}`, "", http.StatusOK, 0},
+		{"sin data.id ni en query ni en cuerpo", `{"type":"order"}`, "", http.StatusBadRequest, 0},
+		{"cuerpo que no es JSON", `no-json`, "", http.StatusBadRequest, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			confirmer := &recordingConfirmer{}
+
+			recorder := sendBodyOnlyWebhook(t, newMPMux(confirmer), tc.body, tc.signedID)
+
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, quería %d (cuerpo %s)", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			if len(confirmer.calls) != tc.wantCalls {
+				t.Fatalf("SyncPayment se llamó %d veces, quería %d", len(confirmer.calls), tc.wantCalls)
+			}
+			if tc.wantCalls == 1 && confirmer.calls[0] != mpProviderID {
+				t.Fatalf("llamadas = %v; quería %s", confirmer.calls, mpProviderID)
+			}
+		})
+	}
+}
