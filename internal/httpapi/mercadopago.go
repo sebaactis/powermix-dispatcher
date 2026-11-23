@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -82,8 +83,17 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := r.URL.Query()
-	providerID := query.Get("data.id")
+	signedID := query.Get("data.id")
+	providerID := signedID
 	topic := query.Get("type")
+
+	if providerID == "" {
+		body := readWebhookBody(r)
+		providerID = body.Data.ID
+		if topic == "" {
+			topic = body.Type
+		}
+	}
 
 	if providerID == "" {
 		writeError(w, http.StatusBadRequest, "falta data.id")
@@ -94,7 +104,7 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 		m.secrets.Webhook,
 		r.Header.Get("X-Signature"),
 		r.Header.Get("X-Request-Id"),
-		providerID,
+		signedID,
 		m.now(),
 	)
 	if err != nil {
@@ -106,6 +116,13 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 
 		writeError(w, http.StatusUnauthorized, "firma inválida")
 		return
+	}
+
+	if signedID == "" {
+		m.logger.WarnContext(r.Context(), "webhook de Mercado Pago sin data.id en la query: se usa el del cuerpo",
+			"provider_id", providerID,
+			"mp_request_id", r.Header.Get("X-Request-Id"),
+		)
 	}
 
 	if topic != mercadoPagoOrderTopic {
@@ -140,4 +157,19 @@ func (m *MercadoPagoWebhook) receive(w http.ResponseWriter, r *http.Request) {
 
 		writeError(w, http.StatusInternalServerError, "no se pudo procesar el aviso")
 	}
+}
+
+type webhookBody struct {
+	Type string `json:"type"`
+	Data struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+func readWebhookBody(r *http.Request) webhookBody {
+	var body webhookBody
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes)).Decode(&body); err != nil {
+		return webhookBody{}
+	}
+	return body
 }
