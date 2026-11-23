@@ -64,7 +64,8 @@ func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 	switch loaded.Status {
 	case store.OrderInDoubt:
 		event.Kind = notify.KindOrderInDoubt
-		event.Detail = "el pedido quedó en duda: no se pudo confirmar la entrega y hace falta una persona"
+		summary, _ := lineSummary(loaded.Lines)
+		event.Detail = "el pedido quedó en duda (" + summary + "): no se pudo confirmar la entrega y hace falta una persona"
 	case store.OrderFailed:
 		event.Kind = notify.KindOrderFailed
 		event.Detail = "el pedido quedó fallido: el proveedor informó que no hubo entrega"
@@ -79,6 +80,15 @@ func (e *Engine) notifyOrder(ctx context.Context, loaded store.Order) error {
 }
 
 func partialOrderDetail(lines []store.Line) string {
+	summary, compensate := lineSummary(lines)
+	if len(compensate) == 0 {
+		return summary
+	}
+
+	return summary + ": compensar al cliente por " + strings.Join(compensate, ", ")
+}
+
+func lineSummary(lines []store.Line) (string, []string) {
 	var delivered, failed, inDoubt, compensate []string
 
 	for _, line := range lines {
@@ -105,12 +115,7 @@ func partialOrderDetail(lines []store.Line) string {
 		parts = append(parts, joinVerb(len(inDoubt), "quedó en duda", "quedaron en duda")+" "+strings.Join(inDoubt, ", "))
 	}
 
-	summary := strings.Join(parts, ", ")
-	if len(compensate) == 0 {
-		return summary
-	}
-
-	return summary + ": compensar al cliente por " + strings.Join(compensate, ", ")
+	return strings.Join(parts, ", "), compensate
 }
 
 func lineLabel(line store.Line) string {
