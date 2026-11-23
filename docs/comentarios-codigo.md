@@ -2190,7 +2190,11 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > `TestEngineMarkPaidDoesNotDispatchWhenAnotherWriterPaidTheOrder` fija la decisión del segundo `/pay`: el guardado a `paid` choca, `MarkPaid` devuelve nil y las máquinas no reciben ni un despacho. `TestEngineMarkPaidDoesNotDispatchWhenTheDispatchingSaveIsStale` fija la otra mitad: si el choque llega en el guardado a `dispatching`, el error se devuelve y tampoco se despacha, porque sin ese estado no hay arista legal hacia la entrega.
 >
-> `TestApplyCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt` fija el reintento de `refreshOrderStatus` con dos casos y el mismo escenario: tras el pago se entrega por callback la línea de snacks y después falla la de batidos, así que el estado derivado pasa de `dispatching` a `partial` y hay que escribir la cabecera. Con un escritor adelantado se reintenta una sola vez y la orden termina en `partial`; con dos, el error devuelve `store.ErrStale` y la cabecera no se toca. Los dos casos cuentan las llamadas a `SaveOrder` para probar que el reintento es exactamente uno.
+> `TestApplyCallbackRetriesTheOrderSaveWhenAnotherWriterTookIt` fija el reintento de `refreshOrderStatus` con tres casos y el mismo escenario: tras el pago se entrega por callback la línea de snacks y después falla la de batidos, así que el estado derivado pasa de `dispatching` a `partial` y hay que escribir la cabecera. Con uno o dos escritores adelantados la orden termina en `partial` (2 y 3 llamadas a `SaveOrder`); con tres, se agotan los `maxSettleAttempts = 3` intentos, el error devuelve `store.ErrStale` y la cabecera no se toca. Contar las llamadas prueba que no hay un cuarto intento (F12: antes era un solo reintento). Mutaciones verificadas en rojo: volver a 2 intentos y subir a 4.
+
+### refreshOrderStatus — maxSettleAttempts
+
+> Hasta 3 intentos, sin espera entre ellos (F12). Cada intento relee la orden y vuelve a derivar con las líneas frescas, así que cuesta una lectura y una escritura; un combo tiene pocas líneas y los escritores de la cabecera son pocos. Si se agotan, el error vuelve al llamador: un callback responde 500 y el proveedor reintenta; el despacho y el barrido lo loguean. El caso que nadie corrige —la cabecera queda desfasada de sus líneas ya cerradas— queda como deuda en `docs/pendientes.md`.
 
 ## internal/store — SaveOrder
 
