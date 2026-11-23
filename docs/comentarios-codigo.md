@@ -1768,6 +1768,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Al terminar el `wg.Wait()`, `dispatchLines` **recarga y asienta** la orden con `settleOrder` (`refreshOrderStatus` + `notifyOrder`), que deriva el estado con `AdvanceOrder` sobre las líneas leídas y avisa si quedó `failed`, `in_doubt` o `partial` —con el mismo dedupe que callback y barrido—. Esa recarga también usa el contexto separado: el estado de una orden que ya se despachó tiene que persistirse y avisarse aunque el cliente se haya ido.
 >
 > Si además alguna línea sufrió un panic (`panickedLines`), emite aparte un aviso único `notify.KindDispatchPanic` vía `notifyOnce` nombrando las líneas afectadas: usar un tipo de aviso propio preserva intacta la clave de deduplicación `order_in_doubt` de `settleOrder`.
+>
+> Los manejadores de panic no pueden entrar en panic ellos mismos (D3): el registro del panic de una línea, el aviso `dispatch_panic` y `settleOrder` corren dentro de `guard`, que recupera un segundo panic, lo loguea con su stack y lo devuelve como error. Si el registro falla, la línea queda `pending` con su plazo y el barrido la retoma al vencer.
+>
+> Si `settleOrder` entra en panic (D4), `recoverOrder` vuelve a calcular la orden una vez y manda `dispatch_panic` a soporte. Sin eso la orden podía quedar `dispatching` con todas sus líneas cerradas, y el barrido no la vuelve a tomar.
+
+### attemptProgress / dispatchRecovering / closePanickedAttempt
+
+> `dispatchLine` anota en `attemptProgress` el número y el intento en curso apenas lo registra, y lo marca cerrado al guardar su resultado (D5). Si hay un panic en el medio, `closePanickedAttempt` lo cierra como `OutcomeError` con `FinishedAt` y el motivo, y `markPanickedLineInDoubt` deja `Attempts` en ese número: queda igual que un error ambiguo de F2. `dispatchRecovering` es la misma recuperación para `dispatchLines` y para el despacho de líneas trabadas del barrido (`resumeStalledLine`), que además avisa `dispatch_panic`.
 
 ## internal/order/dispatch.go
 
@@ -2660,7 +2668,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### WithBackground / WithBackgroundErrors / Wait / spawn
 
-> El despacho que dispara un webhook corre fuera del request, pero no suelto: `spawn` lo registra en un `WaitGroup` (`inFlight`) bajo `bgMu` y `Wait` permite que el apagado espere los despachos en curso. Al empezar el cierre, `Wait` marca `closed = true` bajo `bgMu` antes de esperar `inFlight.Wait()`; si `spawn` llega después de ese punto, no lanza goroutines nuevas y registra un `WARN` para que `resumeStalledLine` retome el despacho al reiniciar. Además, la tarea de `spawn` envuelve la ejecución con `recover()`: ante un panic llama a `recoverPanic` (loguea mensaje y `stack`) y reporta el error por `WithBackgroundErrors` (en `cmd/api`, un log) en vez de derribar el proceso. `WithBackground` existe para que los tests corran el despacho en la misma goroutine y no tengan que esperar.
+> El despacho que dispara un webhook corre fuera del request, pero no suelto: `spawn` lo registra en un `WaitGroup` (`inFlight`) bajo `bgMu` y `Wait` permite que el apagado espere los despachos en curso. Al empezar el cierre, `Wait` marca `closed = true` bajo `bgMu` antes de esperar `inFlight.Wait()`; si `spawn` llega después de ese punto, no lanza goroutines nuevas y registra un `WARN` para que `resumeStalledLine` retome el despacho al reiniciar. Además, la tarea de `spawn` envuelve la ejecución con `recover()`: ante un panic llama a `recoverPanic` (loguea mensaje y `stack`), después a `recoverOrder` (recalcula la orden y avisa `dispatch_panic`, D4) y reporta el error por `WithBackgroundErrors` (en `cmd/api`, un log) en vez de derribar el proceso. `WithBackground` existe para que los tests corran el despacho en la misma goroutine y no tengan que esperar.
 
 ### RequestQR
 
@@ -2759,6 +2767,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## internal/sweep — Runner.tick y WithPaymentSync
 
 > Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro. En `tick`, se comprueba `ctx.Err() != nil` antes de reconciliar líneas y otra vez antes de reconciliar pagos, para que al apagarse el proceso no comience una etapa nueva con el contexto ya cancelado.
+
+### callStage
+
+> Ejecuta la etapa con `recover` (D6): un panic se loguea en `ERROR` con su stack y la vuelta sigue en la próxima. Sin esto, un dato de la base que hace entrar en panic al barrido tiraba el proceso cada 30 s. No avisa a soporte por la misma razón: se repetiría en cada vuelta.
 
 ### runStage
 
