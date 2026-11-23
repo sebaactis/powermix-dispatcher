@@ -16,7 +16,7 @@ Este documento describe cómo funciona el sistema por dentro (paquetes, dependen
 
 ## Tests: dónde viven y cómo se usan
 
-`main` no contiene ningún `*_test.go`. Los 64 archivos de tests viven en la rama `archive/tests`, que se sube a `origin` junto con `main`:
+`main` no contiene ningún `*_test.go`. Los 71 archivos de tests viven en la rama `archive/tests`, que se sube a `origin` junto con `main`:
 
 ```bash
 # traer los tests antes de trabajar sobre comportamiento
@@ -33,16 +33,16 @@ git rm -q -f $(git ls-files '*_test.go')
 
 | Paquete | Responsabilidad | Símbolos principales |
 | --- | --- | --- |
-| `cmd/api` | Composition root: único paquete que conoce proveedores y dominio a la vez | `main`, `newServer`, `openStore`, `shutdown` |
+| `cmd/api` | Composition root: único paquete que conoce proveedores y dominio a la vez | `main`, `buildMachines`, `buildNotifier`, `buildEngine`, `buildMux`, `serve`, `newServer`, `openStore`, `shutdown` |
 | `cmd/fakeapi` | Levanta los sustitutos locales (Batidos, Snacks, Mercado Pago) y admin loopback | `main`, `requireLoopback` |
-| `migrations` | Los 7 `.sql` del esquema embebidos en el binario (`//go:embed`) | `Files` |
+| `migrations` | Los 8 `.sql` del esquema embebidos en el binario (`//go:embed`) | `Files` |
 | `cmd/migrate` | Aplica las migraciones pendientes y termina | `main`, `run` |
 | `internal/migrate` | Detecta pendientes y verifica checksums SHA-256 bajo advisory lock | `Apply`, `versions`, `checksum`, `missing`, `applyOne` |
 | `internal/machine` | **Vocabulario compartido**: familia y referencia de máquina | `Kind`, `Batidos`, `Snacks`, `Ref` |
 | `internal/linestate` | **Vocabulario compartido**: estado de una línea de despacho | `State`, `Pending`, `Sent`, `Brewing`, `Delivered`, `Failed`, `InDoubt` |
 | `internal/config` | Topología desde JSON + overrides de entorno + validación al arranque | `Load`, `Config`, `Kiosk` (con `MPPosID`), `Machine`, `validate`, `MercadoPagoEnabled`, `TelegramEnabled` |
-| `internal/catalog` | Menú: carga, valida sumas de ítems y sirve combos activos | `Combo`, `Item`, `LoadFile`, `Memory` |
-| `internal/dispenser` | **Puerto** hacia las máquinas, sin saber de proveedores (`Check` es código legado en desuso tras `preflight`) | `Dispenser`, `Request`, `DispatchResult`, `Status`, `Rejection` |
+| `internal/catalog` | Menú: carga, valida nombres y sumas de ítems y sirve combos activos | `Combo`, `Item`, `LoadFile`, `Memory` |
+| `internal/dispenser` | **Puerto** hacia las máquinas, sin saber de proveedores: `Dispatch` y `Reconcile` (la disponibilidad previa es de `preflight`) | `Dispenser`, `Request` (con `SaveRef`), `DispatchResult`, `Status`, `Rejection`, `ErrNotDispatched` |
 | `internal/dispenser/batidos` | Adaptador GS: firma MD5, campaña, canje, `getOrderInfo` | `Client`, `Dispenser`, `CampaignTime` |
 | `internal/dispenser/snacks` | Adaptador OurVend/YS: HMAC-SHA256, nonce, despacho remoto, consulta | `Client`, `Dispenser`, `PageQuery` |
 | `internal/store` | **Puerto** de persistencia (16 métodos) + implementación en memoria | `Store`, `Order`, `Line`, `Attempt`, `Webhook`, `PaymentIntent`, `OrderStatus`, `PaymentStatus`, `AttemptOutcome`, `ErrStale`, `ErrInvalid`, `Memory` |
@@ -55,7 +55,8 @@ git rm -q -f $(git ls-files '*_test.go')
 | `internal/payments` | **Puerto** de cobro (`Gateway`). También define `Refunder` y `MockRefunder` (fuera del MVP, sin conectar) | `Gateway`, `Charge`, `ChargeStatus`, `QRRequest`, `Refunder`, `MockRefunder` |
 | `internal/payments/mercadopago` | Adaptador Orders API de Mercado Pago (`net/http`, sin SDK) y verificación de firma | `Client`, `VerifySignature`, `SignatureHeader` |
 | `internal/notify` | Puerto de avisos a soporte + transportes por log y Telegram | `Notifier`, `Kind`, `Event`, `LogNotifier`, `TelegramNotifier` |
-| `internal/sweep` | Barrido periódico: dispara `SyncOverdueLines` y, con MP, `SyncPendingPayments` | `Runner`, `New`, `WithPaymentSync` |
+| `internal/sweep` | Barrido periódico: dispara `SyncOverdueLines` y, con MP, `SyncPendingPayments`; recupera un panic por etapa y sigue | `Runner`, `New`, `WithPaymentSync` |
+| `internal/httpx` | Lectura de respuestas HTTP con límite, compartida por los 4 clientes salientes | `ReadLimited`, `ErrTooLarge` |
 | `internal/logging` | Logger JSON (`slog`) con capitalización, `LOG_LEVEL` y `request_id` en contexto | `New`, `NewFromEnv`, `ParseLevel`, `WithRequestID`, `Capitalize` |
 | `internal/fakeapi` | Proveedores simulados locales + superficie de administración | `NewBatidos`, `NewSnacks`, `NewMercadoPago`, `NewAdmin` |
 
@@ -186,26 +187,23 @@ Un **puerto** es una interfaz definida por el dominio o su borde que `order` usa
 ## 1. Arranque: `cmd/api/main.go`
 
 ```text
-main (:41)
- ├─ flags -config / -combos ............................... :42-46
- ├─ logging.NewFromEnv .................................... :48   (internal/logging/logging.go:57)
- ├─ config.Load ........................................... :54   (internal/config/config.go:132)
- ├─ catalog.LoadFile → catalog.NewMemory .................. :72,:78 (catalog.go:38, memory.go:14)
- ├─ batidos.NewClient / snacks.NewClient .................. :84,:85 (batidos/client.go:59, snacks/client.go:228)
- ├─ batidos.NewDispenser / snacks.NewDispenser ............ :98-101
- ├─ openStore (:103, def :261) ─ "postgres"? ─ sí → postgres.Open (postgres.go:41) + Seed (seed.go:12)
- │                                           └─ no → store.NewMemory (memory.go:48)
- ├─ gate.New(preflight.New) ............................... :109  (gate.go:23, checker.go:72)
- ├─ notify.NewLog / notify.NewTelegram .................... :111-120
- ├─ ¿Mercado Pago? → mercadopago.NewClient + WithQRPayments :138-141
- ├─ order.New ............................................. :143  (engine.go:62)
- ├─ sweep.New (+ WithPaymentSync si hay MP) ............... :170  (runner.go:58)
- ├─ httpapi.New ........................................... :172  (handler.go:89)
- ├─ rutas en mux (healthz, tablet, callbacks, webhook MP) . :194, :212-223
- ├─ newServer(..., httpapi.Wrap(mux, logger), logger) ..... :225  (server.go:18, middleware.go:20)
- ├─ go runner.Run(ctx) .................................... :235
- ├─ go server.ListenAndServe() ............................ :242
- └─ <-ctx.Done() → shutdown ............................... :250  (cmd/api/shutdown.go:25)
+main (:41) — índice del arranque; cada paso es una función con nombre
+ ├─ parseFlags (-config / -combos) ........................ :98
+ ├─ newLogger → logging.NewFromEnv ........................ :106  (internal/logging/logging.go:57)
+ ├─ config.Load + warnMissingCallbackSecrets .............. :46, :120 (internal/config/config.go:132)
+ ├─ loadCatalog → catalog.LoadFile + catalog.NewMemory .... :134  (memory.go:14)
+ ├─ batidos.NewClient / snacks.NewClient .................. :55-56
+ ├─ buildMachines (dispensers + notifyUrl de batidos) ..... :148
+ ├─ openStore ─ "postgres"? ─ sí → postgres.Open + Seed ... :312
+ │                          └─ no → store.NewMemory
+ ├─ gate.New(preflight.New) ............................... :65
+ ├─ buildNotifier (Telegram o sólo log) ................... :166
+ ├─ buildEngine (+ WithQRPayments si hay MP) .............. :189  (order/engine.go:64)
+ ├─ buildSweepAndAPIDeps (barrido + dependencias HTTP) .... :207
+ ├─ httpapi.New ........................................... :71   (handler.go:89)
+ ├─ buildMux (healthHandler, tablet, callbacks, webhook) .. :236, :257
+ ├─ newServer(..., httpapi.Wrap(mux, logger), logger) ..... :93   (server.go:18, middleware.go:20)
+ └─ serve: go runner.Run, go ListenAndServe, señal → shutdown  :277 (cmd/api/shutdown.go:25)
 ```
 
 Binarios auxiliares: `cmd/migrate/main.go:39` (`run` → `migrate.Apply` en `internal/migrate/migrate.go:36`); `cmd/fakeapi/main.go:22` (9401 batidos, 9402 snacks, 9403 administración loopback, 9404 Mercado Pago).
@@ -264,7 +262,7 @@ COBRO (dos caminos posibles):
        ├─ Lookup en MP (no confía en el estado del cuerpo)
        ├─ external_reference → payment_intent de la orden, mismo ProviderID
        └─ applyCharge :73
-            approved + monto exacto   → acceptPayment :101 → claimPaid + e.spawn (engine.go:198, con recover)
+            approved + monto exacto   → acceptPayment :101 → claimPaid + e.spawn (engine.go:200, con recover → recoverOrder)
             approved + monto distinto → rejectPaidAmount :131 → payment_mismatch, sin despacho
             expired / cancelled       → closeUnpaid :147 → orden cancelled
             unknown                   → aviso payment_unknown, sin cambios
@@ -293,32 +291,35 @@ for line.Attempts < e.maxAttempts:
   ├─ 2. AppendAttempt (openAttempt)  clave "orden:línea:número", outcome ambiguous
   │      ErrAlreadyExists → return
   │
-  ├─ 3. machine.Dispatch(dispatchRequest) ──► batidos o snacks (Dispatch)
+  ├─ 3. machine.Dispatch(dispatchRequest :109) ──► batidos (dispenser.go:72) o snacks (dispenser.go:49)
+  │       batidos: CreateCampaign → SaveRef (guarda el código en la línea) → ProduceCoffee
+  │                si SaveRef falla no canjea → ErrNotDispatched (se reintenta como rechazo)
   │
   ├─ 4. classifyDispatch → closeAttempt → applyVerdict
   │       ┌────────────────────────────────────┬───────────┬────────────────┐
   │       │ Resultado                          │ outcome   │ estado destino │
   │       ├────────────────────────────────────┼───────────┼────────────────┤
   │       │ Rechazo de negocio (*Rejection)    │ rejected  │ failed         │
+  │       │ ErrNotDispatched (no se activó)    │ rejected  │ failed         │
   │       │ Red / timeout / 5xx / 429 / 408 /  │           │                │
   │       │ JSON inválido / sin code / paso 2  │ error     │ in_doubt       │
   │       │ Accepted = true                    │ accepted  │ sent           │
   │       │ No confirmó                        │ error     │ in_doubt       │
   │       └────────────────────────────────────┴───────────┴────────────────┘
   │
-  ├─ 5. SaveAttempt (cierra el intento, :85)
+  ├─ 5. closeAttempt: SaveAttempt (cierra el intento, :132)
   │
-  ├─ 6. ¿retrying? (OutcomeRejected && number < maxAttempts, :87)
+  ├─ 6. ¿retrying? (OutcomeRejected && number < maxAttempts)
   │       sí → la línea SIGUE pending, plazos en cero → siguiente iteración
-  │       no → transitionLine al estado destino (reconcile.go:257)
+  │       no → transitionLine al estado destino (reconcile.go:264)
   │
-  ├─ 7. Plazos según resultado (:96-117):
+  ├─ 7. applyVerdict: plazos según resultado (:146):
   │       accepted → Ref = ProviderRef, nuevo DeadlineAt = now+2m
   │       error    → DeadlineAt = now+reconcileInterval, ReconcileUntil = now+reconcileWindow
   │       rejected → plazos en cero
   │       (siempre guarda Ref cuando viene, aunque falle)
   │
-  └─ 8. SaveLine ── ErrStale → return (:119)
+  └─ 8. SaveLine ── ErrStale → return
 ```
 
 ### Quién mueve una línea `pending`
@@ -326,30 +327,30 @@ for line.Attempts < e.maxAttempts:
 - **`MarkPaid`**: ruta normal tras el pago (`order/payment.go:17`).
 - **El barrido (`sweep`)**: ejecuta dos reglas en `SyncOverdueLines` (`internal/order/reconcile.go:20`):
   - Línea `pending` **con `deadline_at` vencido**: quedó reclamada por un despacho inconcluso; se **reconcilia** consultando al proveedor (nunca re-despacha a ciegas).
-  - Línea `pending` **sin plazo** en una orden `paid` o `dispatching` pagada hace más de 2 min: nunca llegó a reclamarse; `resumeStalledLine` (`:90`) lanza `dispatchWithinDeadline`.
+  - Línea `pending` **sin plazo** en una orden `paid` o `dispatching` pagada hace más de 2 min: nunca llegó a reclamarse; `resumeStalledLine` (`:90`) lanza el despacho con la misma recuperación de panics que `dispatchLines` (`dispatchRecovering`) y avisa `dispatch_panic` si hace falta.
 
 ## 5. Cómo se cierra una línea (dos caminos)
 
 ```text
  A) CALLBACK DEL PROVEEDOR                         B) BARRIDO (cada 30 s)
- httpapi/callbacks.go:116 / :158                   sweep/runner.go:79 Run → tick :93
+ httpapi/callbacks.go:116 / :158                   sweep/runner.go:80 Run → tick :94
    └ secretMatches :279 (tiempo constante → 404)     ▼
-   ▼                                               order/reconcile.go:20 SyncOverdueLines (tope propio por etapa: runStage :107)
+   ▼                                               order/reconcile.go:20 SyncOverdueLines (runStage :123 con tope propio; callStage :108 recupera panics)
  order/callback.go                                   ├─ OverdueLines
-   ├ beginCallback :89 → callbackLine :104           │    └ reconcileLine :114 → machine.Reconcile
-   │   lineByRef :125 → lineByThirdOrderNo :139      │        ├ delivered/failed → closeLine :154
-   │   → lineByMachineType :153                      │        └ indeterminado    → extendReconcile :210
+   ├ beginCallback :89 → callbackLine :104           │    └ reconcileLine :121 → machine.Reconcile
+   │   lineByRef :125 → lineByThirdOrderNo :139      │        ├ delivered/failed → closeLine :161
+   │   → lineByMachineType :153                      │        └ indeterminado    → extendReconcile :217
    ├ SNACKS  ApplyCallback :38                       │            (pospone o pasa a in_doubt)
    │   → applyLineCallback :206 (delivered/failed)   ├─ StalledLines
-   └ BATIDOS SyncLineFromCallback :55                │    └ resumeStalledLine :90 → dispatchWithinDeadline
+   └ BATIDOS SyncLineFromCallback :55                │    └ resumeStalledLine :90 → dispatchRecovering
        → markBrewing :223 (reintenta ErrStale)       └─ settleOrder de cada orden tocada (:82)
-         + reconcileLine (:114, consulta getOrderInfo)
+         + reconcileLine (:121, consulta getOrderInfo)
    ▼
  settleOrder (order/settle.go:18) + recordCallback (:188)
 ```
 
-- **Snacks**: se cierra por callback (`ApplyCallback`) o por barrido; `snacks.Dispenser.Reconcile` (`internal/dispenser/snacks/dispenser.go:107`) devuelve siempre `in_doubt` cuando no hay confirmación (ver **F4** en `odd/tasks/revision-produccion.md`).
-- **Batidos**: `SyncLineFromCallback` no confía en el callback sin firma; marca `brewing` con la versión guardada (`markBrewing`) y consulta `getOrderInfo` mediante `reconcileLine`.
+- **Snacks**: se cierra por callback (`ApplyCallback`) o por barrido; `snacks.Dispenser.Reconcile` (`internal/dispenser/snacks/dispenser.go:68`) devuelve siempre `in_doubt` cuando no hay confirmación (ver **F4** en `odd/tasks/revision-produccion.md`).
+- **Batidos**: `SyncLineFromCallback` no confía en el callback sin firma; marca `brewing` con la versión guardada (`markBrewing`) y consulta `getOrderInfo` mediante `reconcileLine`. Una línea de batidos sin código guardado nunca se canjeó, así que `Reconcile` la cierra `failed` sin consultar al proveedor (F7b).
 
 ## 6. Asentar la orden y avisar (`internal/order/settle.go`)
 
@@ -358,13 +359,13 @@ settleOrder :18
  ├─ refreshOrderStatus :27 → AdvanceOrder (status.go:107) → markClosed (closed_at al cerrar; no en in_doubt)
  │                          → SaveOrder (hasta 3 intentos ante ErrStale)
  └─ notifyOrder :57 (si quedó in_doubt, failed o partial)
-       └ notifyOnce :132 → NotificationSent (:137)
+       └ notifyOnce :136 → NotificationSent
                              ├─ ya enviado → nada
-                             └─ no → notifier.Notify → RecordNotification (:155)
+                             └─ no → notifier.Notify → RecordNotification
                                      (Telegram: log + hasta 3 envíos; si fallan, ERROR en log y nil)
 ```
 
-Nota: los panics en `dispatchLines` también disparan `notifyOnce` con `KindDispatchPanic` (`internal/order/payment.go:98`) para preservar la clave de deduplicación de `order_in_doubt` en `settleOrder`.
+Nota: los panics en `dispatchLines` también disparan `notifyOnce` con `KindDispatchPanic` (`notifyDispatchPanic`, `internal/order/payment.go:117`) para preservar la clave de deduplicación de `order_in_doubt` en `settleOrder`. Si el que entra en panic es `settleOrder`, `recoverOrder` (`internal/order/engine.go:230`) recalcula la orden una vez y manda el mismo aviso. Los avisos de entrega parcial nombran cada producto con `lineLabel`: el nombre guardado en la línea (`product_name`) o `tipo/SKU` si no lo tiene.
 
 ## 7. Máquinas de estado (`internal/order/status.go`)
 
@@ -382,10 +383,10 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49  (derivada por DeriveOrderStat
 
 ## 8. Persistencia
 
-- **Puerto** (`internal/store/store.go:116-133`), **16 métodos**: `CreateOrder`, `LoadOrder`, `OrderByClientKey`, `SaveOrder`, `SaveLine`, `AppendAttempt`, `SaveAttempt`, `RegisterWebhook`, `NotificationSent`, `RecordNotification`, `OverdueLines`, `StalledLines`, `CreatePaymentIntent`, `PaymentIntentByOrder`, `SavePaymentIntent`, `PendingPaymentIntents`.
-- **Errores** (`internal/store/store.go:109-114`): `ErrNotFound`, `ErrAlreadyExists`, `ErrStale`, `ErrInvalid`.
-- **Implementaciones**: `internal/store/memory.go:32` (mutex + copias profundas + validaciones `validateOrder` `:337` / `validateLine` `:349`) y `internal/store/postgres/postgres.go:31` (`WHERE version = $n`, detección de `23505`/`23514` en `:514-543`).
-- **Migraciones** (`migrations/`): `0001` esquema inicial · `0002` estado `failed` · `0003` `reconcile_until` · `0004` `client_key` y versión de línea · `0005` versión de orden · `0006` `notification_sent` · `0007` `payment_intent` (FK a `orders`, índice único por `order_id`, `expires_at`, `paid_amount_cents`, `version`, `CHECK` con `cancelled` y `amount_mismatch`).
+- **Puerto** (`internal/store/store.go:117-134`), **16 métodos**: `CreateOrder`, `LoadOrder`, `OrderByClientKey`, `SaveOrder`, `SaveLine`, `AppendAttempt`, `SaveAttempt`, `RegisterWebhook`, `NotificationSent`, `RecordNotification`, `OverdueLines`, `StalledLines`, `CreatePaymentIntent`, `PaymentIntentByOrder`, `SavePaymentIntent`, `PendingPaymentIntents`.
+- **Errores** (`internal/store/store.go:110-115`): `ErrNotFound`, `ErrAlreadyExists`, `ErrStale`, `ErrInvalid`.
+- **Implementaciones**: `internal/store/memory.go:32` (mutex + copias profundas + validaciones `validateOrder` `:337` / `validateLine` `:349`) y `internal/store/postgres/postgres.go:31` (`WHERE version = $n`, detección de `23505`/`23514` en `:516-545`).
+- **Migraciones** (`migrations/`): `0001` esquema inicial · `0002` estado `failed` · `0003` `reconcile_until` · `0004` `client_key` y versión de línea · `0005` versión de orden · `0006` `notification_sent` · `0007` `payment_intent` (FK a `orders`, índice único por `order_id`, `expires_at`, `paid_amount_cents`, `version`, `CHECK` con `cancelled` y `amount_mismatch`) · `0008` `order_line.product_name` (nombre del producto al vender).
 
 ## 9. Índice rápido: «¿dónde busco…?»
 
@@ -398,17 +399,19 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49  (derivada por DeriveOrderStat
 | Cancelación de órdenes impagas vencidas | `internal/order/reconcile_payments.go:48` (`reconcilePayment`) |
 | Clasificación de despacho y reintentos | `internal/order/dispatch.go` (`classifyDispatch`, `applyVerdict`) |
 | Recuperación de líneas `pending` o vencidas | `internal/order/reconcile.go:20`, `:90` (`resumeStalledLine`) |
-| Paso a `in_doubt` al vencer ventana | `internal/order/reconcile.go:210` (`extendReconcile`) |
+| Paso a `in_doubt` al vencer ventana | `internal/order/reconcile.go:217` (`extendReconcile`) |
 | Resolución de línea en callbacks | `internal/order/callback.go:104` (`callbackLine`) |
 | Construcción/redacción de URLs de callback | `internal/httpapi/callback_url.go:9`, `:18` |
-| Comunicación con Batidos y Snacks | `internal/dispenser/batidos/dispenser.go:96` y `internal/dispenser/snacks/dispenser.go:88` |
+| Comunicación con Batidos y Snacks | `internal/dispenser/batidos/dispenser.go:72` y `internal/dispenser/snacks/dispenser.go:49` |
 | Firmas de proveedores | `internal/dispenser/batidos/sign.go:31` (MD5) y `internal/dispenser/snacks/sign.go:47` (HMAC-SHA256) |
-| Barrido periódico | `internal/sweep/runner.go:79` + `internal/order/reconcile.go:20` + `internal/order/reconcile_payments.go:17` |
+| Barrido periódico | `internal/sweep/runner.go:80` + `internal/order/reconcile.go:20` + `internal/order/reconcile_payments.go:17` |
 | Reglas de transición de estados | `internal/order/status.go:49`, `:72` |
-| Avisos a soporte y deduplicación | `internal/order/settle.go:57` (`notifyOrder`), `internal/notify/telegram.go:117`, `migrations/0006_notification_sent.sql` |
-| Mapeo SQL y checks de integridad | `internal/store/postgres/postgres.go:514-543` y `migrations/` |
+| Avisos a soporte y deduplicación | `internal/order/settle.go:57` (`notifyOrder`), `internal/notify/telegram.go:118`, `migrations/0006_notification_sent.sql` |
+| Mapeo SQL y checks de integridad | `internal/store/postgres/postgres.go:516-545` y `migrations/` |
 | Migraciones y checksums SHA-256 | `internal/migrate/migrate.go:36` |
 | Timeouts HTTP y `ErrorLog` | `cmd/api/server.go:11-34` |
 | Middleware HTTP (`X-Request-Id`, access log, recover) | `internal/httpapi/middleware.go:20` |
-| Apagado ordenado | `cmd/api/shutdown.go:25` y `internal/order/engine.go:190` |
+| Apagado ordenado | `cmd/api/shutdown.go:25` y `internal/order/engine.go:192` |
+| Recuperación de panics | `internal/order/payment.go:104` (`dispatchRecovering`), `internal/order/engine.go:200`, `:230`, `:246` (`spawn`, `recoverOrder`, `guard`), `internal/sweep/runner.go:108` (`callStage`) |
+| Lectura de respuestas con límite | `internal/httpx/read.go` (`ReadLimited`) |
 | Composition root | `cmd/api/main.go:41` |

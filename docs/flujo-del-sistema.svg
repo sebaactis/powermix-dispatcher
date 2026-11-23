@@ -172,7 +172,7 @@
     <text x="976" y="426" class="body-bold">Datos guardados:</text>
     <text x="976" y="448" class="body">• ID único, kiosk_id, combo_id</text>
     <text x="976" y="468" class="body">• client_key (índice único)</text>
-    <text x="976" y="488" class="body">• AmountCents, SKU y ref máq.</text>
+    <text x="976" y="488" class="body">• Monto, SKU, nombre y ref máq.</text>
     <text x="976" y="508" class="body">• version = 0 (optimistic lock)</text>
     <rect x="976" y="528" width="248" height="58" rx="6" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1" />
     <text x="988" y="550" class="body">Si MP falla al pedir QR, responde</text>
@@ -220,7 +220,7 @@
     <text x="1576" y="290" class="body">de 2 min, trackeado por Wait().</text>
     <rect x="1576" y="306" width="248" height="72" rx="6" fill="#fffbeb" stroke="#fcd34d" stroke-width="1" />
     <text x="1588" y="326" class="body-bold">Batidos (dispenser/batidos)</text>
-    <text x="1588" y="346" class="body">Crea campaña + notifyUrl:</text>
+    <text x="1588" y="346" class="body">Campaña → guarda código → canje</text>
     <text x="1588" y="366" class="mono">/callbacks/batidos/{sec}/{id}</text>
     <rect x="1576" y="388" width="248" height="72" rx="6" fill="#fffbeb" stroke="#fcd34d" stroke-width="1" />
     <text x="1588" y="408" class="body-bold">Snacks (dispenser/snacks)</text>
@@ -231,7 +231,7 @@
     <text x="1576" y="524" class="body">• Rechazo → reintenta (máx 2)</text>
     <text x="1576" y="544" class="body">  y si persiste → failed</text>
     <text x="1576" y="564" class="body">• Error/timeout → in_doubt</text>
-    <text x="1576" y="584" class="body">• Panic → recover + in_doubt</text>
+    <text x="1576" y="584" class="body">• Panic → in_doubt (intento cerrado)</text>
 
     <!-- Flecha 6 -> 7 -->
     <line x1="1838" y1="392" x2="1858" y2="392" stroke="#16a34a" stroke-width="2.5" marker-end="url(#arrow-green)" />
@@ -334,7 +334,7 @@
     <text x="772" y="884" class="body">  durante ventana 2 min → sino in_doubt</text>
     <text x="772" y="906" class="body">• StalledLines (pending sin deadline</text>
     <text x="772" y="926" class="body">  &gt; 2 min): retoma despacho tras caída</text>
-    <text x="772" y="946" class="body-bold">→ Recalcula orden (settleOrder)</text>
+    <text x="772" y="946" class="body-bold">→ Recalcula orden · panic → log y sigue</text>
 
     <!-- Subcard Pagos MP -->
     <rect x="1110" y="778" width="336" height="176" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5" />
@@ -360,7 +360,7 @@
     <!-- Columna izquierda disparadores -->
     <rect x="1518" y="808" width="294" height="144" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5" />
     <text x="1532" y="832" class="mono">order_partial</text>
-    <text x="1532" y="852" class="body">  Indica línea fallida y monto $ a devolver.</text>
+    <text x="1532" y="852" class="body">  Nombra el producto y el monto a devolver.</text>
     <text x="1532" y="878" class="mono">order_failed</text>
     <text x="1532" y="898" class="body">  Ninguna máquina entregó el producto.</text>
     <text x="1532" y="924" class="mono">order_in_doubt</text>
@@ -369,7 +369,7 @@
     <!-- Columna derecha disparadores -->
     <rect x="1828" y="808" width="294" height="144" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5" />
     <text x="1842" y="832" class="mono">dispatch_panic</text>
-    <text x="1842" y="852" class="body">  Panic en goroutine → línea in_doubt.</text>
+    <text x="1842" y="852" class="body">  Panic al despachar o cerrar el pedido.</text>
     <text x="1842" y="878" class="mono">payment_mismatch</text>
     <text x="1842" y="898" class="body">  Importe abonado ≠ total de la orden.</text>
     <text x="1842" y="924" class="mono">payment_unknown</text>
