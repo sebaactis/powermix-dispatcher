@@ -7,13 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"compras-remotas/internal/httpx"
 )
 
 const TelegramURL = "https://api.telegram.org"
@@ -238,15 +239,20 @@ func (t *TelegramNotifier) send(ctx context.Context, text string) (bool, error) 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, telegramMaxResponseBytes))
-	if err != nil {
+	delivered := resp.StatusCode >= 200 && resp.StatusCode <= 299
+
+	body, err := httpx.ReadLimited(resp.Body, telegramMaxResponseBytes)
+	if errors.Is(err, httpx.ErrTooLarge) && delivered {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, httpx.ErrTooLarge) {
 		return true, fmt.Errorf("telegram: no se pudo leer la respuesta: %w", err)
 	}
 
 	var parsed telegramResponse
 	_ = json.Unmarshal(body, &parsed)
 
-	if resp.StatusCode >= 200 && resp.StatusCode <= 299 && parsed.OK {
+	if delivered && parsed.OK {
 		return false, nil
 	}
 

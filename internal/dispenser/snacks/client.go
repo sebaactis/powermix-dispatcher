@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"compras-remotas/internal/dispenser"
+	"compras-remotas/internal/httpx"
 )
 
 const shipmentPath = "/open/v7/device/remote/shipment"
@@ -266,12 +266,9 @@ func (c *Client) Ship(ctx context.Context, req ShipmentRequest) (dispenser.Dispa
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	payload, err := httpx.ReadLimited(resp.Body, maxResponseBytes)
 	if err != nil {
 		return dispenser.DispatchResult{}, fmt.Errorf("snacks: no se pudo leer la respuesta del despacho: %w", err)
-	}
-	if len(payload) > maxResponseBytes {
-		return dispenser.DispatchResult{}, fmt.Errorf("snacks: la respuesta del despacho supera %d bytes", maxResponseBytes)
 	}
 
 	var env envelope
@@ -421,12 +418,9 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	payload, err := httpx.ReadLimited(resp.Body, maxResponseBytes)
 	if err != nil {
 		return fmt.Errorf("snacks: no se pudo leer la respuesta de %s: %w", path, err)
-	}
-	if len(payload) > maxResponseBytes {
-		return fmt.Errorf("snacks: la respuesta de %s supera %d bytes", path, maxResponseBytes)
 	}
 
 	var env envelope
