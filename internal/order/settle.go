@@ -39,6 +39,7 @@ func (e *Engine) refreshOrderStatus(ctx context.Context, orderID string) (store.
 		}
 
 		loaded.Status = next
+		e.markClosed(&loaded)
 
 		saved, err := e.store.SaveOrder(ctx, loaded)
 		if err == nil {
