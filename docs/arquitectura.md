@@ -355,7 +355,7 @@ for line.Attempts < e.maxAttempts:
 
 ```text
 settleOrder :16
- ├─ refreshOrderStatus :25 → AdvanceOrder (status.go:92) → SaveOrder (reintenta ErrStale una vez)
+ ├─ refreshOrderStatus :25 → AdvanceOrder (status.go:92) → SaveOrder (hasta 3 intentos ante ErrStale)
  └─ notifyOrder :54 (si quedó in_doubt, failed o partial)
        └ notifyOnce :129 → NotificationSent (:134)
                              ├─ ya enviado → nada
