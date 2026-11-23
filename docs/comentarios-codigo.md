@@ -28,6 +28,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### main
 
+> `main` es el índice del arranque (P3): `parseFlags`, `newLogger`, `config.Load`, `warnMissingCallbackSecrets`, `loadCatalog`, `buildMachines`, `openStore`, `buildNotifier`, `buildEngine`, `buildSweepAndAPIDeps`, `buildMux` (con `healthHandler`) y `serve`, que arranca el barrido y el servidor y coordina el apagado. Cada paso conserva sus logs y el orden de antes; un error de arranque sale por `exitWithError` (log `ERROR` + `os.Exit(1)`).
+
 > En `GET /healthz`, los nombres de los campos JSON (`status`, `env`, `kiosks`,
 > `combos`, `store`) se mantienen estables: son un contrato legible por
 > máquinas, no texto para una persona.
@@ -544,10 +546,6 @@ Formato: `Símbolo --> "texto del comentario"`.
 > estado de una línea en `linestate` (`linestate.State`). Acá queda sólo el contrato, y por
 > eso el store puede tipar una fila sin importar el puerto de las máquinas.
 
-### Availability
-
-> Availability es la respuesta del chequeo previo: es lo que habilita o no el QR.
-
 ### Request
 
 > Request es un producto a despachar, correspondiente a una línea de la orden.
@@ -576,10 +574,6 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### Status
 
 > Status es la verdad reconciliada sobre una línea.
-
-### Dispenser
-
-> Check informa si la máquina puede vender en este momento, antes de cobrar.
 
 ### Dispenser
 
@@ -1190,6 +1184,21 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > LogNotifier escribe el evento como una línea de log estructurada.
 
+## internal/httpx/read.go
+
+> `ReadLimited` lee una respuesta HTTP hasta un límite y avisa con `ErrTooLarge` si se pasa, devolviendo lo leído hasta el límite (P3). La usan batidos, snacks, Mercado Pago y Telegram. No se armó un cliente HTTP genérico a propósito: cada proveedor firma, arma headers e interpreta errores distinto, y lo único idéntico en los cuatro era esta lectura.
+>
+> En Telegram, un `2xx` con respuesta mayor al límite cuenta como enviado: antes se cortaba sin avisar, el JSON no se podía leer y el aviso contaba como fallido, así que podía volver a mandarse.
+
+## Errores ignorados con `_ =` (revisados en P3)
+
+> Los que quedan son deliberados y no se tocan:
+>
+> - `writeJSON` (`internal/httpapi/respond.go`) y `healthHandler` (`cmd/api/main.go`): si falla escribir el cuerpo, los headers ya salieron y no hay a quién avisar.
+> - `json.Unmarshal` de la respuesta de Telegram: si no es JSON, el envío cuenta como fallido y se usa el cuerpo como motivo.
+> - `t.log.Notify` en `TelegramNotifier.Notify`: el aviso al log no falla; Telegram es el canal que puede fallar.
+> - Los de `internal/fakeapi`: simulador de desarrollo, no corre en producción.
+
 ## internal/notify/telegram.go
 
 ### TelegramNotifier
@@ -1465,12 +1474,6 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > El adaptador no conoce la forma de la URL ni el secreto: sólo llama a la función que le inyectan. Cambiar la ruta, el secreto o el hosting queda en `cmd/api`, no acá.
 
-### Check
-
-> Chequeo a nivel máquina: fuera de línea, avería y sin insumos, en ese orden. Los tres ejes se comparan contra las constantes documentadas, nunca contra números crudos. Reason queda vacío cuando la máquina está sana y, cuando no, enumera sólo los ejes que fallaron ("avería; sin insumos"), para que el motivo sea legible sin abrir el panel del proveedor.
->
-> Deliberadamente no mira el producto: si el SKU del combo está listado y con stock es la regla de `internal/preflight`, que sí lee el catálogo.
-
 ### Dispatch
 
 > Dos llamadas por bebida, en este orden, porque así funciona Batidos (R2): emitir la campaña que genera el código de canje (S6, un código por compra) y canjearlo enseguida. `exchangeType 1` significa un único producto, que es exactamente lo que es un combo fijo.
@@ -1517,17 +1520,9 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### (archivo)
 
-> Adaptador entre el puerto `dispenser` y la API abierta de snacks. Traduce las tres preguntas del puerto a las tres lecturas que el proveedor tiene: página de máquinas para el estado, despacho remoto para disparar, página de pedidos para reconciliar.
+> Adaptador entre el puerto `dispenser` y la API abierta de snacks. Traduce las dos preguntas del puerto a lo que el proveedor tiene: despacho remoto para disparar y página de pedidos para reconciliar. El estado de la máquina antes de cobrar lo consulta `internal/preflight` (el `Check` del puerto se borró en P3: nadie lo llamaba).
 >
 > No reintenta, no hace backoff y no loguea: el presupuesto de 2 minutos y la política de reintentos son del motor (T9). La aserción `var _ dispenser.Dispenser = (*Dispenser)(nil)` hace que un cambio en el puerto rompa acá y no en el motor.
-
-### Check
-
-> Chequeo a nivel máquina: fuera de línea, venta suspendida, avería, bloqueada y sin stock, en ese orden. Los cinco ejes se comparan contra la constante «normal» y no contra una lista de valores malos: un código nuevo del proveedor bloquea en vez de pasar como sano.
->
-> La máquina se identifica por `MID` —el único identificador que la configuración exige para snacks— y se confirma por `DeviceCode` exacto sobre lo devuelto: el filtro de la query es una ayuda, no una garantía. Si el proveedor no informa la máquina se responde «máquina no encontrada» y sin error: no poder vender no es un fallo del proveedor. Un error de red o de API sí vuelve como error y nunca se disfraza de razón.
->
-> Deliberadamente no mira el producto: si el SKU está en un canal vendible es la regla de `internal/preflight`.
 
 ### Dispatch
 
@@ -1772,6 +1767,10 @@ Formato: `Símbolo --> "texto del comentario"`.
 > Los manejadores de panic no pueden entrar en panic ellos mismos (D3): el registro del panic de una línea, el aviso `dispatch_panic` y `settleOrder` corren dentro de `guard`, que recupera un segundo panic, lo loguea con su stack y lo devuelve como error. Si el registro falla, la línea queda `pending` con su plazo y el barrido la retoma al vencer.
 >
 > Si `settleOrder` entra en panic (D4), `recoverOrder` vuelve a calcular la orden una vez y manda `dispatch_panic` a soporte. Sin eso la orden podía quedar `dispatching` con todas sus líneas cerradas, y el barrido no la vuelve a tomar.
+
+### dispatchLine / openAttempt / dispatchRequest / closeAttempt / applyVerdict
+
+> `dispatchLine` se partió en pasos con nombre (P3), con la misma lógica: `openAttempt` reclama la línea (plazo y ventana) y abre el intento `ambiguous`; `dispatchRequest` arma el pedido a la máquina con `SaveRef`, que actualiza la línea del bucle; `closeAttempt` guarda el resultado del intento; y `applyVerdict` deriva estado, `Ref`, `LastError` y plazos de la línea según el veredicto. Si `openAttempt` pierde la carrera (`ErrStale` o intento ya existente) el despacho termina sin error.
 
 ### attemptProgress / dispatchRecovering / closePanickedAttempt
 
