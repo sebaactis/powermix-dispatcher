@@ -556,6 +556,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > goodsId de Batidos o productId de Snacks
 
+### Request.SaveRef
+
+> Guarda la referencia del proveedor antes de activar la máquina, para que un corte abrupto no la pierda (F7b). Si falla, el adaptador no activa la máquina. Es opcional: hoy sólo lo usa batidos.
+
+### ErrNotDispatched
+
+> La máquina no llegó a activarse, así que el despacho puede reintentarse sin riesgo de entregar dos veces. El motor lo clasifica como un rechazo.
+
 ### DispatchResult
 
 > DispatchResult es la respuesta inmediata a Dispatch. "Aceptado" nunca significa
@@ -1473,10 +1481,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Si la campaña falla no hay código, así que el DispatchResult queda vacío y se aplica `asPortRejection`. Si la campaña se emitió y el canje (`ProduceCoffee`) falla, el DispatchResult conserva el código aunque `Accepted` sea falso y el error vuelve envuelto **sin** `asPortRejection`: aunque el paso 2 responda 4xx o 200 con código no exitoso, nunca debe convertirse en `*dispenser.Rejection`, porque reintentar emitiría una segunda campaña. Así la línea queda `in_doubt` con `Ref` = código de canje y `Reconcile` consulta `OrderInfo` con ese código.
 >
+> Entre los dos pasos el código se guarda con `req.SaveRef` (F7b). Si el proceso se corta durante `ProduceCoffee`, el código ya está en la línea y el barrido puede preguntar qué pasó. Si `SaveRef` falla, el adaptador no canjea y devuelve `dispenser.ErrNotDispatched`: la máquina no se activó, así que el motor lo trata como un rechazo y puede reintentar. El código sin canjear vence solo con la campaña.
+>
 > `notifyUrl` sólo se completa cuando `cmd/api` inyecta `WithNotifyURL`; el adaptador no inventa ninguna URL ni un valor por defecto.
 
 ### Reconcile
 
+> Sin `KnownRef` devuelve `linestate.Failed` sin consultar al proveedor: como `Dispatch` nunca canjea un código que no quedó guardado, una línea sin código nunca llegó a la máquina (F7b).
+>
 > Traduce el status de getOrderInfo con las constantes del cliente: 0 falló, 1 en preparación, 2 completado. Cualquier otro valor queda como `linestate.InDoubt` con el número informado en Reason: el enum no está documentado, así que un valor nuevo significa «no se sabe», y declarar `linestate.Failed` sería afirmar algo que el proveedor no dijo.
 >
 > `Status.ProviderOrderNo` es siempre el orderNo del proveedor, también en el caso fallido: es lo que identifica el pedido en la conciliación y en el panel.

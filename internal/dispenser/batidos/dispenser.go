@@ -20,6 +20,8 @@ const (
 	providerName = "batidos"
 
 	campaignExchangeTypeSingleGoods = 1
+
+	reasonNeverRedeemed = "no hay código de canje guardado: nunca se pidió a la máquina preparar el batido"
 )
 
 var _ dispenser.Dispenser = (*Dispenser)(nil)
@@ -116,6 +118,13 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 
 	code := campaign.ExchangeCodes[0]
 
+	if req.SaveRef != nil {
+		if err := req.SaveRef(ctx, code); err != nil {
+			return dispenser.DispatchResult{},
+				fmt.Errorf("no se pudo guardar el código de canje antes de canjearlo: %w: %w", dispenser.ErrNotDispatched, err)
+		}
+	}
+
 	brewed, err := d.client.ProduceCoffee(ctx, ProduceRequest{
 		Code:     code,
 		DeviceID: req.Machine.DeviceID,
@@ -136,6 +145,13 @@ func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispen
 }
 
 func (d *Dispenser) Reconcile(ctx context.Context, req dispenser.Request) (dispenser.Status, error) {
+	if req.KnownRef == "" {
+		return dispenser.Status{
+			State:  linestate.Failed,
+			Reason: reasonNeverRedeemed,
+		}, nil
+	}
+
 	info, err := d.client.OrderInfo(ctx, req.KnownRef, req.Machine.DeviceID)
 	if err != nil {
 		return dispenser.Status{}, asPortRejection(err)
