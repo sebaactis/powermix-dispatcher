@@ -2354,6 +2354,12 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > `notification_sent (order_id, kind)` con la clave primaria en la pareja: es el registro de avisos de excepción, no una tabla de eventos, así que cada aviso existe una vez y lo garantiza la base y no un `SELECT` previo. `ON DELETE CASCADE` cuelga la fila de su orden igual que `order_line`: sin orden no hay a quién avisar. `sent_at` es `NOT NULL` sin `DEFAULT` porque el dominio manda el instante del aviso —el mismo `now` con el que decidió— y una fecha puesta por la base diría «cuándo llegó el `INSERT`», que no es el dato. No lleva índice aparte porque la clave primaria ya resuelve la única búsqueda que se hace, la de la pareja. No lleva `BEGIN`/`COMMIT` porque la transacción la pone el runner, como en las anteriores.
 
+## migrations/0008_line_product_name.sql
+
+> Agrega `order_line.product_name` (F15): el nombre del producto tal como estaba en el catálogo al crear la orden. Se guarda en la línea, y no se busca en el catálogo al avisar, para que el aviso muestre lo que se vendió aunque después el catálogo cambie. `DEFAULT ''` deja las líneas viejas sin nombre; para ellas `lineLabel` sigue mostrando `tipo/SKU`.
+>
+> `lineLabel` (`internal/order/settle.go`) usa el nombre si la línea lo tiene. El SKU no se repite en el aviso: el id de la orden alcanza para que soporte lo busque.
+
 ## migrations/0007_payment_intent.sql
 
 > Completa `payment_intent`, que existe desde `0001` y nunca se usó, para el cobro con QR de Mercado Pago (`docs/diseno-mercadopago.md`). No se crea una tabla nueva: la que había ya tenía proveedor, id del proveedor, importe, estado y el texto del QR.
@@ -2490,7 +2496,7 @@ Formato: `Símbolo --> "texto del comentario"`.
 >
 > Firmas contra `Execer` (sólo `ExecContext`) y no contra `*sql.DB`: el sembrado se prueba sin base, con un registrador que anota las sentencias. La versión transaccional la aporta `postgres.Store.Seed`.
 >
-> Las columnas son exactamente las de `0001_init.sql`, sin inventar ninguna: `kiosk (id, name)`, `machine (kiosk_id, type, name, batidos_device_id, batidos_device_no, batidos_device_type_id, snacks_mid)`, `combo (id, name, price_cents, currency, active)` y `combo_item (combo_id, position, machine_type, sku)`. `description`, `sort_order`, `sku_name` y los timestamps quedan en su `DEFAULT`: el `catalog.Combo` no los tiene y agregarlos al contrato del catálogo sería otra decisión.
+> Las columnas son exactamente las de `0001_init.sql`, sin inventar ninguna: `kiosk (id, name)`, `machine (kiosk_id, type, name, batidos_device_id, batidos_device_no, batidos_device_type_id, snacks_mid)`, `combo (id, name, price_cents, currency, active)` y `combo_item (combo_id, position, machine_type, sku, sku_name)`; `sku_name` recibe el `name` del ítem desde F15. `description`, `sort_order` y los timestamps quedan en su `DEFAULT`: el `catalog.Combo` no los tiene y agregarlos al contrato del catálogo sería otra decisión.
 >
 > Cada sentencia es `INSERT … SELECT … WHERE to_regclass('tabla') IS NOT NULL … ON CONFLICT … DO UPDATE`, por dos motivos. El `ON CONFLICT` es lo que hace idempotente el arranque: reiniciar no duplica ni pisa la clave primaria. El `WHERE to_regclass(...)` es el «si la tabla existe» pedido: con una migración sin aplicar el sembrado no rompe el arranque, pero tampoco escribe. El costo de esa elección es explícito: el proceso arranca igual y la primera orden falla contra la tabla que falta, así que las migraciones siguen siendo obligatorias antes de vender.
 >
@@ -2796,4 +2802,4 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### validate
 
-> Exige que cada ítem tenga `price_cents > 0` y que la suma de los `price_cents` de los ítems coincida exactamente con el `price_cents` del combo, nombrando el combo infractor si falla. Un catálogo inconsistente falla al arrancar y no frente a un cliente.
+> Exige que cada ítem tenga `name` no vacío (F15), `price_cents > 0` y que la suma de los `price_cents` de los ítems coincida exactamente con el `price_cents` del combo, nombrando el combo infractor si falla. Un catálogo inconsistente falla al arrancar y no frente a un cliente.

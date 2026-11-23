@@ -81,7 +81,7 @@ Reglas estructurales:
 
 ## Invariantes
 
-1. **El precio y el SKU salen del catálogo**, nunca del cliente. El body de `POST /orders` sólo acepta `combo_id`, `client_key` y `kiosk_id`. Cada ítem de catálogo lleva `price_cents > 0` y su suma debe coincidir con el `price_cents` del combo (`internal/catalog/catalog.go:91-99`).
+1. **El precio y el SKU salen del catálogo**, nunca del cliente. El body de `POST /orders` sólo acepta `combo_id`, `client_key` y `kiosk_id`. Cada ítem de catálogo lleva `name` (obligatorio) y `price_cents > 0`, y la suma de los precios debe coincidir con el `price_cents` del combo (`internal/catalog/catalog.go`). El nombre se copia a la línea (`order_line.product_name`) al crear la orden y es el que usan los avisos a soporte.
 2. **Idempotencia de creación por `client_key`**: la consulta por `client_key` es la vía rápida y la restricción única en `store` es la verdad definitiva. Contrato del kiosco: un UUID por pedido confirmado, reutilizado sólo para reintentarlo (`<= 128` runas tras `TrimSpace`, si excede responde `400`; mismo combo y mueble devuelve `200` con la orden existente; otro combo u otro mueble registra `warn` y responde `409`, sin crear ni alterar órdenes).
 3. **Cada línea pertenece a una sola familia de máquina** (`line.Machine.Kind`). El nombre `MachineType` se mantiene legítimamente en `internal/order/callback.go:33`, `internal/catalog/catalog.go:17` e `internal/httpapi/responses.go:49`.
 4. **El estado de la orden se deriva de sus líneas** (`DeriveOrderStatus`), nunca se inventa; `settleOrder` lo recalcula tras cualquier cambio de línea.

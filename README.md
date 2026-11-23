@@ -44,7 +44,7 @@ go build ./...
 
 ```bash
 cp config.example.json config.local.json   # topología de muebles/máquinas (sin secretos reales)
-cp combos.example.json combos.local.json   # catálogo: cada ítem lleva price_cents > 0 y su suma debe igualar price_cents del combo
+cp combos.example.json combos.local.json   # catálogo: cada ítem lleva name (nombre del producto) y price_cents > 0, y su suma debe igualar price_cents del combo
 ```
 
 ### 3. Migrar base de datos (sólo si usas `STORE=postgres`)

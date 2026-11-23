@@ -30,6 +30,7 @@ type Draft struct {
 
 type Item struct {
 	SKU         string
+	Name        string
 	AmountCents int64
 	Machine     machine.Ref
 }
