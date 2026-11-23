@@ -780,23 +780,32 @@ func (s *competingOrderStore) callCount() int {
 	return s.calls
 }
 
-func TestApplyCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *testing.T) {
+func TestApplyCallbackRetriesTheOrderSaveWhenAnotherWriterTookIt(t *testing.T) {
 	cases := []struct {
 		name      string
 		competing int
 		wantError bool
 		wantState store.OrderStatus
+		wantCalls int
 	}{
 		{
-			name:      "un solo escritor adelantado: se reintenta una vez y la orden se deriva igual",
+			name:      "un escritor adelantado: se reintenta y la orden se deriva igual",
 			competing: 1,
 			wantState: store.OrderPartial,
+			wantCalls: 2,
 		},
 		{
-			name:      "dos escritores adelantados: no se reintenta dos veces y el conflicto se devuelve",
+			name:      "dos escritores adelantados: el tercer intento gana y la orden se deriva igual",
 			competing: 2,
+			wantState: store.OrderPartial,
+			wantCalls: 3,
+		},
+		{
+			name:      "tres escritores adelantados: no hay cuarto intento y el conflicto se devuelve",
+			competing: 3,
 			wantError: true,
 			wantState: store.OrderDispatching,
+			wantCalls: 3,
 		},
 	}
 
@@ -849,8 +858,8 @@ func TestApplyCallbackRetriesTheOrderSaveOnceWhenAnotherWriterTookIt(t *testing.
 				t.Fatalf("un conflicto de escritura de la orden se resuelve solo: %v", err)
 			}
 
-			if calls := orders.callCount(); calls != 2 {
-				t.Fatalf("el settle intentó guardar la orden %d veces, se esperaban 2", calls)
+			if calls := orders.callCount(); calls != tc.wantCalls {
+				t.Fatalf("el settle intentó guardar la orden %d veces, se esperaban %d", calls, tc.wantCalls)
 			}
 
 			stored := mustOrder(t, orders, placed.ID)
