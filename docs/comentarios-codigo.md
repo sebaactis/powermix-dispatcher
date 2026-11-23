@@ -1656,6 +1656,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > Derivan el objetivo y lo validan contra el grafo. Si el objetivo es igual al actual devuelven el actual sin error: el motor deriva en cada vuelta del despacho y un no-op no es una transición. Si la arista no existe devuelven el estado actual intacto y `ErrInvalidTransition`, para que un llamador que ignore el error no quede con un estado inventado.
 
+### isClosedStatus / markClosed
+
+> Una orden está **cerrada** cuando ya no espera nada del sistema: `delivered`, `partial`, `failed` o `cancelled` (F11). `in_doubt` no cierra porque la reconciliación todavía puede llevarla a `delivered` o `failed`, y ahí se cierra; `refunded` conserva el cierre que ya tenía (devoluciones están fuera del MVP). `markClosed` carga `ClosedAt = e.now()` sólo si está vacío, así un recálculo o un reintento no corre la hora real de cierre. Se llama en los dos únicos lugares que mueven una orden a un estado de cierre: `refreshOrderStatus` (asentamiento de líneas) y `closeUnpaid` (cobro vencido o cancelado). Los stores ya persistían `closed_at` y `GET /orders/{id}` ya lo devolvía; faltaba que el motor lo cargara.
+
+## internal/order/closed_at_test.go y closed_at_internal_test.go (rama `archive/tests`)
+
+> Cubren el cierre por asentamiento (entregada, parcial y fallida con el reloj del motor), que una orden en duda queda abierta y recibe la hora en que se resolvió, el cierre de una orden cancelada por cobro vencido y la tabla de `markClosed` por estado (incluido que no pisa un cierre previo). Mutaciones verificadas en rojo: contar `in_doubt` como cerrada, pisar un cierre previo, y quitar `markClosed` de `closeUnpaid` o de `refreshOrderStatus`.
+
 ## internal/store — SaveAttempt
 
 > `AppendAttempt` inserta y falla si la clave ya existe; `SaveAttempt` cierra el intento ya grabado y **nunca crea**. La distinción no es cosmética: el motor registra el intento antes de llamar a la máquina para que un corte en medio del despacho deje evidencia, y después necesita anotar cómo terminó. Si el cierre pudiera insertar, un error de orden de llamadas inventaría intentos que nunca ocurrieron.
