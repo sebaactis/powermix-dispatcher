@@ -13,6 +13,8 @@ import (
 
 const reasonReconcileExpired = "se agotó el plazo de reconciliación sin confirmar la entrega"
 
+const maxSettleAttempts = 3
+
 func (e *Engine) settleOrder(ctx context.Context, orderID string) error {
 	settled, err := e.refreshOrderStatus(ctx, orderID)
 	if err != nil {
@@ -46,7 +48,7 @@ func (e *Engine) refreshOrderStatus(ctx context.Context, orderID string) (store.
 			return saved, nil
 		}
 
-		if !errors.Is(err, store.ErrStale) || attempt > 0 {
+		if !errors.Is(err, store.ErrStale) || attempt+1 >= maxSettleAttempts {
 			return store.Order{}, err
 		}
 	}
