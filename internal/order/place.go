@@ -54,6 +54,7 @@ func (e *Engine) CreateOrder(ctx context.Context, draft Draft) (store.Order, err
 			Position:    i + 1,
 			Machine:     item.Machine,
 			SKU:         item.SKU,
+			Name:        item.Name,
 			AmountCents: item.AmountCents,
 			State:       linestate.Pending,
 		})
