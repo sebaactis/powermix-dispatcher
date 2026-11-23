@@ -50,7 +50,7 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 		response.Payment = newPaymentResponse(intent)
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusCreated, response)
 }
 
 func (h *Handler) readOrder(w http.ResponseWriter, r *http.Request) {

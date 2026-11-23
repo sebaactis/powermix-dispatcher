@@ -2716,6 +2716,8 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 ### createOrder
 
+> Responde `201 Created` siempre, también cuando el `client_key` repetido devuelve la orden que ya existía (F16): el reintento recibe exactamente la misma respuesta que el original, como hacen las claves de idempotencia de Stripe, y el motor no necesita informar si la orden era nueva.
+>
 > Con Mercado Pago, después de `CreateOrder` pide el QR con la caja del mueble. Si falla, la orden ya existe: el reintento con el mismo `client_key` devuelve la misma orden y `RequestQR` crea (o devuelve) el mismo QR, así que la tablet puede reintentar sin miedo; el error pasa por `failWithOrder(..., placed.ID)` para que el log lleve `order_id`.
 
 ### readOrder
@@ -2745,6 +2747,14 @@ Formato: `Símbolo --> "texto del comentario"`.
 ## internal/sweep — Runner.tick y WithPaymentSync
 
 > Opcional: sin Mercado Pago no hay pagos que barrer. Corre en el mismo tick de 30 s y con el mismo lote que las líneas, después de ellas; cada barrido loguea su error y uno no frena al otro. En `tick`, se comprueba `ctx.Err() != nil` antes de reconciliar líneas y otra vez antes de reconciliar pagos, para que al apagarse el proceso no comience una etapa nueva con el contexto ya cancelado.
+
+### runStage
+
+> Cada etapa (líneas y pagos) corre con su propio plazo, igual al intervalo (30 s por defecto), con `context.WithTimeout` (F16). Así un proveedor lento en las líneas no atrasa la cancelación de QR vencidos: los pagos arrancan con su plazo completo. Cortar el contexto es seguro porque el motor ya deja de tomar líneas con `ctx.Err()`, una consulta cortada no marca la línea en duda (`reconcile.go:134`) y las escrituras y los despachos corren con `context.WithoutCancel`; lo que quedó sin revisar se toma en la vuelta siguiente. Un plazo agotado se loguea como `WARN` («el barrido agotó su plazo; sigue en la próxima vuelta») y no como falla, y un `context.Canceled` del apagado no se loguea: no es una falla del barrido.
+
+## internal/sweep/budget_test.go (rama `archive/tests`)
+
+> `TestRunnerGivesEachStageItsOwnBudget` usa un barrido de líneas que se bloquea hasta que vence su contexto: comprueba que las líneas tienen como máximo el intervalo de plazo, que los pagos igual corren y arrancan con su propio plazo (más de la mitad del intervalo), que sale el `WARN` con `stage=reconciliación` y que no sale el `ERROR` de falla. `TestRunnerStillReportsStageErrorsWithinTheBudget` fija que un error dentro del plazo sigue siendo `ERROR`. Mutaciones verificadas en rojo: barrido sin plazo y un único plazo compartido por las dos etapas.
 
 ## internal/sweep/payments_test.go (rama `archive/tests`)
 

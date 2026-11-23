@@ -2,6 +2,7 @@ package sweep
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"time"
@@ -94,15 +95,36 @@ func (r *Runner) tick(ctx context.Context) {
 		return
 	}
 
-	if err := r.sweeper.SyncOverdueLines(ctx, r.limit); err != nil {
-		r.logger.Error("falló el barrido de reconciliación", "error", err, "limit", r.limit)
-	}
+	r.runStage(ctx, "reconciliación", r.sweeper.SyncOverdueLines)
 
 	if r.payments == nil || ctx.Err() != nil {
 		return
 	}
 
-	if err := r.payments.SyncPendingPayments(ctx, r.limit); err != nil {
-		r.logger.Error("falló el barrido de pagos", "error", err, "limit", r.limit)
+	r.runStage(ctx, "pagos", r.payments.SyncPendingPayments)
+}
+
+func (r *Runner) runStage(ctx context.Context, name string, sync func(context.Context, int) error) {
+	stageCtx, cancel := context.WithTimeout(ctx, r.interval)
+	defer cancel()
+
+	err := sync(stageCtx, r.limit)
+
+	if ctx.Err() == nil && errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
+		r.logger.Warn("el barrido agotó su plazo; sigue en la próxima vuelta",
+			"stage", name,
+			"timeout", r.interval,
+			"limit", r.limit,
+			"error", err,
+		)
+		return
+	}
+
+	if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		return
+	}
+
+	if err != nil {
+		r.logger.Error("falló el barrido de "+name, "error", err, "limit", r.limit)
 	}
 }
