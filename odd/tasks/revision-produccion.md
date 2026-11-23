@@ -37,7 +37,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - [ ] F10 — Qué precio se manda a Snacks como `RetailPrice` (hoy 0 fijo, `internal/dispenser/snacks/dispenser.go`), pendiente de la duda del proveedor en `docs/pendientes.md` sección C.
 
 ### Menores
-- [ ] F11 — `order.ClosedAt` nunca se carga (`internal/store/store.go:36`).
+- [x] F11 — Hecho (2026-11-22, rama `fix/f11-closed-at`): `markClosed` carga `ClosedAt` al pasar a `delivered`, `partial`, `failed` o `cancelled` (no en `in_doubt`) y nunca pisa un cierre previo; se llama desde `refreshOrderStatus` y `closeUnpaid`. Original: `order.ClosedAt` nunca se carga (`internal/store/store.go:36`).
 - [ ] F12 — `refreshOrderStatus` reintenta `ErrStale` una sola vez (`internal/order/settle.go:46`).
 - [x] F13 — Hecho (2026-11-22, rama `fix/f13-webhook-mp`): `ts` en segundos o milisegundos (`signatureTime`, corte en 1e12) y, si la query no trae `data.id`, se toma del cuerpo con un `WARN`; la firma se verifica con el `data.id` de la query, como la calcula Mercado Pago. Original: Webhook de Mercado Pago: `data.id` sólo desde la query (`internal/httpapi/mercadopago.go:85`); `ts` asumido en milisegundos (`internal/payments/mercadopago/signature.go:30,43`).
 - [ ] F14 — Respuestas de más de 1 MB se truncan sin error en batidos y snacks (`batidos/client.go:321`, `snacks/client.go:268,428`).

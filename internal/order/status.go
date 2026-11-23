@@ -89,6 +89,21 @@ func CanLineTransition(from, to linestate.State) bool {
 	}
 }
 
+func isClosedStatus(status store.OrderStatus) bool {
+	switch status {
+	case store.OrderDelivered, store.OrderPartial, store.OrderFailed, store.OrderCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) markClosed(order *store.Order) {
+	if isClosedStatus(order.Status) && order.ClosedAt.IsZero() {
+		order.ClosedAt = e.now()
+	}
+}
+
 func AdvanceOrder(current store.OrderStatus, lines []store.Line) (store.OrderStatus, error) {
 	next := DeriveOrderStatus(lines)
 	if next == current {
