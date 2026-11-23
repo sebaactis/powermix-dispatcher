@@ -59,7 +59,7 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 
 - **No verificado en entornos reales**: llamadas a servidores reales de Batidos y Snacks; mapeo de estados/webhooks contra sandbox real de Mercado Pago; recuperación de webhook perdido en circuito E2E completo; prueba E2E automatizada (hoy sólo manual contra `cmd/fakeapi`).
 - **`go test ./... -race`**: no corre en Windows sin compilador C para cgo.
-- **Tests de Postgres en F1–F9**: en los fixes recientes se saltaron por no estar definida `TEST_DATABASE_URL`.
+- **Tests de Postgres en F1–F16**: en los fixes recientes se saltaron por no estar definida `TEST_DATABASE_URL`.
 - **Sí verificado anteriormente**: `internal/store/postgres` (suite de tests contra Postgres real con `TEST_DATABASE_URL`) e `internal/migrate` (aplicación de esquema y verificación de checksums SHA-256 en `schema_migrations`).
 
 ---

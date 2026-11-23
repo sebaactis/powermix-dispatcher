@@ -16,7 +16,7 @@ Este documento describe cómo funciona el sistema por dentro (paquetes, dependen
 
 ## Tests: dónde viven y cómo se usan
 
-`main` no contiene ningún `*_test.go`. Los 59 archivos de tests viven en la rama `archive/tests`, que se sube a `origin` junto con `main`:
+`main` no contiene ningún `*_test.go`. Los 64 archivos de tests viven en la rama `archive/tests`, que se sube a `origin` junto con `main`:
 
 ```bash
 # traer los tests antes de trabajar sobre comportamiento
@@ -130,7 +130,7 @@ Reglas estructurales:
 | Ventana de reconciliación (`defaultReconcileWindow`) | 2 min | `internal/order/reconcile.go:16` |
 | Intervalo de reconciliación (`defaultReconcileInterval`) | 30 s | `internal/order/reconcile.go:18` |
 | Intentos máximos por línea (`defaultMaxAttempts`) | 2 | `internal/order/dispatch.go:15` |
-| Barrido periódico (`sweepInterval`, `sweepLimit`) | Cada 30 s, lote de 10 líneas y 10 pagos | `cmd/api/main.go:34-35`, `internal/sweep/runner.go:11-12` |
+| Barrido periódico (`sweepInterval`, `sweepLimit`) | Cada 30 s, lote de 10 líneas y 10 pagos, con un tope de 30 s por etapa | `cmd/api/main.go:34-35`, `internal/sweep/runner.go:12-13` |
 | Vencimiento del QR (`defaultQRExpiry`) | 180 s | `internal/order/qr.go:13` |
 | Antigüedad mínima de QR para barrido (`paymentReconcileAge`) | 10 s | `internal/order/reconcile_payments.go:13` |
 | Margen tras vencimiento antes de cancelar (`paymentCancelGrace`) | 30 s | `internal/order/reconcile_payments.go:15` |
@@ -199,7 +199,7 @@ main (:41)
  ├─ notify.NewLog / notify.NewTelegram .................... :111-120
  ├─ ¿Mercado Pago? → mercadopago.NewClient + WithQRPayments :138-141
  ├─ order.New ............................................. :143  (engine.go:62)
- ├─ sweep.New (+ WithPaymentSync si hay MP) ............... :170  (runner.go:57)
+ ├─ sweep.New (+ WithPaymentSync si hay MP) ............... :170  (runner.go:58)
  ├─ httpapi.New ........................................... :172  (handler.go:89)
  ├─ rutas en mux (healthz, tablet, callbacks, webhook MP) . :194, :212-223
  ├─ newServer(..., httpapi.Wrap(mux, logger), logger) ..... :225  (server.go:18, middleware.go:20)
@@ -219,7 +219,7 @@ Binarios auxiliares: `cmd/migrate/main.go:39` (`run` → `migrate.Apply` en `int
 | `POST /orders` | `internal/httpapi/orders.go:10` (`createOrder`) | `internal/order/place.go:14` (`CreateOrder`) + con MP `internal/order/qr.go:21` (`RequestQR`) |
 | `GET /orders/{id}` | `internal/httpapi/orders.go:56` (`readOrder`) | `store.LoadOrder` + con MP `store.PaymentIntentByOrder` |
 | `POST /orders/{id}/pay` | `internal/httpapi/orders.go:79` (`payOrder`) | `internal/order/payment.go:17` (`MarkPaid`, sólo sandbox sin MP) |
-| `POST /callbacks/mercadopago/{secret}` | `internal/httpapi/mercadopago.go:77` (`receive`) | `internal/order/charge.go:43` (`SyncPayment`) |
+| `POST /callbacks/mercadopago/{secret}` | `internal/httpapi/mercadopago.go:78` (`receive`) | `internal/order/charge.go:43` (`SyncPayment`) |
 | `POST /callbacks/batidos/{secret}/{orderId}` | `internal/httpapi/callbacks.go:116` (`batidosCallback`) | `internal/order/callback.go:55` (`SyncLineFromCallback`) |
 | `POST /callbacks/snacks/{secret}` | `internal/httpapi/callbacks.go:158` (`snacksCallback`) | `internal/order/callback.go:38` (`ApplyCallback`) |
 
@@ -240,7 +240,7 @@ internal/httpapi/orders.go:10 createOrder
 internal/order/place.go:14 CreateOrder
   ├─ validateDraft :95 ──► machine.Ref.Validate
   ├─ ¿ya existe client_key? (:20, o tras ErrAlreadyExists en :63) ──► matchClientKeyOrder :76
-  │     ├─ mismo combo y mueble → devuelve orden existente (200)
+  │     ├─ mismo combo y mueble → devuelve orden existente (201)
   │     └─ otro combo o mueble  → warn + ErrClientKeyConflict → 409 (httpapi/errors.go:59)
   ├─ gate.Check (gate/gate.go:27) → preflight.Check (preflight/checker.go:113)
   │     plazo 8 s, 2 goroutines con recover (runCheck :145):
@@ -257,11 +257,11 @@ internal/order/place.go:14 CreateOrder
 COBRO (dos caminos posibles):
 
   a) Con Mercado Pago: el cliente paga el QR
-     MP ──► POST /callbacks/mercadopago/{secret} (httpapi/mercadopago.go:77)
-            secreto ruta (404) → data.id (400) → firma (401) → type == order
+     MP ──► POST /callbacks/mercadopago/{secret} (httpapi/mercadopago.go:78)
+            secreto ruta (404) → data.id de la query o del cuerpo (400) → firma (401) → type == order
        ▼
      order/charge.go:43 SyncPayment
-       ├─ Lookup en MP (ignora el cuerpo del webhook)
+       ├─ Lookup en MP (no confía en el estado del cuerpo)
        ├─ external_reference → payment_intent de la orden, mismo ProviderID
        └─ applyCharge :73
             approved + monto exacto   → acceptPayment :101 → claimPaid + e.spawn (engine.go:198, con recover)
@@ -275,11 +275,11 @@ COBRO (dos caminos posibles):
 internal/order/payment.go:17 MarkPaid
   ├─ claimPaid :26 → si no está pending_payment retorna sin efecto (:32)
   ├─ SaveOrder → paid (ErrStale: otro ganó → retorna sin despachar)
-  ├─ AdvanceOrder → dispatching (order/status.go:92) + SaveOrder
+  ├─ AdvanceOrder → dispatching (order/status.go:107) + SaveOrder
   └─ dispatchLines :63 (con context.WithoutCancel :23)
        ├─ una goroutine por línea con recover() (:73 → handleDispatchPanic :122 → markPanickedLineInDoubt :133)
        ├─ dispatchWithinDeadline (order/dispatch.go:23, timeout 2 min)
-       └─ wg.Wait → settleOrder (order/settle.go:16) + aviso dispatch_panic si hubo panic (:98)
+       └─ wg.Wait → settleOrder (order/settle.go:18) + aviso dispatch_panic si hubo panic (:98)
 ```
 
 ## 4. El corazón: `dispatchLine` (`internal/order/dispatch.go:30`)
@@ -332,9 +332,9 @@ for line.Attempts < e.maxAttempts:
 
 ```text
  A) CALLBACK DEL PROVEEDOR                         B) BARRIDO (cada 30 s)
- httpapi/callbacks.go:116 / :158                   sweep/runner.go:78 Run → tick :92
+ httpapi/callbacks.go:116 / :158                   sweep/runner.go:79 Run → tick :93
    └ secretMatches :279 (tiempo constante → 404)     ▼
-   ▼                                               order/reconcile.go:20 SyncOverdueLines
+   ▼                                               order/reconcile.go:20 SyncOverdueLines (tope propio por etapa: runStage :107)
  order/callback.go                                   ├─ OverdueLines
    ├ beginCallback :89 → callbackLine :104           │    └ reconcileLine :114 → machine.Reconcile
    │   lineByRef :125 → lineByThirdOrderNo :139      │        ├ delivered/failed → closeLine :154
@@ -345,7 +345,7 @@ for line.Attempts < e.maxAttempts:
        → markBrewing :223 (reintenta ErrStale)       └─ settleOrder de cada orden tocada (:82)
          + reconcileLine (:114, consulta getOrderInfo)
    ▼
- settleOrder (order/settle.go:16) + recordCallback (:188)
+ settleOrder (order/settle.go:18) + recordCallback (:188)
 ```
 
 - **Snacks**: se cierra por callback (`ApplyCallback`) o por barrido; `snacks.Dispenser.Reconcile` (`internal/dispenser/snacks/dispenser.go:107`) devuelve siempre `in_doubt` cuando no hay confirmación (ver **F4** en `odd/tasks/revision-produccion.md`).
@@ -354,12 +354,13 @@ for line.Attempts < e.maxAttempts:
 ## 6. Asentar la orden y avisar (`internal/order/settle.go`)
 
 ```text
-settleOrder :16
- ├─ refreshOrderStatus :25 → AdvanceOrder (status.go:92) → SaveOrder (hasta 3 intentos ante ErrStale)
- └─ notifyOrder :54 (si quedó in_doubt, failed o partial)
-       └ notifyOnce :129 → NotificationSent (:134)
+settleOrder :18
+ ├─ refreshOrderStatus :27 → AdvanceOrder (status.go:107) → markClosed (closed_at al cerrar; no en in_doubt)
+ │                          → SaveOrder (hasta 3 intentos ante ErrStale)
+ └─ notifyOrder :57 (si quedó in_doubt, failed o partial)
+       └ notifyOnce :132 → NotificationSent (:137)
                              ├─ ya enviado → nada
-                             └─ no → notifier.Notify → RecordNotification (:152)
+                             └─ no → notifier.Notify → RecordNotification (:155)
                                      (Telegram: log + hasta 3 envíos; si fallan, ERROR en log y nil)
 ```
 
@@ -393,7 +394,7 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49  (derivada por DeriveOrderStat
 | Chequeo previo de disponibilidad | `internal/preflight/checker.go:161`, `:193` + `internal/gate/gate.go:27` |
 | Pago simulado vs Mercado Pago | `internal/order/payment.go:17` y `internal/order/charge.go:43` |
 | Creación del QR de Mercado Pago | `internal/order/qr.go:21` y `internal/payments/mercadopago/client.go:73` |
-| Validación del webhook de Mercado Pago | `internal/httpapi/mercadopago.go:77` y `internal/payments/mercadopago/signature.go:18` |
+| Validación del webhook de Mercado Pago | `internal/httpapi/mercadopago.go:78` y `internal/payments/mercadopago/signature.go:20` |
 | Cancelación de órdenes impagas vencidas | `internal/order/reconcile_payments.go:48` (`reconcilePayment`) |
 | Clasificación de despacho y reintentos | `internal/order/dispatch.go:87`, `:133` (`classifyDispatch`) |
 | Recuperación de líneas `pending` o vencidas | `internal/order/reconcile.go:20`, `:90` (`resumeStalledLine`) |
@@ -402,9 +403,9 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49  (derivada por DeriveOrderStat
 | Construcción/redacción de URLs de callback | `internal/httpapi/callback_url.go:9`, `:18` |
 | Comunicación con Batidos y Snacks | `internal/dispenser/batidos/dispenser.go:96` y `internal/dispenser/snacks/dispenser.go:88` |
 | Firmas de proveedores | `internal/dispenser/batidos/sign.go:31` (MD5) y `internal/dispenser/snacks/sign.go:47` (HMAC-SHA256) |
-| Barrido periódico | `internal/sweep/runner.go:78` + `internal/order/reconcile.go:20` + `internal/order/reconcile_payments.go:17` |
+| Barrido periódico | `internal/sweep/runner.go:79` + `internal/order/reconcile.go:20` + `internal/order/reconcile_payments.go:17` |
 | Reglas de transición de estados | `internal/order/status.go:49`, `:72` |
-| Avisos a soporte y deduplicación | `internal/order/settle.go:54` (`notifyOrder`), `internal/notify/telegram.go:117`, `migrations/0006_notification_sent.sql` |
+| Avisos a soporte y deduplicación | `internal/order/settle.go:57` (`notifyOrder`), `internal/notify/telegram.go:117`, `migrations/0006_notification_sent.sql` |
 | Mapeo SQL y checks de integridad | `internal/store/postgres/postgres.go:514-543` y `migrations/` |
 | Migraciones y checksums SHA-256 | `internal/migrate/migrate.go:36` |
 | Timeouts HTTP y `ErrorLog` | `cmd/api/server.go:11-34` |

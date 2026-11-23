@@ -194,7 +194,7 @@
     <text x="1276" y="320" class="body-bold">2. Webhook MP (mercadopago.go)</text>
     <text x="1276" y="342" class="body">• Valida secreto path (404)</text>
     <text x="1276" y="362" class="body">• Firma HMAC X-Signature (401)</text>
-    <text x="1276" y="382" class="body">• Tópico order + data.id (400)</text>
+    <text x="1276" y="382" class="body">• data.id en query o body (400)</text>
     <text x="1276" y="410" class="body-bold">3. SyncPayment (charge.go)</text>
     <text x="1276" y="432" class="body">Consulta cobro real en API MP:</text>
     <rect x="1276" y="446" width="248" height="68" rx="6" fill="#dcfce7" stroke="#86efac" stroke-width="1" />
@@ -245,7 +245,7 @@
     <text x="1912" y="207" class="card-title">Entrega y Cierre</text>
     <text x="1876" y="250" class="body-bold">settleOrder (order/settle.go)</text>
     <text x="1876" y="272" class="body">Deriva el estado de la orden</text>
-    <text x="1876" y="290" class="body">según el estado de sus líneas:</text>
+    <text x="1876" y="290" class="body">según sus líneas (+ closed_at):</text>
     <rect x="1876" y="308" width="248" height="58" rx="6" fill="#dcfce7" stroke="#86efac" stroke-width="1" />
     <text x="1888" y="330" class="mono">todas delivered → delivered</text>
     <text x="1888" y="352" class="body">Entrega completa exitosa.</text>
@@ -323,7 +323,7 @@
     <rect x="742" y="728" width="720" height="240" rx="10" fill="#fffafa" stroke="#dc2626" stroke-width="2" />
     <rect x="742" y="728" width="720" height="38" rx="10" fill="#fef2f2" />
     <rect x="742" y="754" width="720" height="12" fill="#fef2f2" />
-    <text x="760" y="752" class="card-title">Barrido de Reconciliación — cada 30 s, límite 10 (internal/sweep/runner.go)</text>
+    <text x="760" y="752" class="card-title">Barrido — cada 30 s, límite 10, tope 30 s por etapa (internal/sweep/runner.go)</text>
 
     <!-- Subcard Líneas -->
     <rect x="758" y="778" width="336" height="176" rx="8" fill="#ffffff" stroke="#fca5a5" stroke-width="1.5" />

@@ -35,7 +35,7 @@ Binarios principales:
 ### 1. Compilar y verificar el código
 
 ```bash
-go test ./...   # en main no hay tests: los 59 archivos *_test.go viven en la rama archive/tests
+go test ./...   # en main no hay tests: los 64 archivos *_test.go viven en la rama archive/tests
 go vet ./...
 go build ./...
 ```
@@ -223,4 +223,4 @@ En `cmd/api`, cada petición HTTP pasa por `httpapi.Wrap`:
 
 ## Tests
 
-`main` no contiene archivos `*_test.go`. Los 59 archivos de tests viven en la rama `archive/tests` (incluida la verificación de firmas HMAC/MD5 contra vectores de `openssl`, fechas `UTC+8` de campaña y rechazos de replay en los falsos). Consulta [docs/arquitectura.md](docs/arquitectura.md) para el flujo de trabajo con `archive/tests`.
+`main` no contiene archivos `*_test.go`. Los 64 archivos de tests viven en la rama `archive/tests` (incluida la verificación de firmas HMAC/MD5 contra vectores de `openssl`, fechas `UTC+8` de campaña y rechazos de replay en los falsos). Consulta [docs/arquitectura.md](docs/arquitectura.md) para el flujo de trabajo con `archive/tests`.
