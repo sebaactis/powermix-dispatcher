@@ -35,7 +35,7 @@ Binarios principales:
 ### 1. Compilar y verificar el código
 
 ```bash
-go test ./...   # en main no hay tests: los 64 archivos *_test.go viven en la rama archive/tests
+go test ./...   # en main no hay tests: los 71 archivos *_test.go viven en la rama archive/tests
 go vet ./...
 go build ./...
 ```
