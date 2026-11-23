@@ -1513,3 +1513,29 @@ func TestAppendAttemptChecksTheSchemaBeforeTheConflict(t *testing.T) {
 		t.Fatalf("un intento con número repetido y outcome vacío devolvió %v, se esperaba %v", err, store.ErrInvalid)
 	}
 }
+
+func TestLineProductNameRoundTrip(t *testing.T) {
+	st, _ := newStore(t)
+	ctx := context.Background()
+
+	order := sampleOrder("order-names", "")
+	order.Lines[0].Name = "Batido de frutilla"
+	mustCreateOrder(t, st, order)
+
+	loaded := mustLoadOrder(t, st, "order-names")
+	batidos := lineByID(t, loaded, "order-names-batidos")
+	if batidos.Name != "Batido de frutilla" {
+		t.Fatalf("Name=%q, se esperaba %q", batidos.Name, "Batido de frutilla")
+	}
+	if got := lineByID(t, loaded, "order-names-snacks").Name; got != "" {
+		t.Fatalf("la línea sin nombre volvió con %q", got)
+	}
+
+	batidos.Name = "Batido de frutilla grande"
+	if _, err := st.SaveLine(ctx, batidos); err != nil {
+		t.Fatalf("SaveLine: %v", err)
+	}
+	if got := lineByID(t, mustLoadOrder(t, st, "order-names"), "order-names-batidos").Name; got != "Batido de frutilla grande" {
+		t.Fatalf("SaveLine no guardó el nombre: %q", got)
+	}
+}

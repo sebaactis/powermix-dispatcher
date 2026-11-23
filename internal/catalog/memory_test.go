@@ -19,11 +19,11 @@ const (
 )
 
 func drinkItem() catalog.Item {
-	return catalog.Item{MachineType: "batidos", SKU: batidosSKU, PriceCents: 280000}
+	return catalog.Item{MachineType: "batidos", SKU: batidosSKU, Name: "Producto de prueba", PriceCents: 280000}
 }
 
 func snackItem() catalog.Item {
-	return catalog.Item{MachineType: "snacks", SKU: snacksSKU, PriceCents: 140000}
+	return catalog.Item{MachineType: "snacks", SKU: snacksSKU, Name: "Producto de prueba", PriceCents: 140000}
 }
 
 func testCombo(id, name string, active bool, items ...catalog.Item) catalog.Combo {
@@ -142,7 +142,7 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 			name: "id vacío",
 			combos: []catalog.Combo{
 				valid,
-				{Name: "Sin id", PriceCents: 100, Items: []catalog.Item{{MachineType: "batidos", SKU: batidosSKU, PriceCents: 100}}},
+				{Name: "Sin id", PriceCents: 100, Items: []catalog.Item{{MachineType: "batidos", SKU: batidosSKU, Name: "Producto de prueba", PriceCents: 100}}},
 			},
 			wantInMsg: "posición 2",
 		},
@@ -171,7 +171,7 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 			name: "ítem sin tipo de máquina",
 			combos: []catalog.Combo{
 				testCombo("combo-sin-maquina", "Batido + Alfajor", true,
-					catalog.Item{MachineType: "", SKU: batidosSKU, PriceCents: 280000}, snackItem()),
+					catalog.Item{MachineType: "", SKU: batidosSKU, Name: "Producto de prueba", PriceCents: 280000}, snackItem()),
 			},
 			wantInMsg: "combo-sin-maquina",
 		},
@@ -179,9 +179,25 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 			name: "ítem sin sku",
 			combos: []catalog.Combo{
 				testCombo("combo-sin-sku", "Batido + Alfajor", true,
-					drinkItem(), catalog.Item{MachineType: "snacks", SKU: "", PriceCents: 140000}),
+					drinkItem(), catalog.Item{MachineType: "snacks", SKU: "", Name: "Producto de prueba", PriceCents: 140000}),
 			},
 			wantInMsg: "combo-sin-sku",
+		},
+		{
+			name: "ítem sin nombre",
+			combos: []catalog.Combo{
+				testCombo("combo-item-sin-nombre", "Batido + Alfajor", true,
+					drinkItem(), catalog.Item{MachineType: "snacks", SKU: snacksSKU, PriceCents: 140000}),
+			},
+			wantInMsg: "combo-item-sin-nombre\" tiene un ítem en la posición 2 sin nombre",
+		},
+		{
+			name: "ítem con nombre en blanco",
+			combos: []catalog.Combo{
+				testCombo("combo-item-nombre-blanco", "Batido + Alfajor", true,
+					catalog.Item{MachineType: "batidos", SKU: batidosSKU, Name: "   ", PriceCents: 280000}, snackItem()),
+			},
+			wantInMsg: "combo-item-nombre-blanco\" tiene un ítem en la posición 1 sin nombre",
 		},
 		{
 			name: "ítem con precio cero",
@@ -193,7 +209,7 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 					Currency:   "ARS",
 					Active:     true,
 					Items: []catalog.Item{
-						{MachineType: "batidos", SKU: batidosSKU, PriceCents: 0},
+						{MachineType: "batidos", SKU: batidosSKU, Name: "Producto de prueba", PriceCents: 0},
 						snackItem(),
 					},
 				},
@@ -210,7 +226,7 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 					Currency:   "ARS",
 					Active:     true,
 					Items: []catalog.Item{
-						{MachineType: "batidos", SKU: batidosSKU, PriceCents: -100},
+						{MachineType: "batidos", SKU: batidosSKU, Name: "Producto de prueba", PriceCents: -100},
 						snackItem(),
 					},
 				},
@@ -227,8 +243,8 @@ func TestNewMemoryRejectsInvalidCombos(t *testing.T) {
 					Currency:   "ARS",
 					Active:     true,
 					Items: []catalog.Item{
-						{MachineType: "batidos", SKU: batidosSKU, PriceCents: 200000},
-						{MachineType: "snacks", SKU: snacksSKU, PriceCents: 100000},
+						{MachineType: "batidos", SKU: batidosSKU, Name: "Producto de prueba", PriceCents: 200000},
+						{MachineType: "snacks", SKU: snacksSKU, Name: "Producto de prueba", PriceCents: 100000},
 					},
 				},
 			},
@@ -294,7 +310,7 @@ func TestMutatingTheInputSliceDoesNotChangeTheCatalog(t *testing.T) {
 
 	combos[0].Name = "nombre mutado"
 	combos[0].Items[0].SKU = "sku-mutado"
-	combos[0].Items = append(combos[0].Items, catalog.Item{MachineType: "snacks", SKU: "sku-agregado", PriceCents: 100})
+	combos[0].Items = append(combos[0].Items, catalog.Item{MachineType: "snacks", SKU: "sku-agregado", Name: "Producto de prueba", PriceCents: 100})
 
 	got := mustCombo(t, memory, "combo-1")
 
@@ -319,8 +335,8 @@ func TestLoadFileReadsValidCombos(t *testing.T) {
 			"currency": "ARS",
 			"active": true,
 			"items": [
-				{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": 280000},
-				{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 140000}
+				{"machine_type": "batidos", "sku": "sku-batido-vainilla", "name": "Producto de prueba", "price_cents": 280000},
+				{"machine_type": "snacks", "sku": "sku-snack-alfajor", "name": "Producto de prueba", "price_cents": 140000}
 			]
 		}
 	]`
@@ -384,8 +400,8 @@ func TestLoadFileRejectsInvalidItemPrices(t *testing.T) {
 				"currency": "ARS",
 				"active": true,
 				"items": [
-					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": 0},
-					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 140000}
+					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "name": "Producto de prueba", "price_cents": 0},
+					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "name": "Producto de prueba", "price_cents": 140000}
 				]
 			}]`,
 			wantInMsg: "combo-item-cero",
@@ -399,8 +415,8 @@ func TestLoadFileRejectsInvalidItemPrices(t *testing.T) {
 				"currency": "ARS",
 				"active": true,
 				"items": [
-					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": -100},
-					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 140000}
+					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "name": "Producto de prueba", "price_cents": -100},
+					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "name": "Producto de prueba", "price_cents": 140000}
 				]
 			}]`,
 			wantInMsg: "combo-item-negativo",
@@ -414,8 +430,8 @@ func TestLoadFileRejectsInvalidItemPrices(t *testing.T) {
 				"currency": "ARS",
 				"active": true,
 				"items": [
-					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "price_cents": 200000},
-					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "price_cents": 100000}
+					{"machine_type": "batidos", "sku": "sku-batido-vainilla", "name": "Producto de prueba", "price_cents": 200000},
+					{"machine_type": "snacks", "sku": "sku-snack-alfajor", "name": "Producto de prueba", "price_cents": 100000}
 				]
 			}]`,
 			wantInMsg: "combo-suma-distinta",

@@ -82,6 +82,9 @@ func TestCreateOrderBuildsTheDraftFromTheComboAndTheKiosk(t *testing.T) {
 	if snacks.KioskID != "kiosco-centro" || snacks.Kind != "snacks" || snacks.MID != "snacks-mid-kiosco-centro" {
 		t.Fatalf("la línea de snacks debe llevar el mid de la máquina del mueble: %+v", snacks)
 	}
+	if stored.Lines[0].Name != "Producto de prueba" || stored.Lines[1].Name != "Producto de prueba" {
+		t.Fatalf("las líneas deben copiar el nombre del producto del catálogo: %q, %q", stored.Lines[0].Name, stored.Lines[1].Name)
+	}
 	if stored.Lines[1].AmountCents != 150000 {
 		t.Fatalf("la línea de snacks debe copiar el monto del ítem (150000), quedó AmountCents=%d", stored.Lines[1].AmountCents)
 	}
@@ -412,7 +415,7 @@ func TestCreateOrderRejectsReusedClientKeyWithDifferentComboOrKiosk(t *testing.T
 		Currency:   "ARS",
 		Active:     true,
 		Items: []catalog.Item{
-			{MachineType: "snacks", SKU: "snack-alfajor", PriceCents: 150000},
+			{MachineType: "snacks", SKU: "snack-alfajor", Name: "Producto de prueba", PriceCents: 150000},
 		},
 	})
 	kiosks := []config.Kiosk{testKiosk("kiosco-uno"), testKiosk("kiosco-dos")}

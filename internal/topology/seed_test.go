@@ -70,8 +70,8 @@ func combos() []catalog.Combo {
 			Currency:   "ARS",
 			Active:     true,
 			Items: []catalog.Item{
-				{MachineType: "batidos", SKU: "DEMO-BATIDO-VAINILLA"},
-				{MachineType: "snacks", SKU: "DEMO-SNACK-ALFAJOR"},
+				{MachineType: "batidos", SKU: "DEMO-BATIDO-VAINILLA", Name: "Producto de prueba"},
+				{MachineType: "snacks", SKU: "DEMO-SNACK-ALFAJOR", Name: "Producto de prueba"},
 			},
 		},
 	}
@@ -148,10 +148,10 @@ func TestSeedPassesEveryComboItemWithItsPosition(t *testing.T) {
 	}
 
 	first := db.calls[4]
-	if len(first.args) != 4 || first.args[0] != "combo-uno" || first.args[1] != 0 {
+	if len(first.args) != 5 || first.args[0] != "combo-uno" || first.args[1] != 0 {
 		t.Fatalf("argumentos del primer ítem = %+v", first.args)
 	}
-	if first.args[2] != "batidos" || first.args[3] != "DEMO-BATIDO-VAINILLA" {
+	if first.args[2] != "batidos" || first.args[3] != "DEMO-BATIDO-VAINILLA" || first.args[4] != "Producto de prueba" {
 		t.Fatalf("el primer ítem quedó con %+v", first.args)
 	}
 }

@@ -32,8 +32,8 @@ func testCombos() []catalog.Combo {
 			Currency:   "ARS",
 			Active:     true,
 			Items: []catalog.Item{
-				{MachineType: "batidos", SKU: "batido-frutilla", PriceCents: 300000},
-				{MachineType: "snacks", SKU: "snack-alfajor", PriceCents: 150000},
+				{MachineType: "batidos", SKU: "batido-frutilla", Name: "Producto de prueba", PriceCents: 300000},
+				{MachineType: "snacks", SKU: "snack-alfajor", Name: "Producto de prueba", PriceCents: 150000},
 			},
 		},
 		{
@@ -43,7 +43,7 @@ func testCombos() []catalog.Combo {
 			Currency:   "ARS",
 			Active:     false,
 			Items: []catalog.Item{
-				{MachineType: "snacks", SKU: "snack-viejo", PriceCents: 100},
+				{MachineType: "snacks", SKU: "snack-viejo", Name: "Producto de prueba", PriceCents: 100},
 			},
 		},
 		{
@@ -53,7 +53,7 @@ func testCombos() []catalog.Combo {
 			Currency:   "ARS",
 			Active:     true,
 			Items: []catalog.Item{
-				{MachineType: "cafetera", SKU: "cafe-solo", PriceCents: 200},
+				{MachineType: "cafetera", SKU: "cafe-solo", Name: "Producto de prueba", PriceCents: 200},
 			},
 		},
 	}
@@ -343,8 +343,8 @@ func twoSnackItemsCombos() []catalog.Combo {
 			Currency:   "ARS",
 			Active:     true,
 			Items: []catalog.Item{
-				{MachineType: "snacks", SKU: "snack-uno", PriceCents: 150},
-				{MachineType: "snacks", SKU: "snack-dos", PriceCents: 150},
+				{MachineType: "snacks", SKU: "snack-uno", Name: "Producto de prueba", PriceCents: 150},
+				{MachineType: "snacks", SKU: "snack-dos", Name: "Producto de prueba", PriceCents: 150},
 			},
 		},
 	}

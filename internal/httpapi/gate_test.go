@@ -359,7 +359,7 @@ func TestCreateOrderReturnsInternalServerErrorForPreflightPanicAndGateInternalEr
 				PriceCents: 150000,
 				Currency:   "ARS",
 				Active:     true,
-				Items:      []catalog.Item{{MachineType: machine.Snacks, SKU: "snack-alfajor", PriceCents: 150000}},
+				Items:      []catalog.Item{{MachineType: machine.Snacks, SKU: "snack-alfajor", Name: "Producto de prueba", PriceCents: 150000}},
 			},
 		}
 		comboCatalog, err := catalog.NewMemory(combos)

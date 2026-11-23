@@ -41,8 +41,8 @@ func seededTopology() ([]config.Kiosk, []catalog.Combo) {
 				Currency:   "ARS",
 				Active:     true,
 				Items: []catalog.Item{
-					{MachineType: "batidos", SKU: "DEMO-BATIDO-VAINILLA"},
-					{MachineType: "snacks", SKU: "DEMO-SNACK-ALFAJOR"},
+					{MachineType: "batidos", SKU: "DEMO-BATIDO-VAINILLA", Name: "Producto de prueba"},
+					{MachineType: "snacks", SKU: "DEMO-SNACK-ALFAJOR", Name: "Producto de prueba"},
 				},
 			},
 		}

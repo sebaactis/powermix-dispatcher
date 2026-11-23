@@ -152,7 +152,7 @@ func (payCatalog) Combo(_ context.Context, id string) (catalog.Combo, error) {
 
 	return catalog.Combo{
 		ID: "combo-1", Name: "Combo", PriceCents: 450000, Currency: "ARS", Active: true,
-		Items: []catalog.Item{{MachineType: machine.Snacks, SKU: "snack-1", PriceCents: 450000}},
+		Items: []catalog.Item{{MachineType: machine.Snacks, SKU: "snack-1", Name: "Producto de prueba", PriceCents: 450000}},
 	}, nil
 }
 
