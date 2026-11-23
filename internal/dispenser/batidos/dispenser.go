@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/linestate"
-	"compras-remotas/internal/machine"
 )
 
 const (
@@ -69,30 +67,6 @@ func NewDispenser(client *Client, opts ...DispenserOption) *Dispenser {
 		opt(d)
 	}
 	return d
-}
-
-func (d *Dispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	device, err := d.client.Device(ctx, machine.DeviceID)
-	if err != nil {
-		return dispenser.Availability{}, err
-	}
-
-	reasons := make([]string, 0, 3)
-	if device.Status != DeviceStatusOnline {
-		reasons = append(reasons, "máquina fuera de línea")
-	}
-	if device.DeviceRunStatus != DeviceRunStatusNormal {
-		reasons = append(reasons, "avería")
-	}
-	if device.ScarceStatus != ScarceStatusNormal {
-		reasons = append(reasons, "sin insumos")
-	}
-
-	if len(reasons) == 0 {
-		return dispenser.Availability{Available: true}, nil
-	}
-
-	return dispenser.Availability{Reason: strings.Join(reasons, "; ")}, nil
 }
 
 func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {

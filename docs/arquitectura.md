@@ -214,7 +214,7 @@ Binarios auxiliares: `cmd/migrate/main.go:39` (`run` → `migrate.Apply` en `int
 
 | Ruta | Handler | Llama a |
 | --- | --- | --- |
-| `GET /healthz` | `cmd/api/main.go:194` | `catalog.Combos` → `200` JSON |
+| `GET /healthz` | `healthHandler` en `cmd/api/main.go` | `catalog.Combos` → `200` JSON |
 | `GET /combos` | `internal/httpapi/combos.go:7` (`listCombos`) | `internal/catalog/memory.go:40` (`Combos`) |
 | `POST /orders` | `internal/httpapi/orders.go:10` (`createOrder`) | `internal/order/place.go:14` (`CreateOrder`) + con MP `internal/order/qr.go:21` (`RequestQR`) |
 | `GET /orders/{id}` | `internal/httpapi/orders.go:56` (`readOrder`) | `store.LoadOrder` + con MP `store.PaymentIntentByOrder` |
@@ -287,15 +287,15 @@ internal/order/payment.go:17 MarkPaid
 ```text
 for line.Attempts < e.maxAttempts:
   │
-  ├─ 1. RECLAMO  DeadlineAt = now+2m, ReconcileUntil = now+2m+ventana
+  ├─ 1. RECLAMO (openAttempt)  DeadlineAt = now+2m, ReconcileUntil = now+2m+ventana
   │      SaveLine (por versión) ── ErrStale → return
   │
-  ├─ 2. AppendAttempt  clave "orden:línea:número", outcome ambiguous (:53-58)
+  ├─ 2. AppendAttempt (openAttempt)  clave "orden:línea:número", outcome ambiguous
   │      ErrAlreadyExists → return
   │
-  ├─ 3. machine.Dispatch(...) ──► batidos/dispenser.go:96  o  snacks/dispenser.go:88
+  ├─ 3. machine.Dispatch(dispatchRequest) ──► batidos o snacks (Dispatch)
   │
-  ├─ 4. classifyDispatch (:133)
+  ├─ 4. classifyDispatch → closeAttempt → applyVerdict
   │       ┌────────────────────────────────────┬───────────┬────────────────┐
   │       │ Resultado                          │ outcome   │ estado destino │
   │       ├────────────────────────────────────┼───────────┼────────────────┤
@@ -396,7 +396,7 @@ ORDEN (store.OrderStatus)  CanOrderTransition :49  (derivada por DeriveOrderStat
 | Creación del QR de Mercado Pago | `internal/order/qr.go:21` y `internal/payments/mercadopago/client.go:73` |
 | Validación del webhook de Mercado Pago | `internal/httpapi/mercadopago.go:78` y `internal/payments/mercadopago/signature.go:20` |
 | Cancelación de órdenes impagas vencidas | `internal/order/reconcile_payments.go:48` (`reconcilePayment`) |
-| Clasificación de despacho y reintentos | `internal/order/dispatch.go:87`, `:133` (`classifyDispatch`) |
+| Clasificación de despacho y reintentos | `internal/order/dispatch.go` (`classifyDispatch`, `applyVerdict`) |
 | Recuperación de líneas `pending` o vencidas | `internal/order/reconcile.go:20`, `:90` (`resumeStalledLine`) |
 | Paso a `in_doubt` al vencer ventana | `internal/order/reconcile.go:210` (`extendReconcile`) |
 | Resolución de línea en callbacks | `internal/order/callback.go:104` (`callbackLine`) |

@@ -9,11 +9,6 @@ import (
 	"compras-remotas/internal/machine"
 )
 
-type Availability struct {
-	Available bool
-	Reason    string
-}
-
 type Request struct {
 	OrderID     string
 	LineID      string
@@ -57,8 +52,6 @@ func (r *Rejection) Error() string {
 }
 
 type Dispenser interface {
-	Check(ctx context.Context, machine machine.Ref) (Availability, error)
-
 	Dispatch(ctx context.Context, req Request) (DispatchResult, error)
 
 	Reconcile(ctx context.Context, req Request) (Status, error)

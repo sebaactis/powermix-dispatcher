@@ -5,19 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"compras-remotas/internal/dispenser"
 	"compras-remotas/internal/linestate"
-	"compras-remotas/internal/machine"
 )
 
 const (
 	defaultOrdersPageSize = 10
 
 	firstPage = 1
-
-	devicesPageSize = 10
 
 	providerName = "snacks"
 )
@@ -48,41 +44,6 @@ func NewDispenser(client *Client, opts ...DispenserOption) *Dispenser {
 		opt(d)
 	}
 	return d
-}
-
-func (d *Dispenser) Check(ctx context.Context, machine machine.Ref) (dispenser.Availability, error) {
-	page, err := d.client.Devices(ctx, PageQuery{Page: firstPage, Size: devicesPageSize, DeviceCode: machine.MID})
-	if err != nil {
-		return dispenser.Availability{}, err
-	}
-
-	device, found := findDevice(page.Items, machine.MID)
-	if !found {
-		return dispenser.Availability{Reason: "máquina no encontrada"}, nil
-	}
-
-	reasons := make([]string, 0, 5)
-	if device.OnlineStatus != OnlineStatusOnline {
-		reasons = append(reasons, "máquina fuera de línea")
-	}
-	if device.SellStatus != SellStatusNormal {
-		reasons = append(reasons, "venta suspendida")
-	}
-	if device.FaultState != FaultStateNormal {
-		reasons = append(reasons, "avería")
-	}
-	if device.LockType != LockTypeNormal {
-		reasons = append(reasons, "bloqueada")
-	}
-	if device.StockoutState != StockoutStateNormal {
-		reasons = append(reasons, "sin stock")
-	}
-
-	if len(reasons) == 0 {
-		return dispenser.Availability{Available: true}, nil
-	}
-
-	return dispenser.Availability{Reason: strings.Join(reasons, "; ")}, nil
 }
 
 func (d *Dispenser) Dispatch(ctx context.Context, req dispenser.Request) (dispenser.DispatchResult, error) {
@@ -164,15 +125,6 @@ func isClearBusinessRejection(apiErr *APIError) bool {
 		apiErr.HTTPStatus < http.StatusInternalServerError &&
 		apiErr.HTTPStatus != http.StatusRequestTimeout &&
 		apiErr.HTTPStatus != http.StatusTooManyRequests
-}
-
-func findDevice(devices []Device, deviceCode string) (Device, bool) {
-	for _, device := range devices {
-		if device.DeviceCode == deviceCode {
-			return device, true
-		}
-	}
-	return Device{}, false
 }
 
 func findOrder(orders []Order, transactionOrderNo string) (Order, bool) {

@@ -1,6 +1,6 @@
 # Pendientes
 
-Estado al 2026-11-23 (con **F1–F3**, **F5–F9**, **F7b**, **F11–F16** y **D3–D6** ya publicados en `main`).
+Estado al 2026-11-23 (con **F1–F3**, **F5–F9**, **F7b**, **F11–F16**, **D3–D6** y **P3** ya publicados en `main`).
 
 Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para el detalle completo, las referencias `archivo:línea` y el historial de la revisión para producción, consulta [odd/tasks/revision-produccion.md](../odd/tasks/revision-produccion.md).
 
@@ -12,7 +12,6 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 | --- | --- | --- |
 | **F4** | `Reconcile` de snacks siempre devuelve `InDoubt` y consulta sólo la página 1 sin filtro | Bloqueado: esperando confirmación del proveedor |
 | **F10** | `RetailPrice` en snacks se envía en `0` fijo | Bloqueado por duda al proveedor (sección C) |
-| **P3** | Mejoras de buenas prácticas (funciones largas, `Dispenser.Check` muerto, clientes HTTP repetidos y `_ = err`; ver `H-BP`) | Abierto |
 
 ### Fuera del MVP
 
@@ -34,7 +33,6 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 | **`fakeapi` no vuelve a poner batidos `online`** | Los endpoints de administración de batidos responden 501 si se pasa `false` | Chica |
 | **Orden sin QR queda `pending_payment`** | Si `RequestQR` falla (502) y la tablet no reintenta, no tiene cobro que el barrido cancele | Chica |
 | **Cabecera de orden desfasada de sus líneas** | Si `refreshOrderStatus` agota sus 3 intentos y el ganador derivó sin ver la última línea, la orden puede quedar en `dispatching` con todas las líneas cerradas; el barrido no la toma y no sale el aviso. Arreglo: que el barrido repare cabeceras que no coinciden con sus líneas | Media |
-| **Respuesta de Telegram cortada sin aviso** | `notify/telegram.go:241` lee con `LimitReader` sin detectar el corte: una respuesta cortada cuenta como envío fallido y se reintenta, lo que podría duplicar un aviso (Telegram responde muy poco, así que es improbable) | Chica |
 | **Aviso perdido tras 3 fallos de Telegram** | Queda en `ERROR` en el log y se registra en `notification_sent` sin reintento posterior | Media |
 
 ---
@@ -62,9 +60,8 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 ## Orden recomendado
 
 1. Desbloquear **F4** y **F10** con el proveedor de snacks.
-2. Ejecutar **P3** (buenas prácticas) según `H-BP` de `odd/tasks/revision-produccion.md`.
-3. Desplegar en Render con PostgreSQL, fijar `PUBLIC_BASE_URL` y validar Mercado Pago contra su sandbox real.
-4. Integrar la suite de `archive/tests` en `main` con CI antes de salir a producción, y evaluar las deudas restantes (`Ref` en `GET /orders/{id}` y mecanismo de lease).
+2. Desplegar en Render con PostgreSQL, fijar `PUBLIC_BASE_URL` y validar Mercado Pago contra su sandbox real.
+3. Integrar la suite de `archive/tests` en `main` con CI antes de salir a producción, y evaluar las deudas restantes (`Ref` en `GET /orders/{id}` y mecanismo de lease).
 
 ---
 

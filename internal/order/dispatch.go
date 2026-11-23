@@ -31,110 +31,28 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 	for line.Attempts < e.maxAttempts {
 		number := line.Attempts + 1
 
-		claimedAt := e.now()
-
-		line.DeadlineAt = claimedAt.Add(e.deadline)
-		line.ReconcileUntil = claimedAt.Add(e.deadline + e.reconcileWindow)
-
-		claimed, claimErr := e.store.SaveLine(ctx, line)
-		if errors.Is(claimErr, store.ErrStale) {
-			return nil
-		}
-		if claimErr != nil {
-			return claimErr
-		}
-
-		line = claimed
-
-		attempt := store.Attempt{
-			ID:             e.nextID(),
-			LineID:         line.ID,
-			Number:         number,
-			IdempotencyKey: idempotencyKey(orderID, line.ID, number),
-			Outcome:        store.OutcomeAmbiguous,
-			StartedAt:      e.now(),
-		}
-
-		if err := e.store.AppendAttempt(ctx, attempt); err != nil {
-			if errors.Is(err, store.ErrAlreadyExists) {
-				return nil
-			}
-
+		claimed, attempt, stop, err := e.openAttempt(ctx, orderID, line, number, progress)
+		if stop || err != nil {
 			return err
 		}
 
-		progress.number = number
-		progress.attempt = attempt
-		progress.open = true
+		line = claimed
 
 		machine, ok := e.machines[line.Machine.Kind]
 		if !ok {
 			return fmt.Errorf("no hay una máquina configurada para el tipo %q", line.Machine.Kind)
 		}
 
-		result, dispatchErr := machine.Dispatch(ctx, dispenser.Request{
-			OrderID:     orderID,
-			LineID:      line.ID,
-			Machine:     line.Machine,
-			SKU:         line.SKU,
-			AmountCents: line.AmountCents,
-			SaveRef: func(refCtx context.Context, ref string) error {
-				pending := line
-				pending.Ref = ref
-
-				saved, err := e.store.SaveLine(refCtx, pending)
-				if err != nil {
-					return err
-				}
-
-				line = saved
-
-				return nil
-			},
-		})
+		result, dispatchErr := machine.Dispatch(ctx, e.dispatchRequest(orderID, &line))
 
 		verdict := classifyDispatch(result, dispatchErr)
 
-		attempt.Outcome = verdict.outcome
-		attempt.Detail = verdict.detail
-		attempt.FinishedAt = e.now()
-
-		attemptErr := e.store.SaveAttempt(ctx, attempt)
-		if attemptErr == nil {
-			progress.open = false
-		}
+		attemptErr := e.closeAttempt(ctx, attempt, verdict, progress)
 
 		retrying := verdict.outcome == store.OutcomeRejected && number < e.maxAttempts
 
 		var stateErr error
-		if !retrying {
-			line.State, stateErr = transitionLine(line.State, verdict.state)
-		}
-
-		line.Attempts = number
-
-		if verdict.outcome == store.OutcomeAccepted {
-			acceptedAt := e.now()
-
-			line.Ref = result.ProviderRef
-			line.DeadlineAt = acceptedAt.Add(e.deadline)
-			line.ReconcileUntil = acceptedAt.Add(e.deadline + e.reconcileWindow)
-			line.LastError = ""
-		} else {
-			if result.ProviderRef != "" {
-				line.Ref = result.ProviderRef
-			}
-
-			line.LastError = verdict.detail
-			line.DeadlineAt = time.Time{}
-			line.ReconcileUntil = time.Time{}
-
-			if verdict.outcome == store.OutcomeError {
-				doubtfulAt := e.now()
-				line.DeadlineAt = doubtfulAt.Add(e.reconcileInterval)
-				line.ReconcileUntil = doubtfulAt.Add(e.reconcileWindow)
-			}
-		}
+		line, stateErr = e.applyVerdict(line, number, verdict, result, retrying)
 
 		saved, lineErr := e.store.SaveLine(ctx, line)
 		if errors.Is(lineErr, store.ErrStale) {
@@ -148,6 +66,117 @@ func (e *Engine) dispatchLine(ctx context.Context, orderID string, line store.Li
 	}
 
 	return nil
+}
+
+func (e *Engine) openAttempt(ctx context.Context, orderID string, line store.Line, number int, progress *attemptProgress) (store.Line, store.Attempt, bool, error) {
+	claimedAt := e.now()
+
+	line.DeadlineAt = claimedAt.Add(e.deadline)
+	line.ReconcileUntil = claimedAt.Add(e.deadline + e.reconcileWindow)
+
+	claimed, err := e.store.SaveLine(ctx, line)
+	if errors.Is(err, store.ErrStale) {
+		return store.Line{}, store.Attempt{}, true, nil
+	}
+	if err != nil {
+		return store.Line{}, store.Attempt{}, true, err
+	}
+
+	attempt := store.Attempt{
+		ID:             e.nextID(),
+		LineID:         claimed.ID,
+		Number:         number,
+		IdempotencyKey: idempotencyKey(orderID, claimed.ID, number),
+		Outcome:        store.OutcomeAmbiguous,
+		StartedAt:      e.now(),
+	}
+
+	if err := e.store.AppendAttempt(ctx, attempt); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			return store.Line{}, store.Attempt{}, true, nil
+		}
+
+		return store.Line{}, store.Attempt{}, true, err
+	}
+
+	progress.number = number
+	progress.attempt = attempt
+	progress.open = true
+
+	return claimed, attempt, false, nil
+}
+
+func (e *Engine) dispatchRequest(orderID string, line *store.Line) dispenser.Request {
+	return dispenser.Request{
+		OrderID:     orderID,
+		LineID:      line.ID,
+		Machine:     line.Machine,
+		SKU:         line.SKU,
+		AmountCents: line.AmountCents,
+		SaveRef: func(refCtx context.Context, ref string) error {
+			pending := *line
+			pending.Ref = ref
+
+			saved, err := e.store.SaveLine(refCtx, pending)
+			if err != nil {
+				return err
+			}
+
+			*line = saved
+
+			return nil
+		},
+	}
+}
+
+func (e *Engine) closeAttempt(ctx context.Context, attempt store.Attempt, verdict dispatchVerdict, progress *attemptProgress) error {
+	attempt.Outcome = verdict.outcome
+	attempt.Detail = verdict.detail
+	attempt.FinishedAt = e.now()
+
+	if err := e.store.SaveAttempt(ctx, attempt); err != nil {
+		return err
+	}
+
+	progress.open = false
+
+	return nil
+}
+
+func (e *Engine) applyVerdict(line store.Line, number int, verdict dispatchVerdict, result dispenser.DispatchResult, retrying bool) (store.Line, error) {
+	var stateErr error
+	if !retrying {
+		line.State, stateErr = transitionLine(line.State, verdict.state)
+	}
+
+	line.Attempts = number
+
+	if verdict.outcome == store.OutcomeAccepted {
+		acceptedAt := e.now()
+
+		line.Ref = result.ProviderRef
+		line.DeadlineAt = acceptedAt.Add(e.deadline)
+		line.ReconcileUntil = acceptedAt.Add(e.deadline + e.reconcileWindow)
+		line.LastError = ""
+
+		return line, stateErr
+	}
+
+	if result.ProviderRef != "" {
+		line.Ref = result.ProviderRef
+	}
+
+	line.LastError = verdict.detail
+	line.DeadlineAt = time.Time{}
+	line.ReconcileUntil = time.Time{}
+
+	if verdict.outcome == store.OutcomeError {
+		doubtfulAt := e.now()
+		line.DeadlineAt = doubtfulAt.Add(e.reconcileInterval)
+		line.ReconcileUntil = doubtfulAt.Add(e.reconcileWindow)
+	}
+
+	return line, stateErr
 }
 
 func classifyDispatch(result dispenser.DispatchResult, dispatchErr error) dispatchVerdict {

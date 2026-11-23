@@ -6,7 +6,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. **Estado al 2026-11-23:** publicados en `main` F1–F3, F5–F9, F7b, F11–F16 y D3–D6. Bloqueados por el proveedor de snacks: **F4** y **F10**. Abierto: **P3**. Cada fix nuevo va en una rama desde `main`; sus tests, sólo en `archive/tests`.
+2. **Estado al 2026-11-23:** publicados en `main` F1–F3, F5–F9, F7b, F11–F16, D3–D6 y P3. Bloqueados por el proveedor de snacks: **F4** y **F10**. Sin fixes abiertos fuera de los bloqueados. Cada fix nuevo va en una rama desde `main`; sus tests, sólo en `archive/tests`.
 3. **Publicado (2026-11-22):** `fix/partial-order-alerts` (F1-F5 y los 8 commits de Telegram que estaban sólo en local) se mergeó a `main` (4afadaf) y se pusheó; `archive/tests` se sincronizó con `main` (b873113) y se pusheó. Regla de entrega: en `main` va todo lo que es de la app; los tests van sólo en `archive/tests`.
 4. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
 
@@ -14,7 +14,7 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 
 - [x] P1 — Entrada del pedido, validaciones, proveedores, pago, despacho y logueo: revisado el 2026-11-21 (hallazgos abajo).
 - [x] P2 — Hecho (`odd/tasks/documentacion-y-grafico.md`, commits 70d32b4 y 7dcc10e). Original: Documentación (README, `docs/arquitectura.md`, `docs/pendientes.md`, `docs/comentarios-codigo.md` de 2620 líneas): que esté actualizada, clara y concisa. Sin empezar.
-- [ ] P3 — Buenas prácticas del código (detalle en H-BP). Sin empezar más allá del adelanto.
+- [x] P3 — Hecho (2026-11-23, rama `refactor/p3-buenas-practicas`, un commit por punto): se borró `Dispenser.Check`; `main` y `dispatchLine` quedaron partidos en funciones con nombre sin cambiar la lógica (arranque verificado comparando el binario anterior y el nuevo); `httpx.ReadLimited` reemplaza la lectura con límite repetida en los 4 clientes y cierra la deuda de Telegram (un 2xx largo ya no cuenta como fallido); los `_ =` restantes se revisaron y quedan documentados como deliberados en `docs/comentarios-codigo.md`. No se armó un cliente HTTP genérico: cada proveedor firma y trata errores distinto. Original: Buenas prácticas del código (detalle en H-BP).
 - [x] P4 — Hecho (`odd/tasks/documentacion-y-grafico.md`, commit 40f5428). Original: Gráfico `docs/flujo-del-sistema.svg`: actualizado (Mercado Pago, Telegram, partial, in_doubt), claro y moderno. Sin empezar.
 
 ## Fixes

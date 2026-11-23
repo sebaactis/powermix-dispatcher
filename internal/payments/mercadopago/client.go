@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"compras-remotas/internal/httpx"
 	"compras-remotas/internal/payments"
 )
 
@@ -172,12 +173,9 @@ func (c *Client) call(ctx context.Context, method, path, idempotencyKey string, 
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	raw, err := httpx.ReadLimited(resp.Body, maxResponseBytes)
 	if err != nil {
 		return payments.Charge{}, fmt.Errorf("mercadopago: no se pudo leer la respuesta: %w", err)
-	}
-	if len(raw) > maxResponseBytes {
-		return payments.Charge{}, fmt.Errorf("mercadopago: la respuesta supera %d bytes", maxResponseBytes)
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
