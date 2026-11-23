@@ -1,6 +1,6 @@
 # Pendientes
 
-Estado al 2026-11-22 (con **F1–F3** y **F5–F9** ya publicados en `main`).
+Estado al 2026-11-22 (con **F1–F3**, **F5–F9** y **F13** ya publicados en `main`).
 
 Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para el detalle completo, las referencias `archivo:línea` y el historial de la revisión para producción, consulta [odd/tasks/revision-produccion.md](../odd/tasks/revision-produccion.md).
 
@@ -15,7 +15,6 @@ Para cómo funciona el sistema consulta [arquitectura.md](arquitectura.md); para
 | **F10** | `RetailPrice` en snacks se envía en `0` fijo | Bloqueado por duda al proveedor (sección C) |
 | **F11** | `order.ClosedAt` nunca se carga en `store` | Abierto |
 | **F12** | `refreshOrderStatus` reintenta `ErrStale` una sola vez | Abierto |
-| **F13** | Webhook de Mercado Pago lee `data.id` sólo desde query y asume `ts` en milisegundos | Abierto |
 | **F14** | Respuestas > 1 MB se truncan sin error en clientes de batidos y snacks | Abierto |
 | **F15** | Aviso de entrega parcial muestra SKU en lugar de nombre legible (requiere nombre en catálogo) | Abierto |
 | **F16** | `POST /orders` responde `200` en lugar de `201` y el barrido no tiene plazo máximo por vuelta | Abierto |
