@@ -6,10 +6,9 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 ## Cómo retomar
 
 1. Leer este documento y `docs/pendientes.md`.
-2. **F4** sigue bloqueado: el proveedor de snacks todavía no confirmó si su API informa el resultado del despacho (2026-11-22). F6 publicado en `main`. F7 publicado en `main`. F8 publicado en `main`. F9 hecho en la rama `fix/logging` (sin mergear ni pushear). Orden recomendado y aceptado: después **F7b** y los menores; P2 y P4 al final. Cada fix nuevo va en una rama desde `main`.
+2. **Estado al 2026-11-22:** publicados en `main` F1–F3, F5–F9, F11–F14 y F16. Bloqueados por el proveedor de snacks: **F4** y **F10**. Abiertos: **F7b**, **F15**, **D3–D5** y **P3**. Cada fix nuevo va en una rama desde `main`; sus tests, sólo en `archive/tests`.
 3. **Publicado (2026-11-22):** `fix/partial-order-alerts` (F1-F5 y los 8 commits de Telegram que estaban sólo en local) se mergeó a `main` (4afadaf) y se pusheó; `archive/tests` se sincronizó con `main` (b873113) y se pusheó. Regla de entrega: en `main` va todo lo que es de la app; los tests van sólo en `archive/tests`.
-4. **Correlación de avisos:** se usa `order_id`; el `request_id` por pedido HTTP queda para **F9**.
-5. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
+4. Traer los tests: `git checkout archive/tests -- $(git ls-tree -r --name-only archive/tests | grep '_test.go$')`. Al terminar, archivarlos en `archive/tests` (merge de la rama con los tests restaurados) y sacarlos del árbol con `git rm -q -f`.
 
 ## Partes de la revisión
 
@@ -44,13 +43,13 @@ Modo de trabajo acordado: un fix por vez, primero se discute si corresponde seg�
 - [ ] F15 — El aviso de entrega parcial muestra el SKU (`DEMO-SNACK-ALFAJOR`) y no el nombre del producto: haría falta el nombre en el catálogo.
 - [x] F16 — Hecho (2026-11-22, rama `fix/f16-created-and-sweep-budget`): `POST /orders` responde `201` siempre (también el reintento idempotente) y cada etapa del barrido corre con su propio plazo igual al intervalo (`runStage`), con `WARN` al agotarse. Original: `POST /orders` responde 200 en vez de 201 (`internal/httpapi/orders.go:53`); el barrido no tiene plazo por vuelta (`internal/sweep/runner.go:92-104`).
 - [ ] D3 — Los manejadores de recuperación no se protegen a sí mismos: un segundo panic dentro de `markPanickedLineInDoubt` o `notifyOnce` (`internal/order/payment.go:73-78,98,133`) todavía tira el proceso.
-- [ ] D4 — Un panic dentro de `spawn` (`internal/order/engine.go:192-211`) pero fuera de una línea (por ejemplo en `settleOrder`, `internal/order/payment.go:88`, `internal/order/settle.go:16`) sólo se loguea: no avisa ni recalcula el estado del pedido; falta confirmar si el barrido lo corrige.
+- [ ] D4 — Un panic dentro de `spawn` (`internal/order/engine.go:192-211`) pero fuera de una línea (por ejemplo en `settleOrder`, `internal/order/payment.go:88`, `internal/order/settle.go:18`) sólo se loguea: no avisa ni recalcula el estado del pedido; falta confirmar si el barrido lo corrige.
 - [ ] D5 — El intento que entró en panic queda `OutcomeAmbiguous` sin `FinishedAt` (`internal/order/dispatch.go:49-56,94`) y no incrementa `line.Attempts` (`internal/order/payment.go:133-167`), distinto de las líneas de F2.
 
 ### H-BP — Buenas prácticas (insumo de P3)
 - Funciones largas: `main` de `cmd/api/main.go` (232 líneas), `(*Engine).dispatchLine` en `internal/order/dispatch.go` (~100 líneas).
 - Código muerto: `Dispenser.Check` y sus dos implementaciones (`internal/dispenser/dispenser.go:55`, `batidos/dispenser.go:71-93`, `snacks/dispenser.go:52-85`), reemplazado por `preflight.Checker`.
-- Repetición en 4 lugares del armado request HTTP + `LimitReader` + JSON (`batidos/client.go:292`, `snacks/client.go:243`, `mercadopago/client.go:146`, `notify/telegram.go:221`): candidata a abstracción.
+- Repetición en 4 lugares del armado request HTTP + `LimitReader` + JSON (`batidos/client.go:293`, `snacks/client.go:244`, `mercadopago/client.go:146`, `notify/telegram.go:221`): candidata a abstracción.
 - `isClearBusinessRejection` duplicada en `batidos/dispenser.go` y `snacks/dispenser.go` (2 lugares: se deja así por ahora).
 - Errores ignorados con `_ =`: `cmd/api/main.go:198`, `internal/httpapi/respond.go:14`, `internal/notify/telegram.go:116,245`, `internal/payments/mercadopago/amount.go:26`.
 
