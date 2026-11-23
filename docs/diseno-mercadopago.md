@@ -44,13 +44,13 @@ X-Signature: ts=1742505638683,v1=ced36ab6…
 | --- | --- |
 | `data.id` | ID de la orden en Mercado Pago (`ORD…`) devuelto por `POST /v1/orders`. Se lee de la query, que es lo que firma Mercado Pago; si no viene, se toma `data.id` (y `type`) del cuerpo JSON |
 | `x-request-id` | ID único del envío del aviso (usado en el manifiesto de firma, no para deduplicar) |
-| `x-signature` | `ts` (milisegundos para el tópico «order»; también se aceptan segundos, porque la documentación de Mercado Pago usa ambos) y `v1 = hex(HMAC-SHA256(secreto_webhook, "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"))`, con `data.id` en minúsculas y omitiendo pares vacíos (`internal/payments/mercadopago/signature.go:76-88`) |
+| `x-signature` | `ts` (milisegundos para el tópico «order»; también se aceptan segundos, porque la documentación de Mercado Pago usa ambos) y `v1 = hex(HMAC-SHA256(secreto_webhook, "id:<data.id>;request-id:<x-request-id>;ts:<ts>;"))`, con `data.id` en minúsculas y omitiendo pares vacíos (`internal/payments/mercadopago/signature.go:81-93`) |
 
-Validación en `internal/httpapi/mercadopago.go:77` (`receive`):
+Validación en `internal/httpapi/mercadopago.go:78` (`receive`):
 
 1. Secreto de ruta en tiempo constante → si falla, `404`.
 2. `data.id` en la query o, si falta, en el cuerpo (con un `WARN` en el log) → si no está en ninguno, `400`.
-3. Firma `X-Signature` (calculada con el `data.id` de la query; si no vino, el par `id:` se omite, como hace Mercado Pago) y ventana `SignatureTolerance` de 5 min (`internal/payments/mercadopago/signature.go:14-51`) → si falla, `401`.
+3. Firma `X-Signature` (calculada con el `data.id` de la query; si no vino, el par `id:` se omite, como hace Mercado Pago) y ventana `SignatureTolerance` de 5 min (`internal/payments/mercadopago/signature.go:14-49`) → si falla, `401`.
 4. `type == "order"` → si es otro tópico, responde `200` sin tocar nada.
 5. `SyncPayment` (`GET /v1/orders/{data.id}`): nunca confía en el estado que trae el cuerpo del webhook. Si el cobro no pertenece al sistema (`ErrUnknownCharge`), responde `200`; ante error transitorio responde `500` para que Mercado Pago reintente.
 
