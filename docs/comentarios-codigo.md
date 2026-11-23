@@ -220,6 +220,19 @@ Formato: `Símbolo --> "texto del comentario"`.
 
 > maxResponseBytes protege contra una respuesta absurda. Los sobres de esta
 > API pesan unos pocos cientos de bytes.
+>
+> Se lee un byte más que el límite (F14): si llega, la respuesta se rechaza con
+> «la respuesta … supera 1048576 bytes». Antes se cortaba sin aviso: un corte en
+> medio del JSON daba un engañoso «no es JSON válido», y un corte que sólo
+> sacaba relleno del final se aceptaba como respuesta completa. El error es un
+> error común y no un `*APIError` a propósito: así el despacho lo clasifica como
+> resultado desconocido (reconciliación) y nunca como rechazo del proveedor.
+>
+> Lo cubre `response_limit_test.go` del paquete (rama `archive/tests`): una
+> respuesta de exactamente 1 MB se acepta y una de 1 MB + 1 byte da el error
+> claro y no es `*APIError`. El cuerpo se rellena con espacios a propósito: con
+> el código viejo el corte sólo sacaba relleno y el test quedaba en rojo porque
+> la respuesta se aceptaba sin error.
 
 ### Option
 
@@ -585,6 +598,20 @@ Formato: `Símbolo --> "texto del comentario"`.
 ### maxResponseBytes
 
 > maxResponseBytes evita que una respuesta gigante o rota nos consuma memoria.
+> Vale para el despacho (`Ship`) y para las consultas (`get`).
+>
+> Se lee un byte más que el límite (F14): si llega, la respuesta se rechaza con
+> «la respuesta … supera 1048576 bytes». Antes se cortaba sin aviso: un corte en
+> medio del JSON daba un engañoso «no es JSON válido», y un corte que sólo
+> sacaba relleno del final se aceptaba como respuesta completa. El error es un
+> error común y no un `*APIError` a propósito: así el despacho lo clasifica como
+> resultado desconocido (reconciliación) y nunca como rechazo del proveedor.
+>
+> Lo cubre `response_limit_test.go` del paquete (rama `archive/tests`): una
+> respuesta de exactamente 1 MB se acepta y una de 1 MB + 1 byte da el error
+> claro y no es `*APIError`. El cuerpo se rellena con espacios a propósito: con
+> el código viejo el corte sólo sacaba relleno y el test quedaba en rojo porque
+> la respuesta se aceptaba sin error.
 
 ### ShipmentRequest
 
