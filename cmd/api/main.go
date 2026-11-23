@@ -39,24 +39,85 @@ const (
 )
 
 func main() {
-	var configPath string
-	flag.StringVar(&configPath, "config", envOr("CONFIG_PATH", "config.local.json"), "ruta al archivo JSON de topología")
-	var combosPath string
-	flag.StringVar(&combosPath, "combos", envOr("COMBOS_PATH", "combos.local.json"), "ruta al archivo JSON de combos")
-	flag.Parse()
+	configPath, combosPath := parseFlags()
 
-	logger, err := logging.NewFromEnv(os.Stdout)
-	if err != nil {
-		logging.New(os.Stdout, slog.LevelInfo).Error("nivel de log inválido", "error", err)
-		os.Exit(1)
-	}
+	logger := newLogger()
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		logger.Error("no se pudo cargar la configuración", "path", configPath, "error", err)
+		exitWithError(logger, "no se pudo cargar la configuración", "path", configPath, "error", err)
+	}
+
+	warnMissingCallbackSecrets(cfg, logger)
+
+	combos, comboCatalog := loadCatalog(combosPath, logger)
+
+	batidosClient := batidos.NewClient(cfg.BatidosBaseURL, cfg.BatidosKey, cfg.BatidosSecret)
+	snacksClient := snacks.NewClient(cfg.SnacksBaseURL, cfg.SnacksAccessKey, cfg.SnacksAppSecret)
+
+	machines := buildMachines(cfg, batidosClient, snacksClient, logger)
+
+	orders, closeStore, err := openStore(cfg, combos, logger)
+	if err != nil {
+		exitWithError(logger, "no se pudo preparar el store", "store", cfg.Store, "error", err)
+	}
+
+	availability := gate.New(preflight.New(batidosClient, snacksClient, preflight.WithLogger(logger)))
+
+	engine := buildEngine(cfg, orders, machines, availability, buildNotifier(cfg, logger), logger)
+
+	runner, apiDeps := buildSweepAndAPIDeps(cfg, engine, orders, comboCatalog, logger)
+
+	tabletAPI, err := httpapi.New(apiDeps, httpapi.WithLogger(logger))
+	if err != nil {
+		logger.Error("no se pudo construir la API de la tablet", "error", err)
+		closeStore()
 		os.Exit(1)
 	}
 
+	logger.Info("backend construido",
+		"env", cfg.Env,
+		"kiosks", len(cfg.Kiosks),
+		"combos", len(combos),
+		"sweep_interval", sweepInterval.String(),
+		"store", cfg.Store,
+	)
+
+	logger.Info("chequeo previo de disponibilidad activo: no se crea una orden si alguna de las dos máquinas no puede vender",
+		"gate", "preflight",
+		"machines", len(machines),
+	)
+
+	mux := buildMux(cfg, engine, comboCatalog, tabletAPI, logger)
+
+	server := newServer(envOr("HTTP_ADDR", "127.0.0.1:8080"), httpapi.Wrap(mux, logger), logger)
+
+	serve(server, runner, engine, closeStore, cfg, logger)
+}
+
+func parseFlags() (configPath, combosPath string) {
+	flag.StringVar(&configPath, "config", envOr("CONFIG_PATH", "config.local.json"), "ruta al archivo JSON de topología")
+	flag.StringVar(&combosPath, "combos", envOr("COMBOS_PATH", "combos.local.json"), "ruta al archivo JSON de combos")
+	flag.Parse()
+
+	return configPath, combosPath
+}
+
+func newLogger() *slog.Logger {
+	logger, err := logging.NewFromEnv(os.Stdout)
+	if err != nil {
+		exitWithError(logging.New(os.Stdout, slog.LevelInfo), "nivel de log inválido", "error", err)
+	}
+
+	return logger
+}
+
+func exitWithError(logger *slog.Logger, msg string, args ...any) {
+	logger.Error(msg, args...)
+	os.Exit(1)
+}
+
+func warnMissingCallbackSecrets(cfg *config.Config, logger *slog.Logger) {
 	if cfg.BatidosCallbackSecret == "" {
 		logger.Warn("no hay secreto configurado para el callback de batidos: ese endpoint va a rechazar todos los avisos",
 			"secret_env", "BATIDOS_CALLBACK_SECRET",
@@ -68,22 +129,23 @@ func main() {
 			"secret_env", "SNACKS_CALLBACK_SECRET",
 		)
 	}
+}
 
-	combos, err := catalog.LoadFile(combosPath)
+func loadCatalog(path string, logger *slog.Logger) ([]catalog.Combo, *catalog.Memory) {
+	combos, err := catalog.LoadFile(path)
 	if err != nil {
-		logger.Error("no se pudo cargar el catálogo de combos", "path", combosPath, "error", err)
-		os.Exit(1)
+		exitWithError(logger, "no se pudo cargar el catálogo de combos", "path", path, "error", err)
 	}
 
 	comboCatalog, err := catalog.NewMemory(combos)
 	if err != nil {
-		logger.Error("no se pudo construir el catálogo en memoria", "path", combosPath, "error", err)
-		os.Exit(1)
+		exitWithError(logger, "no se pudo construir el catálogo en memoria", "path", path, "error", err)
 	}
 
-	batidosClient := batidos.NewClient(cfg.BatidosBaseURL, cfg.BatidosKey, cfg.BatidosSecret)
-	snacksClient := snacks.NewClient(cfg.SnacksBaseURL, cfg.SnacksAccessKey, cfg.SnacksAppSecret)
+	return combos, comboCatalog
+}
 
+func buildMachines(cfg *config.Config, batidosClient *batidos.Client, snacksClient *snacks.Client, logger *slog.Logger) map[machine.Kind]dispenser.Dispenser {
 	batidosNotifyURL := func(orderID string) string {
 		return httpapi.BatidosCallbackURL(cfg.PublicBaseURL, cfg.BatidosCallbackSecret, orderID)
 	}
@@ -95,37 +157,36 @@ func main() {
 		)
 	}
 
-	machines := map[machine.Kind]dispenser.Dispenser{
+	return map[machine.Kind]dispenser.Dispenser{
 		machine.Batidos: batidos.NewDispenser(batidosClient, batidos.WithNotifyURL(batidosNotifyURL)),
 		machine.Snacks:  snacks.NewDispenser(snacksClient),
 	}
+}
 
-	orders, closeStore, err := openStore(cfg, combos, logger)
-	if err != nil {
-		logger.Error("no se pudo preparar el store", "store", cfg.Store, "error", err)
-		os.Exit(1)
-	}
-
-	availability := gate.New(preflight.New(batidosClient, snacksClient, preflight.WithLogger(logger)))
-
-	var notifier notify.Notifier = notify.NewLog(logger)
-	if cfg.TelegramEnabled() {
-		kioskNames := make(map[string]string, len(cfg.Kiosks))
-		for _, kiosk := range cfg.Kiosks {
-			kioskNames[kiosk.ID] = kiosk.Name
-		}
-
-		notifier = notify.NewTelegram(logger, cfg.TelegramBaseURL, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.Env,
-			notify.WithTelegramKiosks(kioskNames),
-		)
-		logger.Info("avisos a soporte por Telegram activos", "base_url", cfg.TelegramBaseURL)
-	} else {
+func buildNotifier(cfg *config.Config, logger *slog.Logger) notify.Notifier {
+	if !cfg.TelegramEnabled() {
 		logger.Warn("Telegram no está configurado: los avisos a soporte quedan sólo en el log",
 			"token_env", "TELEGRAM_BOT_TOKEN",
 			"chat_env", "TELEGRAM_CHAT_ID",
 		)
+
+		return notify.NewLog(logger)
 	}
 
+	kioskNames := make(map[string]string, len(cfg.Kiosks))
+	for _, kiosk := range cfg.Kiosks {
+		kioskNames[kiosk.ID] = kiosk.Name
+	}
+
+	notifier := notify.NewTelegram(logger, cfg.TelegramBaseURL, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.Env,
+		notify.WithTelegramKiosks(kioskNames),
+	)
+	logger.Info("avisos a soporte por Telegram activos", "base_url", cfg.TelegramBaseURL)
+
+	return notifier
+}
+
+func buildEngine(cfg *config.Config, orders store.Store, machines map[machine.Kind]dispenser.Dispenser, availability *gate.Gate, notifier notify.Notifier, logger *slog.Logger) *order.Engine {
 	engineOpts := []order.Option{
 		order.WithLogger(logger),
 		order.WithNotifier(notifier),
@@ -140,8 +201,10 @@ func main() {
 		engineOpts = append(engineOpts, order.WithQRPayments(paymentProvider, mpClient))
 	}
 
-	engine := order.New(orders, machines, engineOpts...)
+	return order.New(orders, machines, engineOpts...)
+}
 
+func buildSweepAndAPIDeps(cfg *config.Config, engine *order.Engine, orders store.Store, comboCatalog *catalog.Memory, logger *slog.Logger) (*sweep.Runner, httpapi.Deps) {
 	runnerOpts := []sweep.Option{sweep.WithInterval(sweepInterval), sweep.WithLimit(sweepLimit)}
 	apiDeps := httpapi.Deps{
 		Catalog:      comboCatalog,
@@ -167,31 +230,32 @@ func main() {
 		)
 	}
 
-	runner := sweep.New(engine, logger, runnerOpts...)
+	return sweep.New(engine, logger, runnerOpts...), apiDeps
+}
 
-	tabletAPI, err := httpapi.New(apiDeps, httpapi.WithLogger(logger))
-	if err != nil {
-		logger.Error("no se pudo construir la API de la tablet", "error", err)
-		closeStore()
-		os.Exit(1)
-	}
-
-	logger.Info("backend construido",
-		"env", cfg.Env,
-		"kiosks", len(cfg.Kiosks),
-		"combos", len(combos),
-		"sweep_interval", sweepInterval.String(),
-		"store", cfg.Store,
-	)
-
-	logger.Info("chequeo previo de disponibilidad activo: no se crea una orden si alguna de las dos máquinas no puede vender",
-		"gate", "preflight",
-		"machines", len(machines),
-	)
-
+func buildMux(cfg *config.Config, engine *order.Engine, comboCatalog *catalog.Memory, tabletAPI *httpapi.Handler, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /healthz", healthHandler(cfg, comboCatalog, logger))
+
+	tabletAPI.Register(mux)
+	httpapi.NewCallbacks(engine, httpapi.CallbackSecrets{
+		Batidos: cfg.BatidosCallbackSecret,
+		Snacks:  cfg.SnacksCallbackSecret,
+	}, httpapi.WithCallbacksLogger(logger)).Register(mux)
+
+	if cfg.MercadoPagoEnabled() {
+		httpapi.NewMercadoPagoWebhook(engine, httpapi.MercadoPagoSecrets{
+			Callback: cfg.MercadoPagoCallbackSecret,
+			Webhook:  cfg.MercadoPagoWebhookSecret,
+		}, httpapi.WithMercadoPagoLogger(logger)).Register(mux)
+	}
+
+	return mux
+}
+
+func healthHandler(cfg *config.Config, comboCatalog *catalog.Memory, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		available, err := comboCatalog.Combos(r.Context())
 		if err != nil {
 			logger.ErrorContext(r.Context(), "no se pudo leer el catálogo para el chequeo de salud", "error", err)
@@ -207,23 +271,10 @@ func main() {
 			"combos": len(available),
 			"store":  cfg.Store,
 		})
-	})
-
-	tabletAPI.Register(mux)
-	httpapi.NewCallbacks(engine, httpapi.CallbackSecrets{
-		Batidos: cfg.BatidosCallbackSecret,
-		Snacks:  cfg.SnacksCallbackSecret,
-	}, httpapi.WithCallbacksLogger(logger)).Register(mux)
-
-	if cfg.MercadoPagoEnabled() {
-		httpapi.NewMercadoPagoWebhook(engine, httpapi.MercadoPagoSecrets{
-			Callback: cfg.MercadoPagoCallbackSecret,
-			Webhook:  cfg.MercadoPagoWebhookSecret,
-		}, httpapi.WithMercadoPagoLogger(logger)).Register(mux)
 	}
+}
 
-	server := newServer(envOr("HTTP_ADDR", "127.0.0.1:8080"), httpapi.Wrap(mux, logger), logger)
-
+func serve(server *http.Server, runner *sweep.Runner, engine *order.Engine, closeStore func(), cfg *config.Config, logger *slog.Logger) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
