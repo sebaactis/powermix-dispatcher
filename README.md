@@ -120,9 +120,9 @@ Todas las rutas aceptan únicamente `POST` con JSON sin campos desconocidos y re
 
 - `GET /healthz`: responde `200` con `{"status","env","kiosks","combos","store"}`.
 - `GET /combos`: lista los combos activos del catálogo.
-- `POST /orders`: cuerpo `{"combo_id":"...","client_key":"...","kiosk_id":"..."}` (`kiosk_id` es opcional si sólo hay un mueble configurado; `combo_id` y `client_key` se recortan con `TrimSpace`).
+- `POST /orders`: cuerpo `{"combo_id":"...","client_key":"...","kiosk_id":"..."}` (`kiosk_id` es opcional si sólo hay un mueble configurado; `combo_id` y `client_key` se recortan con `TrimSpace`). Responde `201` con la orden.
   - `client_key`: un UUID por pedido confirmado en el kiosco, reutilizado únicamente para reintentar ese mismo pedido (`<= 128` caracteres tras `trim`, si supera responde `400`).
-  - Mismo `client_key`, mismo `combo_id` y mismo `kiosk_id`: devuelve `200` con la orden existente (idempotencia).
+  - Mismo `client_key`, mismo `combo_id` y mismo `kiosk_id`: devuelve `201` con la orden existente (idempotencia: el reintento recibe la misma respuesta que el original).
   - Mismo `client_key` con otro combo o mueble, combo no vendible o mueble sin la máquina requerida: responde `409`.
   - JSON inválido, `combo_id` vacío o `kiosk_id` faltante con múltiples muebles: responde `400`.
   - Combo o mueble inexistente: responde `404`.
