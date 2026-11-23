@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"time"
 )
 
@@ -104,11 +105,26 @@ func (r *Runner) tick(ctx context.Context) {
 	r.runStage(ctx, "pagos", r.payments.SyncPendingPayments)
 }
 
+func (r *Runner) callStage(ctx context.Context, name string, sync func(context.Context, int) error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.logger.Error("panic en el barrido de "+name+"; sigue en la próxima vuelta",
+				"stage", name,
+				"panic", p,
+				"stack", string(debug.Stack()),
+			)
+			err = nil
+		}
+	}()
+
+	return sync(ctx, r.limit)
+}
+
 func (r *Runner) runStage(ctx context.Context, name string, sync func(context.Context, int) error) {
 	stageCtx, cancel := context.WithTimeout(ctx, r.interval)
 	defer cancel()
 
-	err := sync(stageCtx, r.limit)
+	err := r.callStage(stageCtx, name, sync)
 
 	if ctx.Err() == nil && errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
 		r.logger.Warn("el barrido agotó su plazo; sigue en la próxima vuelta",

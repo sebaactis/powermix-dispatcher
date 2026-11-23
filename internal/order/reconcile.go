@@ -108,7 +108,14 @@ func (e *Engine) resumeStalledLine(ctx context.Context, line store.Line) error {
 		return ctx.Err()
 	}
 
-	return e.dispatchWithinDeadline(context.WithoutCancel(ctx), line.OrderID, fresh)
+	detached := context.WithoutCancel(ctx)
+
+	panicked, err := e.dispatchRecovering(detached, line.OrderID, fresh)
+	if panicked {
+		err = errors.Join(err, e.notifyDispatchPanic(detached, line.OrderID, []store.Line{fresh}))
+	}
+
+	return err
 }
 
 func (e *Engine) reconcileLine(ctx context.Context, line store.Line) (bool, error) {
